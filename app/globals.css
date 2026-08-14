@@ -1,0 +1,12 @@
+:root{
+  color-scheme:dark;
+  --brand:#00A99D; --brand-2:#4DD7CF;   /* Quantlys teal */
+  --bg:#0d0f16; --panel:#161927; --border:#262a3b; --text:#e8eaf2; --muted:#8b91a8; --danger:#e5484d;
+}
+body{margin:0;background:
+  radial-gradient(1200px 600px at 70% -10%, rgba(0,169,157,.14), transparent 60%), var(--bg);
+  color:var(--text);font-family:-apple-system,Segoe UI,Roboto,sans-serif;}
+.brandbar{display:flex;align-items:center;gap:10px;padding:14px 18px;}
+.brandbar .logo{width:26px;height:26px;}
+button{background:var(--brand);border:none;color:#fff;font-weight:600;border-radius:9px;padding:11px;cursor:pointer;}
+button.ghost{background:var(--panel);border:1px solid var(--border);}
