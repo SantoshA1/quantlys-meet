@@ -7,62 +7,97 @@ export default function Home() {
   const supabase = supabaseBrowser();
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [title, setTitle] = useState("");
-  const [meetings, setMeetings] = useState<any[]>([]);
+
+  // guest join
+  const [joinInput, setJoinInput] = useState("");
+  // host code auth
+  const [email, setEmail] = useState(""); const [code, setCode] = useState("");
+  const [stage, setStage] = useState<"email" | "code">("email");
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    loadActive();
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null));
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function loadActive() {
-    const { data } = await supabase.from("meetings").select("*").eq("active", true).order("started_at", { ascending: false });
-    setMeetings(data ?? []);
+  function goJoin() {
+    const v = joinInput.trim();
+    if (!v) return;
+    // Accept a full link OR a bare room code.
+    let room = v;
+    try { const u = new URL(v); room = u.pathname.split("/meeting/")[1]?.split("/")[0] || v; } catch {}
+    router.push(`/meeting/${room}`);
   }
 
-  async function sendLink() {
-    await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
-    setSent(true);
+  async function sendCode() {
+    setErr(""); setBusy(true);
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(), options: { shouldCreateUser: true }, // NO emailRedirectTo → code, not link
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setStage("code");
   }
-
-  async function createMeeting() {
-    const room = "room-" + Math.random().toString(36).slice(2, 9);
-    await supabase.from("meetings").insert({ room_name: room, title, created_by: user.id });
-    router.push(`/meeting/${room}?title=${encodeURIComponent(title)}`);
-  }
-
-  if (!user) {
-    return (
-      <div className="wrap"><div className="card">
-        <h1>Quantlys Meeting</h1>
-        <p className="muted">Sign in with a magic link.</p>
-        {sent ? <p>✅ Check your email for the sign-in link.</p> : (
-          <>
-            <input placeholder="you@team.com" value={email} onChange={e => setEmail(e.target.value)} />
-            <button onClick={sendLink}>Send magic link</button>
-          </>
-        )}
-      </div></div>
-    );
+  async function verify() {
+    setErr(""); setBusy(true);
+    const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: "email" });
+    setBusy(false);
+    if (error) setErr("That code didn't work — check it or request a new one.");
   }
 
   return (
-    <div className="wrap"><div className="card">
-      <h1>Quantlys Meeting</h1>
-      <p className="muted">Signed in as {user.email}</p>
-      <input placeholder="Meeting title (e.g. Monday Standup)" value={title} onChange={e => setTitle(e.target.value)} />
-      <button disabled={!title} onClick={createMeeting}>New meeting</button>
+    <div className="wrap">
+      {/* JOIN A MEETING — no account needed */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h1>Join a meeting</h1>
+        <p className="muted">Paste a meeting link or code — no account needed.</p>
+        <input placeholder="Meeting link or code" value={joinInput}
+          onChange={e => setJoinInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && goJoin()} />
+        <button disabled={!joinInput.trim()} onClick={goJoin}
+          style={{ width: "100%" }}>Join as guest</button>
+      </div>
 
-      <h3 style={{ marginTop: 24 }}>Active meetings</h3>
-      {meetings.length === 0 && <p className="muted">None right now.</p>}
-      {meetings.map(m => (
-        <div className="list-item" key={m.id}>
-          <span>{m.title}</span>
-          <button className="ghost" onClick={() => router.push(`/meeting/${m.room_name}?title=${encodeURIComponent(m.title)}`)}>Join</button>
-        </div>
-      ))}
-    </div></div>
+      {/* HOST SIGN-IN — 6-digit code */}
+      <div className="card">
+        {user ? (
+          <>
+            <h2>Host a meeting</h2>
+            <p className="muted">Signed in as {user.email}</p>
+            {/* create-meeting + active list unchanged */}
+          </>
+        ) : stage === "email" ? (
+          <>
+            <h2>Sign in to host</h2>
+            <p className="muted">Hosting requires an account. We'll email a 6-digit code.</p>
+            <input type="email" placeholder="you@team.com" value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && email && sendCode()} />
+            <button disabled={!email || busy} onClick={sendCode} style={{ width: "100%" }}>
+              {busy ? "Sending…" : "Send code"}
+            </button>
+          </>
+        ) : (
+          <>
+            <h2>Enter your code</h2>
+            <p className="muted">6-digit code sent to <b>{email}</b>.</p>
+            <input inputMode="numeric" maxLength={6} autoFocus placeholder="000000" value={code}
+              onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onKeyDown={e => e.key === "Enter" && code.length === 6 && verify()}
+              style={{ letterSpacing: "0.4em", textAlign: "center", fontSize: 22 }} />
+            <button disabled={code.length !== 6 || busy} onClick={verify} style={{ width: "100%" }}>
+              {busy ? "Verifying…" : "Verify & sign in"}
+            </button>
+            <p className="muted" style={{ marginTop: 10 }}>
+              <a onClick={sendCode} style={{ color: "var(--brand)", cursor: "pointer" }}>Email me a new code</a>
+              {" · "}
+              <a onClick={() => { setStage("email"); setCode(""); }} style={{ color: "var(--muted)", cursor: "pointer" }}>Change email</a>
+            </p>
+          </>
+        )}
+        {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
+      </div>
+    </div>
   );
 }

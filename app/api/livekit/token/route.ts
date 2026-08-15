@@ -1,70 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
 import { createServerClient } from "@supabase/ssr";
+export const runtime = "nodejs";
 
-export const runtime = "nodejs"; // livekit-server-sdk needs Node, not Edge
-
-const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN; // e.g. "team.com"
+const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN;
 
 async function getUser(req: NextRequest) {
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { getAll: () => req.cookies.getAll(), setAll: () => {} } }
-  );
-  const { data } = await supabase.auth.getUser(); // verifies the signed session server-side
-  return data.user;
+  const s = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { getAll: () => req.cookies.getAll(), setAll: () => {} } });
+  return (await s.auth.getUser()).data.user;
 }
 
 export async function POST(req: NextRequest) {
-  const { room, name, guest } = await req.json();
+  const { room, name } = await req.json();
+  if (!room) return NextResponse.json({ error: "room required" }, { status: 400 });
 
-  if (!room || !name) {
-    return NextResponse.json({ error: "room and name are required" }, { status: 400 });
-  }
-
-  const displayName = String(name).slice(0, 60);
-  let identity: string;
-  let isGuest = false;
-
+  const displayName = String(name || "Guest").slice(0, 60);
   const user = await getUser(req);
 
+  // Is the caller the host of this room?
+  let isHost = false;
   if (user) {
-    // Signed-in teammate — enforce the domain allowlist if configured.
     const domain = user.email?.split("@")[1];
-    if (ALLOWED_DOMAIN && domain !== ALLOWED_DOMAIN) {
-      return NextResponse.json(
-        { error: `This app is for @${ALLOWED_DOMAIN} accounts only` },
-        { status: 403 }
-      );
-    }
-    // Stable identity per user so per-track recording maps to a known person.
-    identity = user.id;
-  } else if (guest === true && process.env.ALLOW_GUEST_JOIN === "true") {
-    // Test-week guest path — no login, typed name only. Flag-gated so it can't
-    // leak into normal operation once you turn it off.
-    identity = `guest-${crypto.randomUUID()}`;
-    isGuest = true;
-  } else {
-    // Not signed in AND guest join is off → no token is issued here.
-    // (In the full app this returns 202 + an admissionId so the host can admit
-    //  the straggler from inside the room. Bare-minimum version rejects.)
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    if (ALLOWED_DOMAIN && domain !== ALLOWED_DOMAIN)
+      return NextResponse.json({ error: `Hosting is limited to @${ALLOWED_DOMAIN}` }, { status: 403 });
+    const svc = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { cookies: { getAll: () => [], setAll: () => {} } });
+    const { data: m } = await svc.from("meetings").select("created_by").eq("room_name", room).maybeSingle();
+    isHost = !!m && m.created_by === user.id;
   }
 
-  const at = new AccessToken(
-    process.env.LIVEKIT_API_KEY!,
-    process.env.LIVEKIT_API_SECRET!,
-    { identity, name: displayName, ttl: "3h" }
-  );
+  // Host always enters. Guests enter directly UNLESS this room requires approval.
+  if (!isHost) {
+    const svc = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { cookies: { getAll: () => [], setAll: () => {} } });
+    const { data: m } = await svc.from("meetings")
+      .select("id, requires_approval").eq("room_name", room).maybeSingle();
 
-  at.addGrant({
-    room,
-    roomJoin: true,
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true, // needed for the record-badge broadcast + host controls
-  });
+    if (m?.requires_approval) {
+      const { data: row } = await svc.from("pending_admissions")
+        .insert({ room_name: room, display_name: displayName }).select("id").single();
+      return NextResponse.json({ pending: true, admissionId: row!.id }, { status: 202 });
+    }
+  }
 
-  return NextResponse.json({ token: await at.toJwt(), isGuest });
+  const identity = user
+    ? user.id
+    : `guest-${crypto.randomUUID()}`;
+
+  const at = new AccessToken(process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!,
+    { identity, name: displayName, ttl: "3h" });
+  at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true });
+  return NextResponse.json({ token: await at.toJwt(), isHost });
 }
