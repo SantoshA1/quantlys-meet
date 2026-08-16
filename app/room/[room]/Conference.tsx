@@ -1,9 +1,9 @@
 "use client";
 
 // The whole meeting: names on every tile, chat, screen share, mic and camera
-// controls, leave — all of it from LiveKit's own conference component, so it
-// behaves the way people already expect. On top of that: the invite link with
-// a Copy button, a live participant count, and recording for the host.
+// controls, leave — from LiveKit's own conference component. On top: the
+// invite link, a live participant count, and recording that records the
+// MEETING rather than asking which window to capture.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -13,6 +13,7 @@ import {
   useRoomContext,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
+import { Track } from "livekit-client";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 let _db: SupabaseClient | null = null;
@@ -94,9 +95,6 @@ export default function Conference({ room }: { room: string }) {
         connect
         video
         audio
-        onDisconnected={() => {
-          window.location.href = "/";
-        }}
         style={{ height: "100%" }}
       >
         <RoomHeader room={room} />
@@ -108,16 +106,26 @@ export default function Conference({ room }: { room: string }) {
   );
 }
 
+// An <audio> element can only be handed to createMediaElementSource ONCE for
+// the lifetime of the page. Recording twice in one meeting would throw and
+// silently lose that person's voice, so the sources are kept and reused.
+const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
+
 function RoomHeader({ room }: { room: string }) {
   const participants = useParticipants();
   const ctx = useRoomContext();
   const [copied, setCopied] = useState(false);
   const [signedIn, setSignedIn] = useState<string | null>(null);
+
   const [recording, setRecording] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const [status, setStatus] = useState<{ kind: "ok" | "err" | "busy"; text: string } | null>(null);
+
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<BlobPart[]>([]);
+  const raf = useRef<number | null>(null);
+  const audioCtx = useRef<AudioContext | null>(null);
+  const ticker = useRef<any>(null);
 
   useEffect(() => {
     db()
@@ -125,14 +133,24 @@ function RoomHeader({ room }: { room: string }) {
       .then(({ data }) => setSignedIn(data.session?.user?.id ?? null));
   }, []);
 
+  // Never let a half-saved recording die because someone closed the tab.
+  useEffect(() => {
+    const guard = (e: BeforeUnloadEvent) => {
+      if (status?.kind === "busy") {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [status]);
+
   const invite = useMemo(
     () => (typeof window === "undefined" ? "" : `${window.location.origin}/room/${room}`),
     [room]
   );
 
-  const names = participants
-    .map((p) => p.name || p.identity.split("-")[0])
-    .filter(Boolean);
+  const names = participants.map((p) => p.name || p.identity.split("-")[0]).filter(Boolean);
 
   async function copyInvite() {
     try {
@@ -140,52 +158,155 @@ function RoomHeader({ room }: { room: string }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      /* nothing to do — the link is shown in the title attribute */
+      setStatus({ kind: "err", text: invite });
     }
   }
 
-  const stopRecording = useCallback(() => {
-    recorder.current?.stop();
-  }, []);
+  // ---- recording the MEETING, not the screen ----------------------------
 
-  async function startRecording() {
-    if (!signedIn || recording) return;
-    setSaved("");
-    let stream: MediaStream;
+  function liveVideos(): HTMLVideoElement[] {
+    return Array.from(document.querySelectorAll("video")).filter(
+      (v) => v.videoWidth > 0 && v.videoHeight > 0 && !v.paused
+    ) as HTMLVideoElement[];
+  }
+
+  function buildAudio(): MediaStream {
+    const ac = audioCtx.current || new AudioContext();
+    audioCtx.current = ac;
+    if (ac.state === "suspended") ac.resume().catch(() => {});
+    const dest = ac.createMediaStreamDestination();
+
+    // Everyone else, as the browser is already playing them.
+    Array.from(document.querySelectorAll("audio")).forEach((el) => {
+      const a = el as HTMLAudioElement;
+      try {
+        let src = AUDIO_SOURCES.get(a);
+        if (!src) {
+          src = ac.createMediaElementSource(a);
+          AUDIO_SOURCES.set(a, src);
+          src.connect(ac.destination); // keep it audible in the room
+        }
+        src.connect(dest);
+      } catch {
+        /* one voice missing must not stop the recording */
+      }
+    });
+
+    // Yourself — you never hear your own mic, so it is not in the DOM.
     try {
-      stream = await (navigator.mediaDevices as any).getDisplayMedia({
-        video: { frameRate: 30 },
-        audio: true,
-      });
+      const pub = ctx.localParticipant.getTrackPublication(Track.Source.Microphone);
+      const mst = pub?.track?.mediaStreamTrack;
+      if (mst) ac.createMediaStreamSource(new MediaStream([mst])).connect(dest);
     } catch {
-      return; // the person cancelled the picker
+      /* recording without your own voice beats no recording */
     }
-    chunks.current = [];
+    return dest.stream;
+  }
+
+  function startRecording() {
+    if (!signedIn || recording) return;
+    setStatus(null);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 1280;
+    canvas.height = 720;
+    const g = canvas.getContext("2d");
+    if (!g) {
+      setStatus({ kind: "err", text: "This browser can't record. Try Chrome." });
+      return;
+    }
+
+    const draw = () => {
+      const vids = liveVideos();
+      g.fillStyle = "#0b0d13";
+      g.fillRect(0, 0, canvas.width, canvas.height);
+      const n = Math.max(vids.length, 1);
+      const cols = Math.ceil(Math.sqrt(n));
+      const rows = Math.ceil(n / cols);
+      const cw = canvas.width / cols;
+      const ch = canvas.height / rows;
+      vids.forEach((v, i) => {
+        const cx = (i % cols) * cw;
+        const cy = Math.floor(i / cols) * ch;
+        // contain, preserving aspect ratio
+        const scale = Math.min(cw / v.videoWidth, ch / v.videoHeight);
+        const w = v.videoWidth * scale;
+        const h = v.videoHeight * scale;
+        try {
+          g.drawImage(v, cx + (cw - w) / 2, cy + (ch - h) / 2, w, h);
+        } catch {
+          /* a frame that isn't ready is skipped, not fatal */
+        }
+      });
+      raf.current = requestAnimationFrame(draw);
+    };
+    draw();
+
+    const stream = new MediaStream([
+      ...canvas.captureStream(24).getVideoTracks(),
+      ...buildAudio().getAudioTracks(),
+    ]);
+
     const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
       ? "video/webm;codecs=vp9,opus"
       : "video/webm";
-    const rec = new MediaRecorder(stream, { mimeType: mime });
-    rec.ondataavailable = (e) => e.data.size && chunks.current.push(e.data);
-    rec.onstop = async () => {
+    let rec: MediaRecorder;
+    try {
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+    } catch (e: any) {
+      setStatus({ kind: "err", text: `Could not start recording: ${e?.message || e}` });
+      return;
+    }
+
+    chunks.current = [];
+    rec.ondataavailable = (e) => e.data && e.data.size && chunks.current.push(e.data);
+    rec.onerror = (e: any) =>
+      setStatus({ kind: "err", text: `Recording stopped: ${e?.error?.message || "unknown error"}` });
+    rec.onstop = () => {
+      if (raf.current) cancelAnimationFrame(raf.current);
       stream.getTracks().forEach((t) => t.stop());
       setRecording(false);
-      setSaving(true);
-      const blob = new Blob(chunks.current, { type: "video/webm" });
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const path = `${signedIn}/${room}/${stamp}.webm`;
-      const { error } = await db().storage.from("recordings").upload(path, blob, {
-        contentType: "video/webm",
-        upsert: false,
-      });
-      setSaving(false);
-      setSaved(error ? `Could not save: ${error.message}` : "Recording saved to your account.");
-      setTimeout(() => setSaved(""), 6000);
+      if (ticker.current) clearInterval(ticker.current);
+      void save();
     };
-    stream.getVideoTracks()[0]?.addEventListener("ended", stopRecording);
     rec.start(2000);
     recorder.current = rec;
     setRecording(true);
+    setElapsed(0);
+    ticker.current = setInterval(() => setElapsed((s) => s + 1), 1000);
   }
+
+  const stopRecording = useCallback(() => {
+    try {
+      recorder.current?.stop();
+    } catch {
+      setRecording(false);
+    }
+  }, []);
+
+  async function save() {
+    const blob = new Blob(chunks.current, { type: "video/webm" });
+    chunks.current = [];
+    if (!signedIn) return;
+    if (blob.size < 1024) {
+      setStatus({ kind: "err", text: "Nothing was captured — the recording was empty." });
+      return;
+    }
+    const mb = (blob.size / 1048576).toFixed(1);
+    setStatus({ kind: "busy", text: `Saving ${mb} MB…` });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const path = `${signedIn}/${room}/${stamp}.webm`;
+    const { error } = await db()
+      .storage.from("recordings")
+      .upload(path, blob, { contentType: "video/webm", upsert: false });
+    if (error) {
+      setStatus({ kind: "err", text: `Could not save the recording: ${error.message}` });
+      return;
+    }
+    setStatus({ kind: "ok", text: `Saved ${mb} MB — find it under Recordings on your host page.` });
+  }
+
+  const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
   return (
     <header className="qmr-bar">
@@ -193,31 +314,57 @@ function RoomHeader({ room }: { room: string }) {
 
       <span className="qmr-people" title={names.join(", ")}>
         {participants.length} in the meeting
-        {names.length ? <em className="qmr-names"> · {names.slice(0, 4).join(", ")}
-          {names.length > 4 ? ` +${names.length - 4}` : ""}</em> : null}
+        {names.length ? (
+          <em className="qmr-names">
+            {" · "}
+            {names.slice(0, 4).join(", ")}
+            {names.length > 4 ? ` +${names.length - 4}` : ""}
+          </em>
+        ) : null}
       </span>
 
       <span className="qmr-actions">
         {signedIn ? (
           recording ? (
             <button className="qmr-rec" onClick={stopRecording}>
-              <span className="qmr-dot" /> Stop recording
+              <span className="qmr-dot" /> Stop recording · {mmss}
             </button>
           ) : (
-            <button className="qmr-ghost" onClick={startRecording} disabled={saving}>
-              {saving ? "Saving…" : "Record"}
+            <button
+              className="qmr-ghost"
+              onClick={startRecording}
+              disabled={status?.kind === "busy"}
+              title="Records the meeting — no window picker"
+            >
+              {status?.kind === "busy" ? "Saving…" : "Record"}
             </button>
           )
         ) : null}
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
-        <button className="qmr-leave" onClick={() => ctx.disconnect()}>
+        <button
+          className="qmr-leave"
+          onClick={() => {
+            if (status?.kind === "busy") return;
+            ctx.disconnect();
+            window.location.href = "/host";
+          }}
+          disabled={status?.kind === "busy"}
+          title={status?.kind === "busy" ? "Wait for the recording to finish saving" : "Leave"}
+        >
           Leave
         </button>
       </span>
 
-      {saved ? <span className="qmr-toast">{saved}</span> : null}
+      {status ? (
+        <span className={`qmr-status qmr-${status.kind}`}>
+          {status.text}
+          <button className="qmr-x" onClick={() => setStatus(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </span>
+      ) : null}
     </header>
   );
 }
@@ -238,17 +385,17 @@ const CSS = `
 .qmr-input:focus { outline: none; border-color: #00a99d; }
 .qmr-prejoin button, .qmr-bar button { font: inherit; cursor: pointer;
   border-radius: 10px; padding: 10px 16px; width: auto; white-space: nowrap; }
+.qmr-prejoin button:disabled, .qmr-bar button:disabled { opacity: .55; cursor: default; }
 .qmr-primary { background: #00a99d; color: #06110f; border: 0; font-weight: 600; }
 .qmr-ghost { background: transparent; color: #cfd6e4; border: 1px solid #2b3240; }
 .qmr-ghost:hover { border-color: #3b4356; }
 .qmr-leave { background: #3a1f26; color: #ffc9c9; border: 1px solid #5c2b35; }
 .qmr-rec { background: #4a1f24; color: #ffd7d7; border: 1px solid #7a2f38;
-  display: inline-flex; align-items: center; gap: 8px; }
+  display: inline-flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
 .qmr-dot { width: 9px; height: 9px; border-radius: 50%; background: #ff5964;
   animation: qmr-pulse 1.2s ease-in-out infinite; }
 @keyframes qmr-pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
-.qmr-stage { height: 100vh; display: flex; flex-direction: column;
-  background: #0b0d13;
+.qmr-stage { height: 100vh; display: flex; flex-direction: column; background: #0b0d13;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }
 .qmr-bar { position: relative; display: flex; align-items: center; gap: 14px;
@@ -259,7 +406,12 @@ const CSS = `
 .qmr-names { font-style: normal; color: #6f7789; }
 .qmr-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 .qmr-conf { flex: 1; min-height: 0; }
-.qmr-toast { position: absolute; left: 16px; bottom: -30px; background: #12151d;
-  border: 1px solid #262b36; border-radius: 8px; padding: 5px 10px;
-  font-size: 13px; color: #8fd8cf; }
+.qmr-status { flex-basis: 100%; display: flex; align-items: center; gap: 10px;
+  font-size: 13px; padding: 7px 11px; border-radius: 8px; border: 1px solid #262b36;
+  background: #10131a; }
+.qmr-ok  { color: #8fd8cf; border-color: #1f4f49; }
+.qmr-err { color: #ffb4b4; border-color: #5c2b35; }
+.qmr-busy{ color: #ffd9a0; border-color: #5a4520; }
+.qmr-x { background: none; border: 0; color: inherit; font-size: 16px;
+  line-height: 1; padding: 0 4px; margin-left: auto; }
 `;

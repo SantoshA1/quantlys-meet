@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import Recordings from "./Recordings";
 
 type Meeting = {
   id: string;
@@ -137,7 +138,7 @@ export default function HostConsole() {
     try {
       await navigator.clipboard.writeText(inviteLink(room));
       setCopied(room);
-      setTimeout(() => setCopied(""), 1600);
+      setTimeout(() => setCopied(""), 1500);
     } catch {
       setNote(inviteLink(room));
     }
@@ -264,6 +265,8 @@ export default function HostConsole() {
               ))
             )}
           </section>
+
+          <Recordings userId={user.id} />
         </>
       )}
     </main>
@@ -299,4 +302,5 @@ const CSS = `
 .qm-item:last-child { border-bottom: 0; }
 .qm-name { font-size: 15px; }
 .qm-ended { color: #8b93a5; font-style: normal; font-size: 13px; }
+.qm-player { width: 100%; border-radius: 10px; background: #000; margin-bottom: 14px; }
 `;
