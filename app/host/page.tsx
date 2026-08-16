@@ -69,7 +69,7 @@ export default function HostConsole() {
   }, [loadMine]);
 
   function inviteLink(room: string) {
-    return `${window.location.origin}/meeting/${room}`;
+    return `${window.location.origin}/room/${room}`;
   }
 
   async function sendCode() {
@@ -130,7 +130,7 @@ export default function HostConsole() {
       /* clipboard is a nicety, never a blocker */
     }
     setTitle("");
-    router.push(`/meeting/${room}`);
+    router.push(`/room/${room}`);
   }
 
   async function copyInvite(room: string) {
@@ -251,7 +251,7 @@ export default function HostConsole() {
                     <button className="qm-ghost" onClick={() => copyInvite(m.room_name)}>
                       {copied === m.room_name ? "Copied" : "Copy invite link"}
                     </button>
-                    <button className="qm-ghost" onClick={() => router.push(`/meeting/${m.room_name}`)}>
+                    <button className="qm-ghost" onClick={() => router.push(`/room/${m.room_name}`)}>
                       Open
                     </button>
                     {m.active === false ? null : (
