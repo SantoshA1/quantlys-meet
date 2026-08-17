@@ -17,6 +17,11 @@ import {
 import "@livekit/components-styles";
 import { Track } from "livekit-client";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { Caption, Engine } from "@/lib/captions";
+import {
+  CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
+  toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
+} from "@/lib/captions";
 
 let _db: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -351,6 +356,15 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
 
   const names = participants.map((p) => p.name || p.identity.split("-")[0]).filter(Boolean);
 
+  // Captions. Held here rather than in a child so the caption LOG is in scope
+  // when the recording finishes — a meeting captioned live but never
+  // transcribed still has all its words, and throwing them away because one
+  // API key is missing is the app choosing to know less than it does.
+  const meId = ctx?.localParticipant?.identity || "me";
+  const meName = ctx?.localParticipant?.name || meId.split("-")[0] || "You";
+  const cc = useCaptions(room, meId, meName);
+  const [ccOpen, setCcOpen] = useState(false);
+
   async function copyInvite() {
     try {
       await navigator.clipboard.writeText(invite);
@@ -604,7 +618,15 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
         // everybody types a name on the way in — and it was thrown away before
         // the notes were written, which is why every set of them said
         // "Speaker 2". A commitment made by a number is one nobody can chase.
-        body: JSON.stringify({ room, videoPath, audioPath, people: names, title }),
+        body: JSON.stringify({
+          room, videoPath, audioPath, people: names, title,
+          // Everything that was captioned, as timed lines. If Deepgram can't
+          // transcribe the file afterwards — no key, silence, a rejected
+          // upload — these ARE the transcript, and the notes are written from
+          // them instead of the app reporting that it heard nothing.
+          captions: toUtterances(cc.log).slice(0, 4000),
+          captionText: toTranscript(cc.log).slice(0, 200000),
+        }),
       });
       const out = await r.json();
       if (!r.ok) {
@@ -689,6 +711,14 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
             Manage people
           </button>
         ) : null}
+        <button
+          className={`qmr-ghost${cc.on ? " qmr-on" : ""}`}
+          onClick={cc.toggle}
+          aria-pressed={cc.on}
+          title={cc.note || "Show what is being said, as it is said"}
+        >
+          {toggleLabel(cc.engine === "none" && !cc.on ? "browser" : cc.engine, cc.on)}
+        </button>
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -780,6 +810,8 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
           </p>
         </div>
       ) : null}
+
+      <CaptionBar cc={cc} open={ccOpen} onOpen={() => setCcOpen((o) => !o)} />
 
       {status ? (
         <span className={`qmr-status qmr-${status.kind}`}>
@@ -1032,6 +1064,293 @@ function Reactions() {
 }
 
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// Live captions
+//
+// FIELD 2026-08-17: we had none. For somebody who can't hear well that is not
+// a missing feature, it is whether the meeting is attendable at all — and
+// everyone else leans on captions in a noisy room, on a bad line, or in a
+// language they read better than they hear.
+//
+// Each person captions THEIR OWN microphone and broadcasts the text. The
+// obvious alternative — mix the room on a server and transcribe the mix — has
+// to guess who is speaking from voice alone, costs per-minute for everybody,
+// and adds a network hop to the one feature people notice at 200ms. Captioning
+// your own microphone knows who you are for free. Attribution stops being a
+// machine-learning problem and becomes a fact.
+//
+// Two engines behind one behaviour. Deepgram when a key exists: more accurate,
+// works in every browser, and the same vendor the recording uses, so the live
+// text and the saved transcript agree. The browser's own recogniser when it
+// doesn't: free, no setup, and available to anyone who opens the app. Whichever
+// runs, the person is told — including where their voice goes.
+// ───────────────────────────────────────────────────────────────────────────
+
+function hasBrowserRecogniser(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+}
+
+type CaptionsApi = {
+  on: boolean;
+  engine: Engine;
+  note: string;
+  log: Caption[];
+  toggle: () => void;
+};
+
+function useCaptions(room: string, me: string, myName: string): CaptionsApi {
+  const [on, setOn] = useState(false);
+  const [engine, setEngine] = useState<Engine>("none");
+  const [note, setNote] = useState("");
+  const [log, setLog] = useState<Caption[]>([]);
+  const t0 = useRef<number>(0);
+  const seq = useRef(0);
+  const stopper = useRef<null | (() => void)>(null);
+  const wantOn = useRef(false);
+
+  const { send } = useDataChannel(CC_TOPIC, (msg) => {
+    try {
+      const c = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (c?.id) setLog((l) => mergeCaption(l, c as Caption));
+    } catch {
+      /* one malformed packet is not worth losing the captions */
+    }
+  });
+
+  const emit = useCallback(
+    (c: Caption) => {
+      setLog((l) => mergeCaption(l, c));
+      try {
+        send(new TextEncoder().encode(JSON.stringify(c)), { topic: CC_TOPIC });
+      } catch {
+        /* my own captions still show even if the channel hiccups */
+      }
+    },
+    [send]
+  );
+
+  // An unfinished line left frozen on screen reads as "they are still
+  // talking". Sweep the drafts; never the finals.
+  useEffect(() => {
+    if (!on) return;
+    const t = setInterval(() => setLog((l) => pruneStale(l, Date.now() - t0.current)), 2000);
+    return () => clearInterval(t);
+  }, [on]);
+
+  // ── the browser's own recogniser ────────────────────────────────────────
+  const startBrowser = useCallback(() => {
+    const R = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!R) return null;
+    let rec: any = null;
+    let stopped = false;
+    let utter = `${me}-${seq.current++}`;
+
+    const boot = () => {
+      rec = new R();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = navigator.language || "en-US";
+      rec.onresult = (e: any) => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          const text = String(r[0]?.transcript || "").trim();
+          if (!text) continue;
+          emit({
+            id: utter,
+            who: myName,
+            text,
+            final: Boolean(r.isFinal),
+            at: Date.now() - t0.current,
+          });
+          // A finished sentence closes its line. The next one is a new
+          // utterance — without this every sentence overwrites the last.
+          if (r.isFinal) utter = `${me}-${seq.current++}`;
+        }
+      };
+      // Web Speech stops on its own after a stretch of quiet, silently, with
+      // no error. Left alone, captions work for a minute and then never
+      // again — and nothing on screen says why. Restart it.
+      rec.onend = () => { if (!stopped) setTimeout(boot, 300); };
+      rec.onerror = (e: any) => {
+        if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
+          stopped = true;
+          setNote("Your browser refused microphone access for captions. Allow the microphone and turn captions on again.");
+          setOn(false);
+        }
+        // "no-speech" and "aborted" are normal. onend restarts.
+      };
+      try { rec.start(); } catch { /* already running */ }
+    };
+    boot();
+    return () => { stopped = true; try { rec?.stop(); } catch {} };
+  }, [emit, me, myName]);
+
+  // ── Deepgram, streaming ─────────────────────────────────────────────────
+  const startDeepgram = useCallback(async (token: string) => {
+    let ws: WebSocket | null = null;
+    let mr: MediaRecorder | null = null;
+    let stream: MediaStream | null = null;
+    let stopped = false;
+    let utter = `${me}-${seq.current++}`;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setNote("Couldn't open the microphone for captions.");
+      setOn(false);
+      return () => {};
+    }
+
+    const qs = new URLSearchParams({
+      model: "nova-2",
+      smart_format: "true",
+      interim_results: "true",
+      punctuate: "true",
+      encoding: "opus",
+    });
+    ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, ["token", token]);
+
+    ws.onopen = () => {
+      if (stopped || !stream) return;
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+      mr = new MediaRecorder(stream, { mimeType: mime });
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+      };
+      mr.start(250);   // a quarter second — the latency people actually feel
+    };
+    ws.onmessage = (e) => {
+      try {
+        const m = JSON.parse(e.data);
+        const text = String(m?.channel?.alternatives?.[0]?.transcript || "").trim();
+        if (!text) return;
+        const isFinal = Boolean(m?.is_final || m?.speech_final);
+        emit({ id: utter, who: myName, text, final: isFinal, at: Date.now() - t0.current });
+        if (isFinal) utter = `${me}-${seq.current++}`;
+      } catch {
+        /* ignore */
+      }
+    };
+    ws.onerror = () => {
+      // Falling back is better than going quiet. The person asked for
+      // captions; which service produces them is our problem, not theirs.
+      if (stopped) return;
+      setNote("Deepgram dropped the caption connection — switching to your browser's own recogniser.");
+      setEngine("browser");
+      stopper.current?.();
+      stopper.current = startBrowser();
+    };
+
+    return () => {
+      stopped = true;
+      try { mr?.stop(); } catch {}
+      try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
+      try { ws?.close(); } catch {}
+    };
+  }, [emit, me, myName, startBrowser]);
+
+  const toggle = useCallback(() => {
+    if (on) {
+      wantOn.current = false;
+      stopper.current?.();
+      stopper.current = null;
+      setOn(false);
+      return;
+    }
+    wantOn.current = true;
+    if (!t0.current) t0.current = Date.now();
+    setOn(true);
+    (async () => {
+      let picked: Engine = pickEngine(false, hasBrowserRecogniser());
+      let token = "";
+      try {
+        const r = await fetch("/api/captions/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room }),
+        });
+        const j = await r.json();
+        if (j?.engine === "deepgram" && j?.token) {
+          picked = "deepgram";
+          token = j.token;
+        } else if (j?.reason && !hasBrowserRecogniser()) {
+          setNote(j.reason);
+        }
+      } catch {
+        /* no token service reachable — the browser path still works */
+      }
+      if (!wantOn.current) return;
+      setEngine(picked);
+      setNote(engineNote(picked));
+      if (picked === "deepgram") stopper.current = await startDeepgram(token);
+      else if (picked === "browser") stopper.current = startBrowser();
+      else setOn(false);
+    })();
+  }, [on, room, startBrowser, startDeepgram]);
+
+  useEffect(() => () => { stopper.current?.(); }, []);
+
+  return { on, engine, note, log, toggle };
+}
+
+function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOpen: () => void }) {
+  const lines = visible(cc.log, 3);
+  const settled = finals(cc.log);
+  const box = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (open && box.current) box.current.scrollTop = box.current.scrollHeight;
+  }, [open, settled.length]);
+
+  if (!cc.on) return null;
+  return (
+    <>
+      {open ? (
+        <div className="qmr-cchist">
+          <div className="qmr-cchead">
+            <b>Captions so far</b>
+            <button className="qmr-x" onClick={onOpen} aria-label="Close">×</button>
+          </div>
+          <div className="qmr-cclist" ref={box}>
+            {settled.length ? (
+              settled.map((c) => (
+                <p key={c.id}>
+                  <span className="qmr-ccat">{stamp(c.at)}</span>
+                  <span className="qmr-ccwho">{c.who}</span>
+                  {c.text}
+                </p>
+              ))
+            ) : (
+              <p className="qmr-ccnone">Nothing has been said yet.</p>
+            )}
+          </div>
+          <p className="qmr-ccfine">{cc.note}</p>
+        </div>
+      ) : null}
+
+      <div className="qmr-ccbar" role="log" aria-live="polite" aria-label="Live captions">
+        {lines.length ? (
+          lines.map((c) => (
+            <p key={c.id} className={c.final ? "" : "qmr-ccdraft"}>
+              <span className="qmr-ccwho">{c.who}</span>
+              {c.text}
+            </p>
+          ))
+        ) : (
+          <p className="qmr-ccdraft">Listening…</p>
+        )}
+        <button className="qmr-cctoggle" onClick={onOpen}>
+          {open ? "Hide" : `All ${settled.length || ""}`.trim()}
+        </button>
+      </div>
+    </>
+  );
+}
+
+
 const CSS = `
 .qmr-prejoin { min-height: 100vh; display: grid; place-items: center; padding: 20px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -1200,6 +1519,43 @@ const CSS = `
   .qmr-hold span { display: none; }
   .qmr-hold { padding: 9px 12px; font-size: 17px; }
   .qmr-reactdock { bottom: 72px; }
+}
+
+/* ── Live captions ─────────────────────────────────────────────────────── */
+.qmr-ccbar { position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 130px; z-index: 27; width: min(920px, calc(100% - 32px));
+  background: rgba(8,10,14,.9); border: 1px solid #262b36; border-radius: 12px;
+  padding: 12px 56px 12px 16px; backdrop-filter: blur(10px);
+  box-shadow: 0 14px 40px rgba(0,0,0,.55); }
+/* Caption text is bigger than body text on purpose. It is being READ, at a
+   glance, by somebody who may not be hearing the words at all. */
+.qmr-ccbar p { margin: 0 0 4px; font-size: 17px; line-height: 1.45; color: #f2f5fa; }
+.qmr-ccbar p:last-of-type { margin-bottom: 0; }
+.qmr-ccdraft { color: #97a0b2 !important; }
+.qmr-ccwho { color: #00a99d; font-weight: 600; margin-right: 8px; }
+.qmr-cctoggle { position: absolute; top: 10px; right: 10px; font: inherit;
+  font-size: 12px; cursor: pointer; background: #1a1f2a; color: #9aa3b4;
+  border: 1px solid #2b3240; border-radius: 999px; padding: 4px 10px; }
+.qmr-cctoggle:hover { color: #e9edf5; }
+
+.qmr-cchist { position: absolute; right: 16px; bottom: 200px; z-index: 28;
+  width: min(420px, calc(100% - 32px)); max-height: min(52vh, 420px);
+  display: flex; flex-direction: column;
+  background: rgba(8,10,14,.96); border: 1px solid #262b36; border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(0,0,0,.6); }
+.qmr-cchead { display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid #21252f; font-size: 13px; }
+.qmr-cclist { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 14px; }
+.qmr-cclist p { margin: 0 0 9px; font-size: 14px; line-height: 1.5; color: #cfd6e4; }
+.qmr-ccat { color: #6f7789; font-variant-numeric: tabular-nums; margin-right: 8px;
+  font-size: 12px; }
+.qmr-ccnone { color: #8b93a5 !important; }
+.qmr-ccfine { margin: 0; padding: 10px 14px; border-top: 1px solid #21252f;
+  font-size: 11.5px; line-height: 1.5; color: #6f7789; }
+@media (max-width: 720px) {
+  .qmr-ccbar { bottom: 118px; padding: 10px 50px 10px 12px; }
+  .qmr-ccbar p { font-size: 15px; }
+  .qmr-cchist { right: 8px; left: 8px; width: auto; bottom: 186px; }
 }
 
 .qmr-fine { margin: 12px 0 0; font-size: 12px; color: #8b93a5; line-height: 1.5; }
