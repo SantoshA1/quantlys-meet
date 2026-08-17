@@ -131,6 +131,11 @@ export default function HostConsole() {
   const [laterGuests, setLaterGuests] = useState("");
   const [inviting, setInviting] = useState(false);
   const [inviteNote, setInviteNote] = useState("");
+  // Deleting asks once, in place. A browser confirm() is a modal the page
+  // can't style, can't explain and can't say what will actually be removed —
+  // and it trains people to click through warnings.
+  const [confirmDel, setConfirmDel] = useState("");
+  const [deleting, setDeleting] = useState("");
 
   useEffect(() => {
     db()
@@ -432,6 +437,44 @@ export default function HostConsole() {
     }
   }
 
+  // Deleting the whole thing — the row, its recordings, the files behind
+  // them and the action items that came out of it. Everything the server
+  // removes is named in the answer, because "deleted" with no detail is how
+  // people find out later that the video was still there.
+  async function deleteMeeting(room: string) {
+    setDeleting(room);
+    setInviteNote("");
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/meetings/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ room }),
+      });
+      const j = await r.json();
+      if (!r.ok || j?.error) {
+        setInviteNote(j?.error || "Couldn't delete that meeting.");
+      } else {
+        const bits = [
+          j.files_removed ? `${j.files_removed} recording file${j.files_removed === 1 ? "" : "s"}` : "",
+          j.action_items ? `${j.action_items} action item${j.action_items === 1 ? "" : "s"}` : "",
+        ].filter(Boolean);
+        setInviteNote(
+          `Deleted “${j.title || "that meeting"}”${bits.length ? ` — and ${bits.join(" and ")} with it.` : "."}`
+        );
+        setMine((xs) => xs.filter((m) => m.room_name !== room));
+        loadItems();
+      }
+    } catch {
+      setInviteNote("Couldn't reach the server to delete that.");
+    }
+    setDeleting("");
+    setConfirmDel("");
+  }
+
   async function endMeeting(id: string) {
     await db().from("meetings").update({ active: false, ended_at: new Date().toISOString() }).eq("id", id);
     loadMine();
@@ -653,8 +696,37 @@ export default function HostConsole() {
                         End
                       </button>
                     )}
+                    {confirmDel === m.room_name ? (
+                      <>
+                        <button
+                          className="qm-danger"
+                          disabled={deleting === m.room_name}
+                          onClick={() => deleteMeeting(m.room_name)}
+                        >
+                          {deleting === m.room_name ? "Deleting…" : "Yes, delete it"}
+                        </button>
+                        <button className="qm-ghost" onClick={() => setConfirmDel("")}>
+                          Keep it
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="qm-ghost qm-dellink"
+                        onClick={() => { setConfirmDel(m.room_name); setInviteNote(""); }}
+                        title="Delete this meeting, its recordings and its notes"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </span>
                 </div>
+
+                {confirmDel === m.room_name ? (
+                  <p className="qm-warn">
+                    This removes the meeting, its recording files and any action
+                    items that came out of it. There is no undo.
+                  </p>
+                ) : null}
 
                 {/* Inviting someone to a meeting that already exists — the case
                     that comes up most: one more person, the morning of. */}
@@ -829,6 +901,13 @@ const CSS = `
 .qm-itemwrap:last-child { border-bottom: 0; }
 .qm-itemwrap .qm-item { border-bottom: 0; }
 .qm-invite { padding: 0 0 16px; display: grid; gap: 10px; }
+.qm-danger { background: #4a1f24; color: #ffd7d7; border: 1px solid #7a2f38; }
+.qm-danger:hover { border-color: #a03c48; }
+.qm-dellink { color: #b9808a; border-color: #3a2a2e; }
+.qm-dellink:hover { color: #ffc9c9; border-color: #7a2f38; }
+.qm-warn { margin: 0 0 14px; font-size: 13px; color: #ffb4b4; line-height: 1.5;
+  background: #1d1216; border: 1px solid #4a2129; border-radius: 10px;
+  padding: 10px 12px; }
 .qm-head-row { display: flex; justify-content: space-between; align-items: center;
   gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .qm-head-row h2 { margin: 0; }

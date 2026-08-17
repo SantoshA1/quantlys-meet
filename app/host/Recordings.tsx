@@ -45,6 +45,11 @@ export default function Recordings({ userId }: { userId: string }) {
   const [note, setNote] = useState("Loading…");
   const [playing, setPlaying] = useState("");
   const [open, setOpen] = useState<Record<string, string>>({});
+  // The notes arrive as STRUCTURE now, not a wall of text, so they are held
+  // as the parsed object and rendered as sections. Re-parsing headings back
+  // out of a formatted string is how a summary loses its shape.
+  const [payload, setPayload] = useState<Record<string, any>>({});
+  const [tab, setTab] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const rooms = await db().storage.from("recordings").list(userId, { limit: 100 });
@@ -118,22 +123,9 @@ export default function Recordings({ userId }: { userId: string }) {
     }
     try {
       const j = JSON.parse(await data.text());
-      // FIELD 2026-08-17 — "No summary was produced for this one" is a fact
-      // with no cause attached, which is the same as no answer. The finish
-      // route now records WHY each step did or didn't happen, and it travels
-      // with the recording, so the reason is still here weeks later.
-      const steps: Array<{ ok: boolean; label: string; detail: string }> = j.steps || [];
-      const failed = steps.filter((x) => !x.ok);
-      const body = j.summary || j.transcript || "";
-      const why = failed.length
-        ? (body ? "\n\n" : "") +
-          "What didn't happen, and why:\n" +
-          failed.map((f) => `· ${f.label} — ${f.detail}`).join("\n")
-        : "";
-      setOpen((o) => ({
-        ...o,
-        [rec.path]: (body || (why ? "" : "No summary was produced for this one.")) + why,
-      }));
+      setPayload((p) => ({ ...p, [rec.path]: j }));
+      setTab((t) => ({ ...t, [rec.path]: t[rec.path] || "summary" }));
+      setOpen((o) => ({ ...o, [rec.path]: "open" }));
     } catch {
       setNote("That summary file could not be read.");
     }
@@ -181,14 +173,200 @@ export default function Recordings({ userId }: { userId: string }) {
               <button className="qm-ghost" onClick={() => remove(r)}>Delete</button>
             </span>
           </div>
-          {open[r.path] ? <p className="qm-summary">{open[r.path]}</p> : null}
+          {open[r.path] ? (
+            <NotesPanel
+              data={payload[r.path]}
+              tab={tab[r.path] || "summary"}
+              onTab={(t) => setTab((x) => ({ ...x, [r.path]: t }))}
+            />
+          ) : null}
         </div>
       ))}
-      <style>{`
-        .qm-summary { background:#10131a; border:1px solid #262b36; border-radius:10px;
-          padding:14px 16px; margin:0 0 14px; color:#cfd6e4; font-size:14px;
-          white-space:pre-wrap; }
-      `}</style>
+      <style>{NOTES_CSS}</style>
     </section>
   );
 }
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// The notes, as a person reads them.
+//
+// Three tabs because there are three different reasons to open this. "What
+// happened" is the summary. "Did they really say that" is the transcript.
+// "What do I owe" is the action items — and that one is why anybody comes
+// back a second time, so it carries its own count on the tab.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** `**Paddle**` → bold, after escaping. Split rather than regex-replaced into
+ *  HTML so nothing from a transcript is ever handed to dangerouslySetInnerHTML. */
+function Rich({ text }: { text: string }) {
+  const parts = String(text || "").split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.startsWith("**") && p.endsWith("**") && p.length > 4 ? (
+          <strong key={i}>{p.slice(2, -2)}</strong>
+        ) : (
+          <span key={i}>{p}</span>
+        )
+      )}
+    </>
+  );
+}
+
+function Bullets({ items }: { items: string[] }) {
+  return (
+    <ul className="qm-nlist">
+      {items.map((t, i) => (
+        <li key={i}><Rich text={t} /></li>
+      ))}
+    </ul>
+  );
+}
+
+function NotesPanel({
+  data, tab, onTab,
+}: { data: any; tab: string; onTab: (t: string) => void }) {
+  if (!data) return <div className="qm-notes qm-nmuted">Opening the notes…</div>;
+
+  const n = data.notes || {};
+  const topics: Array<{ title: string; points: string[] }> = n.topics || data.topics || [];
+  const actions: string[] = n.actions || data.actions || [];
+  const decisions: string[] = n.decisions || data.decisions || [];
+  const followups: string[] = n.followups || data.followups || [];
+  const overview: string = n.overview || data.summaryText || "";
+  const transcript: string = data.transcript || "";
+  const steps: Array<{ ok: boolean; label: string; detail: string }> = data.steps || [];
+  const failed = steps.filter((x) => !x.ok);
+
+  // Nothing was produced. Say WHY — the finish route recorded the reason for
+  // every step and it travels with the recording, so it is still here weeks
+  // later when somebody finally asks.
+  const empty = !overview && !topics.length && !actions.length && !transcript;
+
+  const TABS: Array<[string, string]> = [
+    ["summary", "Summary"],
+    ["actions", actions.length ? `Action items · ${actions.length}` : "Action items"],
+    ["transcript", "Transcript"],
+  ];
+
+  return (
+    <div className="qm-notes">
+      {data.title ? <h3 className="qm-ntitle">{data.title}</h3> : null}
+
+      <div className="qm-ntabs" role="tablist">
+        {TABS.map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            className={`qm-ntab${tab === key ? " qm-non" : ""}`}
+            onClick={() => onTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {failed.length ? (
+        <div className="qm-nwhy">
+          <b>What didn&apos;t happen, and why</b>
+          {failed.map((f, i) => (
+            <p key={i}>
+              <em>{f.label}</em> — {f.detail}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      {empty && !failed.length ? (
+        <p className="qm-nmuted">No notes were produced for this one.</p>
+      ) : null}
+
+      {tab === "summary" ? (
+        <>
+          {overview ? <p className="qm-nover"><Rich text={overview} /></p> : null}
+          {topics.length ? (
+            <>
+              <div className="qm-nhead">What was discussed</div>
+              {topics.map((t, i) => (
+                <div className="qm-ntopic" key={i}>
+                  <div className="qm-ntopich">
+                    {i + 1}) <Rich text={t.title} />
+                  </div>
+                  <Bullets items={t.points || []} />
+                </div>
+              ))}
+            </>
+          ) : null}
+          {decisions.length ? (
+            <>
+              <div className="qm-nhead">Decisions and direction</div>
+              <Bullets items={decisions} />
+            </>
+          ) : null}
+          {followups.length ? (
+            <>
+              <div className="qm-nhead">Follow-up / next steps</div>
+              <Bullets items={followups} />
+            </>
+          ) : null}
+        </>
+      ) : null}
+
+      {tab === "actions" ? (
+        actions.length ? (
+          <>
+            <div className="qm-nhead">Action items</div>
+            <Bullets items={actions} />
+            <p className="qm-nfine">
+              These are also on your host page under “Still open”, where you can
+              tick them off. Anything you don&apos;t tick comes back on Monday.
+            </p>
+          </>
+        ) : (
+          <p className="qm-nmuted">Nothing was committed to out loud in this one.</p>
+        )
+      ) : null}
+
+      {tab === "transcript" ? (
+        transcript ? (
+          <pre className="qm-ntranscript">{transcript}</pre>
+        ) : (
+          <p className="qm-nmuted">There is no transcript for this recording.</p>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+const NOTES_CSS = `
+.qm-notes { background:#10131a; border:1px solid #262b36; border-radius:12px;
+  padding:16px 18px; margin:0 0 14px; color:#cfd6e4; font-size:14px; }
+.qm-ntitle { margin:0 0 12px; font-size:17px; color:#e9edf5; line-height:1.35; }
+.qm-ntabs { display:flex; gap:6px; margin:0 0 16px; flex-wrap:wrap;
+  border-bottom:1px solid #262b36; padding-bottom:10px; }
+.qm-ntab { font:inherit; font-size:13px; cursor:pointer; background:transparent;
+  color:#8b93a5; border:1px solid transparent; border-radius:8px; padding:6px 12px; }
+.qm-ntab:hover { color:#cfd6e4; background:#171b24; }
+.qm-non { background:#0d3d39; color:#7fe0d6; border-color:#00a99d; }
+.qm-nover { margin:0 0 6px; font-size:15px; line-height:1.65; color:#dbe2ee; }
+.qm-nhead { font-size:11.5px; letter-spacing:.08em; text-transform:uppercase;
+  color:#00a99d; font-weight:700; margin:26px 0 10px; }
+.qm-ntopic { margin:0 0 16px; }
+.qm-ntopich { font-size:14.5px; font-weight:600; color:#e9edf5; margin:0 0 5px; }
+.qm-nlist { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
+.qm-nlist li { line-height:1.55; color:#cfd6e4; }
+.qm-nlist strong { color:#e9edf5; font-weight:600; }
+.qm-nmuted { color:#8b93a5; margin:0; }
+.qm-nfine { color:#6f7789; font-size:12.5px; margin:14px 0 0; line-height:1.55; }
+.qm-nwhy { background:#1d1a12; border:1px solid #4a4021; border-radius:10px;
+  padding:11px 13px; margin:0 0 16px; font-size:13px; color:#f0d9a6; }
+.qm-nwhy b { display:block; margin:0 0 6px; }
+.qm-nwhy p { margin:0 0 5px; line-height:1.5; }
+.qm-nwhy em { font-style:normal; color:#ffe6b3; }
+.qm-ntranscript { white-space:pre-wrap; word-break:break-word; margin:0;
+  font:13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color:#b8c0cf;
+  max-height:420px; overflow:auto; background:#0b0e14; border:1px solid #21252f;
+  border-radius:10px; padding:14px; }
+`;
