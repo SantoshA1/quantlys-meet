@@ -152,12 +152,35 @@ const esc = (t: string) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
-/** Local-time-agnostic on purpose: the reader's own calendar app converts the
- *  .ics. What the BODY prints is UTC plus the name of the day, so a person
- *  skimming on a phone can sanity-check it without doing arithmetic. */
-export function whenLabel(startISO: string): string {
+/** FIELD 2026-08-17, from the first invitation anyone actually received: the
+ *  body read "Tue, 18 Aug 2026 20:04 UTC" for a meeting the host had set at
+ *  4:04 in the afternoon. Correct, and useless — a person skimming on a phone
+ *  now has to know their own offset and do the subtraction, and the commonest
+ *  outcome of asking someone to do arithmetic about a time is that they get
+ *  it wrong and miss it.
+ *
+ *  The .ics still carries UTC, because that is the form every calendar app
+ *  converts without argument. What the BODY prints is the time in the zone the
+ *  meeting was ARRANGED in, named, so the reader can see at a glance whether
+ *  it's their morning or their night. Falls back to UTC when the host's zone
+ *  isn't known — never to a guess. */
+export function whenLabel(startISO: string, tz?: string): string {
   const d = new Date(startISO);
   if (isNaN(d.getTime())) return "";
+  if (tz) {
+    try {
+      const shown = d.toLocaleString("en-US", {
+        timeZone: tz, weekday: "short", day: "numeric", month: "short",
+        year: "numeric", hour: "numeric", minute: "2-digit",
+      });
+      const zone =
+        new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" })
+          .formatToParts(d).find((p) => p.type === "timeZoneName")?.value || tz;
+      return `${shown} ${zone}`;
+    } catch {
+      /* an unknown zone name must not cost the invitation its date */
+    }
+  }
   return d.toUTCString().replace(/:\d\d GMT$/, " UTC");
 }
 
@@ -168,8 +191,9 @@ export function inviteHtml(o: {
   organizer: string;
   note?: string;
   cancelled?: boolean;
+  tz?: string;
 }): string {
-  const when = whenLabel(o.startISO);
+  const when = whenLabel(o.startISO, o.tz);
   const head = o.cancelled ? "This meeting was cancelled" : "You're invited";
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#0b0d13;color:#e9edf5;padding:30px;max-width:560px;margin:0 auto">
   <div style="font-size:13px;color:#8b93a5;margin:0 0 4px">Quantlys Meeting</div>
@@ -179,7 +203,7 @@ export function inviteHtml(o: {
     <tr><td style="padding:16px 18px">
       <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#8b93a5;font-weight:700;margin:0 0 6px">When</div>
       <div style="font-size:16px;color:#e9edf5;margin:0 0 2px">${esc(when)}</div>
-      <div style="font-size:12px;color:#8b93a5">Your calendar shows this in your own time zone — the invite is attached.</div>
+      <div style="font-size:12px;color:#8b93a5">${o.tz ? "That's the host's time zone. Your" : "Your"} calendar shows this in your own — the invite is attached.</div>
     </td></tr>
   </table>
   ${o.note ? `<p style="font-size:15px;line-height:1.6;color:#cfd6e4;margin:0 0 22px">${esc(o.note)}</p>` : ""}
@@ -207,12 +231,13 @@ export function inviteText(o: {
   organizer: string;
   note?: string;
   cancelled?: boolean;
+  tz?: string;
 }): string {
   return [
     o.cancelled ? "CANCELLED" : "You're invited",
     "",
     `${o.organizer} invited you to ${o.title}.`,
-    `When: ${whenLabel(o.startISO)} (your calendar will show your own time zone)`,
+    `When: ${whenLabel(o.startISO, o.tz)} (your calendar will show your own time zone)`,
     o.note ? `\n${o.note}` : "",
     o.cancelled ? "" : `\nJoin: ${o.link}`,
     o.cancelled ? "" : "No account, no download — it opens in your browser.",
@@ -224,10 +249,41 @@ export function inviteText(o: {
 }
 
 /** One subject line both paths agree on, so a re-send threads with the first. */
-export function inviteSubject(title: string, startISO: string, cancelled = false): string {
+export function inviteSubject(title: string, startISO: string, cancelled = false, tz?: string): string {
   const d = new Date(startISO);
-  const day = isNaN(d.getTime())
-    ? ""
-    : ` · ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
+  let day = "";
+  if (!isNaN(d.getTime())) {
+    try {
+      day = ` · ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: tz || "UTC" })}`;
+    } catch {
+      day = ` · ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
+    }
+  }
   return `${cancelled ? "Cancelled: " : "Invitation: "}${title}${day}`;
+}
+
+
+// ── who the invitation appears to be from ─────────────────────────────────
+//
+// FIELD 2026-08-17: the first invitation anyone received arrived as
+// "Quantlys Meeting <meetings@agilityserv.com> on behalf of admin@…" — a mail
+// client telling the truth in the least reassuring way available. We cannot
+// send AS the host: that is a forged From, and SPF/DKIM would either fail it
+// or land it in spam, which is a worse outcome than an odd-looking name.
+//
+// What we CAN do is put the host where a person looks. "Santosh Adari (via
+// Quantlys Meeting)" is what an invitation from a service is supposed to read
+// like, and it is what every calendar product does.
+export function senderLabel(hostEmail: string, configuredFrom?: string): string {
+  const configured = configuredFrom || "Quantlys Meeting <onboarding@resend.dev>";
+  const m = /<([^>]+)>/.exec(configured);
+  const address = (m ? m[1] : configured).trim();
+  if (!address.includes("@")) return configured;
+  const who = String(hostEmail || "").split("@")[0].replace(/[._-]+/g, " ").trim();
+  if (!who) return `Quantlys Meeting <${address}>`;
+  const name = who.replace(/\b\w/g, (c) => c.toUpperCase());
+  // A quote or an angle bracket in a display name splits the header in two and
+  // the send is refused — strip them rather than let one odd address break
+  // every invitation that person sends.
+  return `${name.replace(/["<>,;]/g, "")} (via Quantlys Meeting) <${address}>`;
 }
