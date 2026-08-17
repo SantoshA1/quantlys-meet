@@ -6,19 +6,16 @@ import { createClient } from "@supabase/supabase-js";
 import type { Step } from "@/lib/notes-health";
 import { checkTranscribe, checkNotes, checkEmail, headline } from "@/lib/notes-health";
 import { pickActionItems } from "@/lib/digest";
+import type { Notes } from "@/lib/notes";
+import {
+  EMPTY as EMPTY_NOTES, notesPrompt, parseNotes, notesHtml, notesText, notesSubject,
+} from "@/lib/notes";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const SUMMARY_SUFFIX = ".summary.json";
 
-type Notes = {
-  summary: string;
-  actions: string[];
-  decisions: string[];
-  topics: string[];
-  transcript: string;
-};
 
 function admin() {
   return createClient(
@@ -113,7 +110,7 @@ function extract(dg: any): { actions: string[]; decisions: string[]; marks: Mark
 // Only runs when a key exists. Its output REPLACES the extraction above; if
 // anything goes wrong the extraction is still there, so notes never vanish.
 
-async function refine(transcript: string, base: Notes): Promise<Notes> {
+async function refine(transcript: string, base: Notes, hint: string): Promise<Notes> {
   const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   if (!key || transcript.length < 200) return base;
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY);
@@ -123,42 +120,22 @@ async function refine(transcript: string, base: Notes): Promise<Notes> {
   const model = openrouter
     ? process.env.NOTES_MODEL || "anthropic/claude-3.5-sonnet"
     : process.env.NOTES_MODEL || "gpt-4o-mini";
-  const prompt =
-    "You are taking notes for the people who were in this meeting. From the " +
-    "transcript below, return STRICT JSON with exactly these keys: " +
-    '{"summary": string, "actions": string[], "decisions": string[]}. ' +
-    "summary: 3-5 sentences, plain language, what was discussed and where it " +
-    "landed. actions: each item is one line, starting with who owns it if the " +
-    "transcript says, then what they will do, then when if a date was said. " +
-    "decisions: things that were settled, one line each. If there were no " +
-    "actions or no decisions, return an empty array — never invent one. " +
-    "Return JSON only, no prose.\n\nTRANSCRIPT:\n" +
-    transcript.slice(0, 60000);
   try {
     const r = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        messages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: notesPrompt(transcript, hint) }],
         temperature: 0.2,
+        max_tokens: 4000,
       }),
     });
     if (!r.ok) return base;
     const j: any = await r.json();
-    const raw = String(j?.choices?.[0]?.message?.content || "");
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start < 0 || end <= start) return base;
-    const parsed = JSON.parse(raw.slice(start, end + 1));
-    return {
-      ...base,
-      summary: String(parsed.summary || base.summary),
-      actions: Array.isArray(parsed.actions) ? parsed.actions.map(String) : base.actions,
-      decisions: Array.isArray(parsed.decisions)
-        ? parsed.decisions.map(String)
-        : base.decisions,
-    };
+    // parseNotes never throws and never returns less than it was given: a
+    // model that answers with an apology leaves the extracted notes intact.
+    return parseNotes(String(j?.choices?.[0]?.message?.content || ""), base);
   } catch {
     return base;
   }
@@ -166,47 +143,8 @@ async function refine(transcript: string, base: Notes): Promise<Notes> {
 
 // ---- Rendering ------------------------------------------------------------
 
-function asText(room: string, n: Notes) {
-  const lines = [`MEETING NOTES — ${room}`, ""];
-  if (n.summary) lines.push("SUMMARY", n.summary, "");
-  lines.push("ACTION ITEMS");
-  lines.push(...(n.actions.length ? n.actions.map((a) => `• ${a}`) : ["• None were captured."]));
-  lines.push("");
-  if (n.decisions.length) lines.push("DECISIONS", ...n.decisions.map((d) => `• ${d}`), "");
-  if (n.topics.length) lines.push("TOPICS", n.topics.join(", "), "");
-  return lines.join("\n");
-}
-
-function esc(s: string) {
-  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
-}
-
-function asHtml(room: string, n: Notes, link: string) {
-  const list = (items: string[]) =>
-    items.length
-      ? `<ul style="margin:0 0 18px;padding-left:20px">${items
-          .map((i) => `<li style="margin:0 0 6px">${esc(i)}</li>`)
-          .join("")}</ul>`
-      : `<p style="color:#5b6478;margin:0 0 18px">None were captured.</p>`;
-  return `
-  <div style="font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;color:#1c2230;max-width:640px">
-    <h2 style="margin:0 0 2px">Meeting notes</h2>
-    <p style="color:#5b6478;margin:0 0 22px">${esc(room)}</p>
-    ${n.summary ? `<h3 style="margin:0 0 6px">Summary</h3><p style="margin:0 0 18px">${esc(n.summary)}</p>` : ""}
-    <h3 style="margin:0 0 6px">Action items</h3>
-    ${list(n.actions)}
-    ${n.decisions.length ? `<h3 style="margin:0 0 6px">Decisions</h3>${list(n.decisions)}` : ""}
-    ${n.topics.length ? `<p style="color:#5b6478;margin:0 0 18px"><strong>Topics:</strong> ${esc(n.topics.join(", "))}</p>` : ""}
-    ${
-      link
-        ? `<p style="margin:24px 0"><a href="${link}" style="background:#00a99d;color:#06110f;
-             padding:11px 18px;border-radius:10px;text-decoration:none;font-weight:600">
-             Watch or download the recording</a></p>
-           <p style="color:#8b93a5;font-size:13px">This link works for 7 days. The recording and
-           these notes are also on your host page.</p>`
-        : ""
-    }
-  </div>`;
+function esc(x: string) {
+  return String(x).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
 }
 
 async function email(to: string, subject: string, html: string): Promise<boolean> {
@@ -261,7 +199,7 @@ export async function POST(req: Request) {
   const say = (key: Step["key"], label: string, ok: boolean, detail: string) =>
     steps.push({ key, label, ok, detail });
 
-  let notes: Notes = { summary: "", actions: [], decisions: [], topics: [], transcript: "" };
+  let notes: Notes = { ...EMPTY_NOTES };
   let marks: Marked[] = [];
   let heard = false;
   try {
@@ -282,13 +220,19 @@ export async function POST(req: Request) {
     if (dg) {
       const alt = dg?.results?.channels?.[0]?.alternatives?.[0];
       notes.transcript = alt?.paragraphs?.transcript || alt?.transcript || "";
-      notes.summary = dg?.results?.summary?.short || "";
+      notes.overview = dg?.results?.summary?.short || "";
+      // Deepgram's own topic labels are one or two words ("billing",
+      // "hiring"). Useful as a fallback heading, useless as notes — so they
+      // become a single topic block only if the model never runs.
       const segs: any[] = dg?.results?.topics?.segments || [];
-      notes.topics = Array.from(
+      const labels = Array.from(
         new Set(segs.flatMap((s) => (s?.topics || []).map((t: any) => String(t?.topic || ""))))
-      )
-        .filter(Boolean)
-        .slice(0, 8);
+      ).filter(Boolean).slice(0, 8);
+      notes.speakers = Array.from(
+        new Set((dg?.results?.utterances || []).map((u: any) =>
+          typeof u?.speaker === "number" ? `Speaker ${u.speaker + 1}` : ""))
+      ).filter(Boolean) as string[];
+      if (labels.length) notes.topics = [{ title: "Mentioned", points: labels }];
       const found = extract(dg);
       notes.actions = found.actions;
       notes.decisions = found.decisions;
@@ -298,14 +242,14 @@ export async function POST(req: Request) {
           heard
             ? `Transcribed ${notes.transcript.split(/\s+/).filter(Boolean).length} words.`
             : "Deepgram ran but heard no words — usually silence or a muted microphone.");
-      const before = JSON.stringify([notes.summary, notes.actions, notes.decisions]);
-      notes = await refine(notes.transcript, notes);
-      const changed = JSON.stringify([notes.summary, notes.actions, notes.decisions]) !== before;
+      const before = JSON.stringify([notes.overview, notes.topics, notes.actions, notes.decisions]);
+      notes = await refine(notes.transcript, notes, String(body.title || ""));
+      const changed = JSON.stringify([notes.overview, notes.topics, notes.actions, notes.decisions]) !== before;
       if (heard) {
         const why = changed ? null : await checkNotes();
         say("notes", "Write the summary and action items", true,
             changed
-              ? `A model wrote these notes — ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`
+              ? `A model wrote these notes — ${notes.topics.length} topic(s), ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`
               : `${why?.detail || "Written by reading the transcript directly."} Found ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`);
       }
     }
@@ -325,10 +269,15 @@ export async function POST(req: Request) {
     videoPath,
     audioPath: audioPath || null,
     // The host page shows this field, so it carries the whole set of notes.
-    summary: asText(room, notes),
-    summaryText: notes.summary,
+    summary: notesText(notes),
+    // …and the STRUCTURE travels beside it, so the notes page can render
+    // sections rather than re-parsing a wall of text back into headings.
+    notes,
+    title: notes.title,
+    summaryText: notes.overview,
     actions: notes.actions,
     decisions: notes.decisions,
+    followups: notes.followups,
     topics: notes.topics,
     transcript: notes.transcript,
     createdAt: new Date().toISOString(),
@@ -402,8 +351,15 @@ export async function POST(req: Request) {
   try {
     const ok = await email(
       user.email || "",
-      `Meeting notes — ${room}`,
-      asHtml(room, notes, link)
+      notesSubject(notes, room),
+      notesHtml(notes, {
+        room,
+        watchUrl: link,
+        appUrl: process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "",
+        when: new Date().toLocaleDateString("en-US", {
+          weekday: "short", day: "numeric", month: "short", year: "numeric",
+        }),
+      })
     );
     emailed = ok ? user.email || "" : false;
     if (ok) {
@@ -437,9 +393,11 @@ export async function POST(req: Request) {
 
   return Response.json({
     ok: true,
-    summary: notes.summary,
+    title: notes.title,
+    summary: notes.overview,
     actions: notes.actions.length,
     decisions: notes.decisions.length,
+    topics: notes.topics.length,
     hasTranscript: Boolean(notes.transcript),
     emailed,
     steps,
