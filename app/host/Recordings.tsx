@@ -1,6 +1,7 @@
 "use client";
 
-// A recording you cannot find is not a recording. This is where they live.
+// A recording you cannot find is not a recording. This is where they live —
+// with the summary that was written after the meeting.
 
 import { useCallback, useEffect, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -16,7 +17,18 @@ function db(): SupabaseClient {
   return _db;
 }
 
-type Rec = { path: string; room: string; when: string; size: number };
+type Rec = {
+  path: string;
+  room: string;
+  when: string;
+  size: number;
+  audioPath?: string;
+  summaryPath?: string;
+};
+
+const VIDEO_EXT = /\.(mp4|webm)$/i;
+const AUDIO_EXT = /\.(m4a|audio\.webm)$/i;
+const SUMMARY_EXT = /\.summary\.json$/i;
 
 function pretty(bytes: number) {
   if (!bytes) return "";
@@ -24,10 +36,15 @@ function pretty(bytes: number) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
 }
 
+function stem(name: string) {
+  return name.replace(SUMMARY_EXT, "").replace(AUDIO_EXT, "").replace(VIDEO_EXT, "");
+}
+
 export default function Recordings({ userId }: { userId: string }) {
   const [items, setItems] = useState<Rec[]>([]);
   const [note, setNote] = useState("Loading…");
   const [playing, setPlaying] = useState("");
+  const [open, setOpen] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const rooms = await db().storage.from("recordings").list(userId, { limit: 100 });
@@ -37,18 +54,26 @@ export default function Recordings({ userId }: { userId: string }) {
     }
     const out: Rec[] = [];
     for (const folder of rooms.data ?? []) {
-      if (folder.id) continue; // a file at the top level, not a meeting folder
+      if (folder.id) continue; // a stray file at the top level, not a meeting folder
       const files = await db()
         .storage.from("recordings")
-        .list(`${userId}/${folder.name}`, { limit: 100, sortBy: { column: "name", order: "desc" } });
+        .list(`${userId}/${folder.name}`, { limit: 200 });
+      const byStem = new Map<string, Rec>();
       for (const f of files.data ?? []) {
-        out.push({
-          path: `${userId}/${folder.name}/${f.name}`,
-          room: folder.name,
-          when: (f.created_at || f.name.replace(/\.webm$/, "")).replace("T", " ").slice(0, 16),
-          size: (f.metadata as any)?.size ?? 0,
-        });
+        const key = stem(f.name);
+        const rec =
+          byStem.get(key) ||
+          ({ path: "", room: folder.name, when: key.replace("T", " ").slice(0, 16), size: 0 } as Rec);
+        const full = `${userId}/${folder.name}/${f.name}`;
+        if (SUMMARY_EXT.test(f.name)) rec.summaryPath = full;
+        else if (AUDIO_EXT.test(f.name)) rec.audioPath = full;
+        else if (VIDEO_EXT.test(f.name)) {
+          rec.path = full;
+          rec.size = (f.metadata as any)?.size ?? 0;
+        }
+        byStem.set(key, rec);
       }
+      byStem.forEach((r) => r.path && out.push(r));
     }
     out.sort((a, b) => (a.when < b.when ? 1 : -1));
     setItems(out);
@@ -59,28 +84,52 @@ export default function Recordings({ userId }: { userId: string }) {
     load();
   }, [load]);
 
+  async function signed(path: string, seconds: number, download = false) {
+    const { data, error } = await db()
+      .storage.from("recordings")
+      .createSignedUrl(path, seconds, download ? { download: true } : undefined);
+    if (error || !data) {
+      setNote(`Could not open that file: ${error?.message}`);
+      return "";
+    }
+    return data.signedUrl;
+  }
+
   async function play(path: string) {
-    const { data, error } = await db().storage.from("recordings").createSignedUrl(path, 3600);
-    if (error || !data) {
-      setNote(`Could not open that recording: ${error?.message}`);
-      return;
-    }
-    setPlaying(data.signedUrl);
+    const u = await signed(path, 3600);
+    if (u) setPlaying(u);
   }
 
-  async function download(path: string) {
-    const { data, error } = await db().storage.from("recordings").createSignedUrl(path, 300, {
-      download: true,
-    });
-    if (error || !data) {
-      setNote(`Could not prepare the download: ${error?.message}`);
-      return;
-    }
-    window.location.href = data.signedUrl;
+  async function get(path: string) {
+    const u = await signed(path, 300, true);
+    if (u) window.location.href = u;
   }
 
-  async function remove(path: string) {
-    const { error } = await db().storage.from("recordings").remove([path]);
+  async function showSummary(rec: Rec) {
+    if (!rec.summaryPath) return;
+    if (open[rec.path]) {
+      setOpen((o) => ({ ...o, [rec.path]: "" }));
+      return;
+    }
+    const { data, error } = await db().storage.from("recordings").download(rec.summaryPath);
+    if (error || !data) {
+      setNote(`Could not read the summary: ${error?.message}`);
+      return;
+    }
+    try {
+      const j = JSON.parse(await data.text());
+      setOpen((o) => ({
+        ...o,
+        [rec.path]: j.summary || j.transcript || "No summary was produced for this one.",
+      }));
+    } catch {
+      setNote("That summary file could not be read.");
+    }
+  }
+
+  async function remove(rec: Rec) {
+    const paths = [rec.path, rec.audioPath, rec.summaryPath].filter(Boolean) as string[];
+    const { error } = await db().storage.from("recordings").remove(paths);
     if (error) {
       setNote(`Could not delete: ${error.message}`);
       return;
@@ -93,21 +142,41 @@ export default function Recordings({ userId }: { userId: string }) {
     <section className="qm-card">
       <h2>Recordings</h2>
       {note ? <p className="qm-muted">{note}</p> : null}
-      {playing ? (
-        <video className="qm-player" src={playing} controls autoPlay playsInline />
-      ) : null}
+      {playing ? <video className="qm-player" src={playing} controls autoPlay playsInline /> : null}
       {items.map((r) => (
-        <div className="qm-item" key={r.path}>
-          <span className="qm-name">
-            {r.when} <span className="qm-ended"> · {r.room}{r.size ? ` · ${pretty(r.size)}` : ""}</span>
-          </span>
-          <span className="qm-row">
-            <button className="qm-ghost" onClick={() => play(r.path)}>Play</button>
-            <button className="qm-ghost" onClick={() => download(r.path)}>Download</button>
-            <button className="qm-ghost" onClick={() => remove(r.path)}>Delete</button>
-          </span>
+        <div key={r.path}>
+          <div className="qm-item">
+            <span className="qm-name">
+              {r.when}
+              <span className="qm-ended">
+                {" · "}
+                {r.room}
+                {r.size ? ` · ${pretty(r.size)}` : ""}
+                {r.path.endsWith(".webm") ? " · WebM (opens in Chrome)" : ""}
+              </span>
+            </span>
+            <span className="qm-row">
+              <button className="qm-ghost" onClick={() => play(r.path)}>Play</button>
+              <button className="qm-ghost" onClick={() => get(r.path)}>Download</button>
+              {r.audioPath ? (
+                <button className="qm-ghost" onClick={() => get(r.audioPath!)}>Audio only</button>
+              ) : null}
+              {r.summaryPath ? (
+                <button className="qm-ghost" onClick={() => showSummary(r)}>
+                  {open[r.path] ? "Hide summary" : "Summary"}
+                </button>
+              ) : null}
+              <button className="qm-ghost" onClick={() => remove(r)}>Delete</button>
+            </span>
+          </div>
+          {open[r.path] ? <p className="qm-summary">{open[r.path]}</p> : null}
         </div>
       ))}
+      <style>{`
+        .qm-summary { background:#10131a; border:1px solid #262b36; border-radius:10px;
+          padding:14px 16px; margin:0 0 14px; color:#cfd6e4; font-size:14px;
+          white-space:pre-wrap; }
+      `}</style>
     </section>
   );
 }

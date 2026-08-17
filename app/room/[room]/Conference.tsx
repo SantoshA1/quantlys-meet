@@ -27,6 +27,37 @@ function db(): SupabaseClient {
   return _db;
 }
 
+// A file people can OPEN. MP4/H.264 plays in QuickTime, Windows, iOS and
+// Android without installing anything; WebM/VP9 plays in Chrome and looks
+// broken everywhere else. Prefer MP4 and only fall back when the browser
+// genuinely cannot make one.
+const VIDEO_FORMATS: Array<[string, string]> = [
+  ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "mp4"],
+  ["video/mp4", "mp4"],
+  ["video/webm;codecs=vp9,opus", "webm"],
+  ["video/webm", "webm"],
+];
+// The audio-only copy: small enough to share and to transcribe. M4A/AAC is
+// the universally-openable audio container browsers can actually produce —
+// MediaRecorder has no MP3 encoder in any browser.
+const AUDIO_FORMATS: Array<[string, string]> = [
+  ["audio/mp4;codecs=mp4a.40.2", "m4a"],
+  ["audio/mp4", "m4a"],
+  ["audio/webm;codecs=opus", "webm"],
+  ["audio/webm", "webm"],
+];
+
+function pick(formats: Array<[string, string]>): [string, string] | null {
+  for (const [mime, ext] of formats) {
+    try {
+      if (MediaRecorder.isTypeSupported(mime)) return [mime, ext];
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null;
+}
+
 export default function Conference({ room }: { room: string }) {
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
@@ -89,14 +120,7 @@ export default function Conference({ room }: { room: string }) {
   return (
     <div className="qmr-stage" data-lk-theme="default">
       <style>{CSS}</style>
-      <LiveKitRoom
-        token={token}
-        serverUrl={url}
-        connect
-        video
-        audio
-        style={{ height: "100%" }}
-      >
+      <LiveKitRoom token={token} serverUrl={url} connect video audio style={{ height: "100%" }}>
         <RoomHeader room={room} />
         <div className="qmr-conf">
           <VideoConference />
@@ -121,11 +145,16 @@ function RoomHeader({ room }: { room: string }) {
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<{ kind: "ok" | "err" | "busy"; text: string } | null>(null);
 
-  const recorder = useRef<MediaRecorder | null>(null);
-  const chunks = useRef<BlobPart[]>([]);
+  const vRec = useRef<MediaRecorder | null>(null);
+  const aRec = useRef<MediaRecorder | null>(null);
+  const vChunks = useRef<BlobPart[]>([]);
+  const aChunks = useRef<BlobPart[]>([]);
+  const vExt = useRef("mp4");
+  const aExt = useRef("m4a");
   const raf = useRef<number | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
   const ticker = useRef<any>(null);
+  const stopping = useRef(0);
 
   useEffect(() => {
     db()
@@ -133,7 +162,6 @@ function RoomHeader({ room }: { room: string }) {
       .then(({ data }) => setSignedIn(data.session?.user?.id ?? null));
   }, []);
 
-  // Never let a half-saved recording die because someone closed the tab.
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
       if (status?.kind === "busy") {
@@ -162,8 +190,6 @@ function RoomHeader({ room }: { room: string }) {
     }
   }
 
-  // ---- recording the MEETING, not the screen ----------------------------
-
   function liveVideos(): HTMLVideoElement[] {
     return Array.from(document.querySelectorAll("video")).filter(
       (v) => v.videoWidth > 0 && v.videoHeight > 0 && !v.paused
@@ -176,7 +202,6 @@ function RoomHeader({ room }: { room: string }) {
     if (ac.state === "suspended") ac.resume().catch(() => {});
     const dest = ac.createMediaStreamDestination();
 
-    // Everyone else, as the browser is already playing them.
     Array.from(document.querySelectorAll("audio")).forEach((el) => {
       const a = el as HTMLAudioElement;
       try {
@@ -192,7 +217,6 @@ function RoomHeader({ room }: { room: string }) {
       }
     });
 
-    // Yourself — you never hear your own mic, so it is not in the DOM.
     try {
       const pub = ctx.localParticipant.getTrackPublication(Track.Source.Microphone);
       const mst = pub?.track?.mediaStreamTrack;
@@ -206,6 +230,14 @@ function RoomHeader({ room }: { room: string }) {
   function startRecording() {
     if (!signedIn || recording) return;
     setStatus(null);
+
+    const vf = pick(VIDEO_FORMATS);
+    const af = pick(AUDIO_FORMATS);
+    if (!vf) {
+      setStatus({ kind: "err", text: "This browser can't record video. Try Chrome." });
+      return;
+    }
+    vExt.current = vf[1];
 
     const canvas = document.createElement("canvas");
     canvas.width = 1280;
@@ -228,7 +260,6 @@ function RoomHeader({ room }: { room: string }) {
       vids.forEach((v, i) => {
         const cx = (i % cols) * cw;
         const cy = Math.floor(i / cols) * ch;
-        // contain, preserving aspect ratio
         const scale = Math.min(cw / v.videoWidth, ch / v.videoHeight);
         const w = v.videoWidth * scale;
         const h = v.videoHeight * scale;
@@ -242,68 +273,139 @@ function RoomHeader({ room }: { room: string }) {
     };
     draw();
 
-    const stream = new MediaStream([
+    const audio = buildAudio();
+    const videoStream = new MediaStream([
       ...canvas.captureStream(24).getVideoTracks(),
-      ...buildAudio().getAudioTracks(),
+      ...audio.getAudioTracks(),
     ]);
 
-    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-      ? "video/webm;codecs=vp9,opus"
-      : "video/webm";
-    let rec: MediaRecorder;
+    let vr: MediaRecorder;
     try {
-      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+      vr = new MediaRecorder(videoStream, {
+        mimeType: vf[0],
+        videoBitsPerSecond: 2_500_000,
+      });
     } catch (e: any) {
       setStatus({ kind: "err", text: `Could not start recording: ${e?.message || e}` });
       return;
     }
 
-    chunks.current = [];
-    rec.ondataavailable = (e) => e.data && e.data.size && chunks.current.push(e.data);
-    rec.onerror = (e: any) =>
+    vChunks.current = [];
+    aChunks.current = [];
+    stopping.current = af ? 2 : 1;
+
+    vr.ondataavailable = (e) => e.data && e.data.size && vChunks.current.push(e.data);
+    vr.onerror = (e: any) =>
       setStatus({ kind: "err", text: `Recording stopped: ${e?.error?.message || "unknown error"}` });
-    rec.onstop = () => {
+    vr.onstop = () => {
       if (raf.current) cancelAnimationFrame(raf.current);
-      stream.getTracks().forEach((t) => t.stop());
-      setRecording(false);
-      if (ticker.current) clearInterval(ticker.current);
-      void save();
+      videoStream.getTracks().forEach((t) => t.stop());
+      if (--stopping.current <= 0) void save();
     };
-    rec.start(2000);
-    recorder.current = rec;
+    vr.start(2000);
+    vRec.current = vr;
+
+    // The audio-only twin: what gets transcribed, and what fits in an email.
+    if (af) {
+      aExt.current = af[1];
+      try {
+        const ar = new MediaRecorder(new MediaStream(audio.getAudioTracks()), { mimeType: af[0] });
+        ar.ondataavailable = (e) => e.data && e.data.size && aChunks.current.push(e.data);
+        ar.onstop = () => {
+          if (--stopping.current <= 0) void save();
+        };
+        ar.start(2000);
+        aRec.current = ar;
+      } catch {
+        stopping.current = 1; // video alone is still a recording
+        aRec.current = null;
+      }
+    }
+
     setRecording(true);
     setElapsed(0);
     ticker.current = setInterval(() => setElapsed((s) => s + 1), 1000);
   }
 
   const stopRecording = useCallback(() => {
+    setRecording(false);
+    if (ticker.current) clearInterval(ticker.current);
     try {
-      recorder.current?.stop();
+      aRec.current?.stop();
     } catch {
-      setRecording(false);
+      /* the video is the one that matters */
+    }
+    try {
+      vRec.current?.stop();
+    } catch {
+      setStatus({ kind: "err", text: "Recording could not be closed cleanly." });
     }
   }, []);
 
   async function save() {
-    const blob = new Blob(chunks.current, { type: "video/webm" });
-    chunks.current = [];
     if (!signedIn) return;
-    if (blob.size < 1024) {
+    const video = new Blob(vChunks.current, { type: `video/${vExt.current}` });
+    const audio = aChunks.current.length
+      ? new Blob(aChunks.current, { type: `audio/${aExt.current}` })
+      : null;
+    vChunks.current = [];
+    aChunks.current = [];
+    if (video.size < 1024) {
       setStatus({ kind: "err", text: "Nothing was captured — the recording was empty." });
       return;
     }
-    const mb = (blob.size / 1048576).toFixed(1);
+
+    const mb = (video.size / 1048576).toFixed(1);
     setStatus({ kind: "busy", text: `Saving ${mb} MB…` });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const path = `${signedIn}/${room}/${stamp}.webm`;
-    const { error } = await db()
+    const base = `${signedIn}/${room}/${stamp}`;
+    const videoPath = `${base}.${vExt.current}`;
+
+    const up = await db()
       .storage.from("recordings")
-      .upload(path, blob, { contentType: "video/webm", upsert: false });
-    if (error) {
-      setStatus({ kind: "err", text: `Could not save the recording: ${error.message}` });
+      .upload(videoPath, video, { contentType: video.type, upsert: false });
+    if (up.error) {
+      setStatus({ kind: "err", text: `Could not save the recording: ${up.error.message}` });
       return;
     }
-    setStatus({ kind: "ok", text: `Saved ${mb} MB — find it under Recordings on your host page.` });
+
+    let audioPath: string | null = null;
+    if (audio && audio.size > 1024) {
+      audioPath = `${base}.${aExt.current === "m4a" ? "m4a" : "audio.webm"}`;
+      const ua = await db()
+        .storage.from("recordings")
+        .upload(audioPath, audio, { contentType: audio.type, upsert: false });
+      if (ua.error) audioPath = null; // the video is saved; the extra is optional
+    }
+
+    setStatus({ kind: "busy", text: `Saved ${mb} MB. Writing the summary…` });
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/recording/finish", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ room, videoPath, audioPath }),
+      });
+      const out = await r.json();
+      if (!r.ok) {
+        setStatus({
+          kind: "ok",
+          text: `Saved ${mb} MB — find it under Recordings. (${out.error || "No summary this time."})`,
+        });
+        return;
+      }
+      setStatus({
+        kind: "ok",
+        text: out.emailed
+          ? `Saved and emailed to ${out.emailed} — the summary is on your host page too.`
+          : `Saved ${mb} MB — summary written. Find it under Recordings.`,
+      });
+    } catch {
+      setStatus({ kind: "ok", text: `Saved ${mb} MB — find it under Recordings on your host page.` });
+    }
   }
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
