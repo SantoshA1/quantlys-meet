@@ -199,7 +199,16 @@ export function group(items: Item[]): Group[] {
  */
 export function build(items: Item[], fromISO: string, toISO: string): Digest {
   const open = items.filter((i) => i.status === "open");
-  const inWeek = open.filter((i) => i.met_at >= fromISO && i.met_at <= toISO);
+  // FIELD 2026-08-17, first real digest: the header said "12 open" and the body
+  // said "Nothing new was committed to this week." Every item was from TODAY —
+  // after the Mon-Sun window closed — so it matched neither `met_at <= to` nor
+  // `met_at < from` and fell out of both buckets. A digest that counts twelve
+  // things and shows none of them is worse than one that never arrived.
+  //
+  // The window now only decides what counts as CARRIED. Everything from the
+  // window's start onward is current, including work done since. Nothing an
+  // arithmetic edge can swallow.
+  const inWeek = open.filter((i) => i.met_at >= fromISO);
   const before = open.filter((i) => i.met_at < fromISO);
   const rooms = new Set(open.map((i) => i.room_name));
   const projects = [...new Set(open.map((i) => (i.project || "").trim() || PROJECT_FALLBACK))].sort();
@@ -253,11 +262,13 @@ function itemsHtml(g: Group[], links: Record<string, string>): string {
                   ? `<a href="${href}#t=${it.ts_seconds}" style="color:#8b93a5;text-decoration:none;font-variant-numeric:tabular-nums">${t}</a>`
                   : `<span style="color:#8b93a5;font-variant-numeric:tabular-nums">${t}</span>`
                 : "";
-              return `<div style="display:flex;gap:10px;padding:5px 0;font-size:14px;color:#cfd6e4;line-height:1.5">
-                <span style="color:#4a5262">—</span>
-                <span style="flex:1">${esc(it.text)}${it.owner ? ` <span style="color:#8b93a5">(${esc(it.owner)})</span>` : ""}</span>
-                <span style="flex:0 0 auto;font-size:12px">${stamp}</span>
-              </div>`;
+              return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td width="14" valign="top" style="padding:5px 0;color:#4a5262;font-size:14px">&mdash;</td>
+                  <td valign="top" style="padding:5px 10px 5px 0;font-size:14px;color:#cfd6e4;line-height:1.5">${esc(it.text)}${it.owner ? ` <span style="color:#8b93a5">(${esc(it.owner)})</span>` : ""}</td>
+                  <td width="64" valign="top" align="right" style="padding:5px 0;font-size:12px;white-space:nowrap">${stamp}</td>
+                </tr>
+              </table>`;
             })
             .join("")}
         </div>`
@@ -278,10 +289,22 @@ export function html(d: Digest, opts: { intro: string; links?: Record<string, st
   <h1 style="font-size:24px;margin:0 0 16px;font-weight:700">${esc(title)}</h1>
   ${opts.intro ? `<p style="font-size:15px;line-height:1.6;color:#cfd6e4;margin:0 0 24px">${esc(opts.intro)}</p>` : ""}
 
-  <div style="display:flex;gap:34px;padding:16px 0;border-top:1px solid #262b36;border-bottom:1px solid #262b36;margin:0 0 28px">
-    <div><div style="font-size:26px;font-weight:700">${d.openCount}</div><div style="font-size:12px;color:#8b93a5">Open</div></div>
-    <div><div style="font-size:26px;font-weight:700">${d.meetingCount}</div><div style="font-size:12px;color:#8b93a5">Conversation${d.meetingCount === 1 ? "" : "s"}</div></div>
-  </div>
+  <!-- A TABLE, not flexbox. Mail clients strip display:flex, and when they did,
+       the two counters ran together and the digest read "121 OpenConversation".
+       Tables are the only layout every mail client agrees on. -->
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+         style="padding:16px 0;border-top:1px solid #262b36;border-bottom:1px solid #262b36;margin:0 0 28px">
+    <tr>
+      <td width="110" valign="top" style="padding-right:34px">
+        <div style="font-size:26px;font-weight:700;color:#e9edf5;line-height:1.2">${d.openCount}</div>
+        <div style="font-size:12px;color:#8b93a5">Open</div>
+      </td>
+      <td valign="top">
+        <div style="font-size:26px;font-weight:700;color:#e9edf5;line-height:1.2">${d.meetingCount}</div>
+        <div style="font-size:12px;color:#8b93a5">Conversation${d.meetingCount === 1 ? "" : "s"}</div>
+      </td>
+    </tr>
+  </table>
 
   ${d.thisWeek.length ? itemsHtml(d.thisWeek, links) : `<p style="color:#8b93a5;font-size:14px">Nothing new was committed to this week.</p>`}
 
