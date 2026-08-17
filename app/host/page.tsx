@@ -123,6 +123,14 @@ export default function HostConsole() {
   const [items, setItems] = useState<ActionItem[]>([]);
   const [digestNote, setDigestNote] = useState("");
   const [sending, setSending] = useState(false);
+  // Who's coming. One free-text box on purpose: people paste addresses out of
+  // a calendar, a spreadsheet or an Outlook To: line, and every one of those
+  // uses a different separator. The parser takes them all.
+  const [guests, setGuests] = useState("");
+  const [inviteFor, setInviteFor] = useState("");   // room being invited to, from the list
+  const [laterGuests, setLaterGuests] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [inviteNote, setInviteNote] = useState("");
 
   useEffect(() => {
     db()
@@ -231,6 +239,38 @@ export default function HostConsole() {
     return `${window.location.origin}/room/${room}`;
   }
 
+  // Sending the invitation — the half that was missing. Returns a sentence
+  // fit to show a person, never a silent boolean: if mail could not go out,
+  // the host has to learn it here, while the link is still on the clipboard
+  // and they can send it by hand, not tomorrow when nobody turns up.
+  async function sendInvites(
+    room: string,
+    addresses: string,
+    startISO?: string
+  ): Promise<string> {
+    if (!addresses.trim()) return "";
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/meetings/invite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ room, emails: addresses, startISO }),
+      });
+      const j = await r.json();
+      if (!r.ok || j?.error) return j?.error || "The invitations didn't send.";
+      const n = Number(j.sent || 0);
+      const missed = (j.bad || []).length
+        ? ` ${(j.bad || []).length} address${(j.bad || []).length === 1 ? "" : "es"} couldn't be read and got nothing: ${(j.bad || []).join(", ")}.`
+        : "";
+      return `Invitation sent to ${n} ${n === 1 ? "person" : "people"} with the calendar file attached.${missed}`;
+    } catch {
+      return "Couldn't reach the invite service — the meeting exists and its link works, so send it by hand for now.";
+    }
+  }
+
   async function sendCode() {
     const address = email.trim();
     if (!address || busy) return;
@@ -289,6 +329,17 @@ export default function HostConsole() {
     } catch {
       /* clipboard is a nicety, never a blocker */
     }
+    // Starting now and inviting people are the same act. Send first, THEN walk
+    // into the room — pushing the route first unmounts this page mid-request
+    // and the invitations quietly never leave.
+    if (guests.trim()) {
+      const said = await sendInvites(room, guests, new Date().toISOString());
+      if (said && !said.startsWith("Invitation sent")) {
+        setNote(`${said} The meeting is open at ${inviteLink(room)} — open it when you're ready.`);
+        return;
+      }
+      setGuests("");
+    }
     setTitle("");
     router.push(`/room/${room}`);
   }
@@ -330,13 +381,17 @@ export default function HostConsole() {
     } catch {
       /* not a blocker */
     }
-    downloadIcs(name, iso, inviteLink(room));
+    const said = guests.trim() ? await sendInvites(room, guests, iso) : "";
+    if (!said) downloadIcs(name, iso, inviteLink(room));   // no guests → you're sending it yourself
     setTitle("");
     setStartAt("");
+    if (said.startsWith("Invitation sent")) setGuests("");
     setNote(
-      "Scheduled. The invite link is on your clipboard and the calendar file is in your " +
-        "Downloads — send both. The link works from now until you end the meeting, so " +
-        "nobody can arrive to a locked door."
+      said
+        ? `Scheduled. ${said} The link works from now until you end the meeting, so nobody can arrive to a locked door.`
+        : "Scheduled. The invite link is on your clipboard and the calendar file is in your " +
+          "Downloads — send both. The link works from now until you end the meeting, so " +
+          "nobody can arrive to a locked door."
     );
     loadMine();
   }
@@ -470,8 +525,27 @@ export default function HostConsole() {
               </button>
             </div>
 
+            <div className="qm-guests">
+              <label className="qm-label" htmlFor="qm-guests">
+                Who's coming? <em>(optional)</em>
+              </label>
+              <textarea
+                id="qm-guests"
+                className="qm-area"
+                rows={2}
+                placeholder="maya@company.com, sam@partner.co — or paste a whole column"
+                value={guests}
+                onChange={(e) => setGuests(e.target.value)}
+              />
+              <p className="qm-hint">
+                They get a proper calendar invitation with the join link — Yes / No / Maybe,
+                straight into their calendar. Commas, semicolons, new lines or “Name
+                &lt;address&gt;” all work. Leave it empty and you'll get the link to send yourself.
+              </p>
+            </div>
+
             <div className="qm-sched">
-              <p className="qm-muted qm-tight">Or set it for later — you'll get the link and a calendar file to send.</p>
+              <p className="qm-muted qm-tight">Or set it for later.</p>
               <div className="qm-row">
                 <input
                   className="qm-input"
@@ -481,7 +555,7 @@ export default function HostConsole() {
                   aria-label="Start date and time"
                 />
                 <button className="qm-ghost" onClick={scheduleMeeting} disabled={busy || !startAt}>
-                  Schedule it
+                  {busy ? "Working…" : guests.trim() ? "Schedule and invite" : "Schedule it"}
                 </button>
               </div>
             </div>
@@ -525,7 +599,8 @@ export default function HostConsole() {
               <p className="qm-muted">Nothing yet — start one above and share the link.</p>
             ) : (
               mine.map((m) => (
-                <div className="qm-item" key={m.id}>
+                <div className="qm-itemwrap" key={m.id}>
+                <div className="qm-item">
                   <span className="qm-name">
                     {m.title || "Quantlys Meeting"}
                     {m.scheduled_at ? (
@@ -555,6 +630,16 @@ export default function HostConsole() {
                         Add to calendar
                       </button>
                     ) : null}
+                    <button
+                      className="qm-ghost"
+                      onClick={() => {
+                        setInviteFor(inviteFor === m.room_name ? "" : m.room_name);
+                        setLaterGuests("");
+                        setInviteNote("");
+                      }}
+                    >
+                      {inviteFor === m.room_name ? "Cancel" : "Invite people"}
+                    </button>
                     <button className="qm-ghost" onClick={() => router.push(`/room/${m.room_name}`)}>
                       Open
                     </button>
@@ -565,8 +650,51 @@ export default function HostConsole() {
                     )}
                   </span>
                 </div>
+
+                {/* Inviting someone to a meeting that already exists — the case
+                    that comes up most: one more person, the morning of. */}
+                {inviteFor === m.room_name ? (
+                  <div className="qm-invite">
+                    <textarea
+                      className="qm-area"
+                      rows={2}
+                      autoFocus
+                      placeholder="maya@company.com, sam@partner.co"
+                      value={laterGuests}
+                      onChange={(e) => setLaterGuests(e.target.value)}
+                    />
+                    <div className="qm-row">
+                      <button
+                        className="qm-primary"
+                        disabled={inviting || !laterGuests.trim()}
+                        onClick={async () => {
+                          setInviting(true);
+                          const said = await sendInvites(
+                            m.room_name,
+                            laterGuests,
+                            m.scheduled_at || m.started_at || new Date().toISOString()
+                          );
+                          setInviting(false);
+                          setInviteNote(said);
+                          if (said.startsWith("Invitation sent")) {
+                            setLaterGuests("");
+                            setInviteFor("");
+                          }
+                        }}
+                      >
+                        {inviting ? "Sending…" : "Send invitation"}
+                      </button>
+                      <span className="qm-hint">
+                        Same meeting, same link — an invitation already accepted is
+                        updated, not duplicated.
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+                </div>
               ))
             )}
+            {inviteNote ? <p className="qm-note">{inviteNote}</p> : null}
           </section>
 
           <section className="qm-card">
@@ -683,6 +811,19 @@ const CSS = `
 .qm-steps li.is-bad .qm-mark { color: #ff9d9d; }
 .qm-mark { flex: 0 0 auto; width: 14px; font-weight: 700; }
 .qm-narrow { flex: 0 1 170px; }
+.qm-guests { margin-top: 16px; }
+.qm-label { display: block; font-size: 13px; color: #cfd6e4; margin: 0 0 6px; font-weight: 600; }
+.qm-label em { color: #6f7789; font-style: normal; font-weight: 400; }
+.qm-area { width: 100%; box-sizing: border-box; background: #0f1218; color: #e9edf5;
+  border: 1px solid #2c3342; border-radius: 10px; padding: 10px 12px; font: inherit;
+  resize: vertical; min-height: 44px; }
+.qm-area:focus { outline: 0; border-color: #00a99d; }
+.qm-area::placeholder { color: #5a6272; }
+.qm-hint { color: #6f7789; font-size: 12.5px; line-height: 1.5; margin: 6px 0 0; }
+.qm-itemwrap { border-bottom: 1px solid #21252f; }
+.qm-itemwrap:last-child { border-bottom: 0; }
+.qm-itemwrap .qm-item { border-bottom: 0; }
+.qm-invite { padding: 0 0 16px; display: grid; gap: 10px; }
 .qm-head-row { display: flex; justify-content: space-between; align-items: center;
   gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .qm-head-row h2 { margin: 0; }
