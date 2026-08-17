@@ -219,7 +219,7 @@ export default function Conference({ room }: { room: string }) {
         audio
         className="qmr-lk"
       >
-        <RoomHeader room={room} />
+        <RoomHeader room={room} title={meetingName} />
         <div className="qmr-conf">
           <VideoConference />
         </div>
@@ -234,7 +234,7 @@ export default function Conference({ room }: { room: string }) {
 // silently lose that person's voice, so the sources are kept and reused.
 const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
-function RoomHeader({ room }: { room: string }) {
+function RoomHeader({ room, title }: { room: string; title?: string }) {
   const participants = useParticipants();
   const ctx = useRoomContext();
   const [copied, setCopied] = useState(false);
@@ -600,7 +600,11 @@ function RoomHeader({ room }: { room: string }) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
         },
-        body: JSON.stringify({ room, videoPath, audioPath }),
+        // Who was actually in the room. The app has always known this —
+        // everybody types a name on the way in — and it was thrown away before
+        // the notes were written, which is why every set of them said
+        // "Speaker 2". A commitment made by a number is one nobody can chase.
+        body: JSON.stringify({ room, videoPath, audioPath, people: names, title }),
       });
       const out = await r.json();
       if (!r.ok) {
