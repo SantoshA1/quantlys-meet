@@ -40,10 +40,13 @@ function appUrl(req: Request): string {
  *  digest still ships, it just opens with the plain count instead of a line
  *  that reads like a person wrote it. */
 async function intro(items: Item[], carried: number): Promise<string> {
+  // "still open from this week" was wrong the first time it sent: the items
+  // were from today, not from the week the header named. Say what is true of
+  // the LIST, not of a date range the reader can't see.
   const plain =
     carried > 0
-      ? `${items.length} open, ${carried} of them carried over from earlier weeks.`
-      : `${items.length} thing${items.length === 1 ? "" : "s"} still open from this week.`;
+      ? `${items.length} still open — ${carried} of them carried over from earlier weeks.`
+      : `${items.length} thing${items.length === 1 ? "" : "s"} still open.`;
   const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   if (!key || !items.length) return plain;
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY);
