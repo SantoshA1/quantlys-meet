@@ -3,8 +3,30 @@
 // other route, so the existing room keeps working exactly as it does today.
 
 import { AccessToken } from "livekit-server-sdk";
+import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
+
+// A locked meeting is the small, honest version of a waiting room: once the
+// people who should be here are here, the host closes the door and the link
+// stops working for anyone else. No queue to watch, nothing to approve, and
+// nobody standing outside wondering whether they were seen.
+async function isLocked(room: string): Promise<boolean> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return false;      // no database to ask → never lock anyone out
+  try {
+    const sb = createClient(url, key, { auth: { persistSession: false } });
+    const { data } = await sb
+      .from("meetings")
+      .select("locked")
+      .eq("room_name", room)
+      .maybeSingle();
+    return Boolean(data?.locked);
+  } catch {
+    return false;                      // the door fails OPEN, never shut
+  }
+}
 
 function livekitUrl(): string {
   return (
@@ -36,6 +58,13 @@ export async function POST(req: Request) {
     return Response.json(
       { error: "This app's LiveKit settings are missing — connect LiveKit and relaunch." },
       { status: 503 }
+    );
+  }
+
+  if (await isLocked(room)) {
+    return Response.json(
+      { error: "This meeting is locked — the host has closed it to new people. Ask them to unlock it." },
+      { status: 423 }
     );
   }
 

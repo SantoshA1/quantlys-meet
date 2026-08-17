@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   LiveKitRoom,
   VideoConference,
+  useDataChannel,
   useParticipants,
   useRoomContext,
 } from "@livekit/components-react";
@@ -58,18 +59,55 @@ function pick(formats: Array<[string, string]>): [string, string] | null {
   return null;
 }
 
+// The one thing about a recording that cannot be put right afterwards is not
+// having told people. The person who presses Record chose to be recorded;
+// everyone arriving from a link did not. So the notice goes BEFORE the door,
+// in one sentence, with a box that has to be ticked — and it is remembered for
+// this meeting so nobody is asked the same question twice.
+const CONSENT_TEXT = "I understand this meeting may be recorded";
+
+function consentKey(room: string) {
+  return `qm-consent-${room}`;
+}
+
+function alreadyAgreed(room: string): boolean {
+  try {
+    return window.sessionStorage.getItem(consentKey(room)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+// What the recorder broadcasts to everyone else in the room, on LiveKit's own
+// data channel. A heartbeat rather than a one-off event: someone who joins
+// halfway through a recording has to learn about it too, and a single message
+// sent before they arrived would never reach them.
+const REC_TOPIC = "qm-recording";
+const REC_BEAT_MS = 3000;
+const REC_STALE_MS = 9000;   // three missed beats → assume it stopped
+
 export default function Conference({ room }: { room: string }) {
   const [name, setName] = useState("");
+  const [agreed, setAgreed] = useState(false);
   const [joined, setJoined] = useState(false);
   const [token, setToken] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    setAgreed(alreadyAgreed(room));
+  }, [room]);
+
   async function join() {
-    if (busy) return;
+    if (busy || !agreed) return;
     setBusy(true);
     setError("");
+    try {
+      window.sessionStorage.setItem(consentKey(room), "1");
+    } catch {
+      /* a private window just means we ask again next time */
+    }
     try {
       const r = await fetch("/api/room/token", {
         method: "POST",
@@ -107,10 +145,27 @@ export default function Conference({ room }: { room: string }) {
               onKeyDown={(e) => e.key === "Enter" && join()}
               autoFocus
             />
-            <button className="qmr-primary" onClick={join} disabled={busy}>
+            <button className="qmr-primary" onClick={join} disabled={busy || !agreed}>
               {busy ? "Joining…" : "Join meeting"}
             </button>
           </div>
+
+          <div className="qmr-consent">
+            <p className="qmr-consent-lead">This meeting may be recorded.</p>
+            <label className="qmr-check">
+              <input
+                type="checkbox"
+                checked={agreed}
+                onChange={(e) => setAgreed(e.target.checked)}
+              />
+              <span>{CONSENT_TEXT}</span>
+            </label>
+            <p className="qmr-consent-fine">
+              If anyone records, everyone in the meeting sees a red “Recording”
+              badge for as long as it lasts. You can leave at any time.
+            </p>
+          </div>
+
           {error ? <p className="qmr-error">{error}</p> : null}
         </div>
       </main>
@@ -141,6 +196,46 @@ function RoomHeader({ room }: { room: string }) {
   const [copied, setCopied] = useState(false);
   const [signedIn, setSignedIn] = useState<string | null>(null);
 
+  // ── Who is recording, as seen by EVERYONE ───────────────────────────────
+  // `recording` below is "am I the one recording". This is "is anyone", and
+  // it is what the badge is driven from — so the badge appears for the guests
+  // too, which is the entire point of it.
+  const [recBy, setRecBy] = useState<string | null>(null);
+  const recSeen = useRef(0);
+  const { send: sendRec } = useDataChannel(REC_TOPIC, (msg) => {
+    try {
+      const payload = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (payload?.on) {
+        recSeen.current = Date.now();
+        setRecBy(String(payload.by || "Someone"));
+      } else {
+        recSeen.current = 0;
+        setRecBy(null);
+      }
+    } catch {
+      /* a malformed beat is ignored, not fatal */
+    }
+  });
+
+  // If the beats stop — the recorder closed the tab, lost the network, or
+  // crashed — the badge must come down on its own. A badge that stays up
+  // forever teaches people to ignore it.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (recSeen.current && Date.now() - recSeen.current > REC_STALE_MS) {
+        recSeen.current = 0;
+        setRecBy(null);
+      }
+    }, 2000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ── Host controls ────────────────────────────────────────────────────────
+  const [isHost, setIsHost] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [panel, setPanel] = useState(false);
+  const [acting, setActing] = useState("");
+
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<{ kind: "ok" | "err" | "busy"; text: string } | null>(null);
@@ -161,6 +256,38 @@ function RoomHeader({ room }: { room: string }) {
       .auth.getSession()
       .then(({ data }) => setSignedIn(data.session?.user?.id ?? null));
   }, []);
+
+  const control = useCallback(
+    async (action: string, identity?: string) => {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/host/control", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ room, action, identity }),
+      });
+      return r.json().catch(() => ({}));
+    },
+    [room]
+  );
+
+  // Am I this meeting's host? Asked once, of the server — never decided in the
+  // browser, where anyone could decide they were.
+  useEffect(() => {
+    let alive = true;
+    control("status")
+      .then((s) => {
+        if (!alive) return;
+        setIsHost(Boolean(s?.host));
+        setLocked(Boolean(s?.locked));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [control, signedIn]);
 
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
@@ -325,10 +452,52 @@ function RoomHeader({ room }: { room: string }) {
     setRecording(true);
     setElapsed(0);
     ticker.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+    announce(true);
   }
+
+  // Tell the room. Called on start, on every heartbeat, whenever somebody new
+  // arrives, and once on stop.
+  const announce = useCallback(
+    (on: boolean) => {
+      try {
+        const who = ctx.localParticipant?.name || "The host";
+        sendRec(
+          new TextEncoder().encode(JSON.stringify({ on, by: who })),
+          { reliable: true }
+        );
+        // The recorder is in the room too, and must see the same badge as
+        // everyone else — nobody should have to trust that it is on.
+        if (on) {
+          recSeen.current = Date.now();
+          setRecBy(who);
+        } else {
+          recSeen.current = 0;
+          setRecBy(null);
+        }
+      } catch {
+        /* the recording itself must never fail over an announcement */
+      }
+    },
+    [ctx, sendRec]
+  );
+
+  // The heartbeat. Three seconds is short enough that a guest who joins
+  // mid-recording sees the badge before they have finished saying hello.
+  useEffect(() => {
+    if (!recording) return;
+    const t = setInterval(() => announce(true), REC_BEAT_MS);
+    return () => clearInterval(t);
+  }, [recording, announce]);
+
+  // …and an immediate beat the moment anyone new connects, so they don't wait
+  // even those three seconds.
+  useEffect(() => {
+    if (recording) announce(true);
+  }, [participants.length, recording, announce]);
 
   const stopRecording = useCallback(() => {
     setRecording(false);
+    announce(false);
     if (ticker.current) clearInterval(ticker.current);
     try {
       aRec.current?.stop();
@@ -340,7 +509,7 @@ function RoomHeader({ room }: { room: string }) {
     } catch {
       setStatus({ kind: "err", text: "Recording could not be closed cleanly." });
     }
-  }, []);
+  }, [announce]);
 
   async function save() {
     if (!signedIn) return;
@@ -410,9 +579,21 @@ function RoomHeader({ room }: { room: string }) {
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
+  const hostables = participants.filter((p) => p.identity !== ctx.localParticipant?.identity);
+
   return (
     <header className="qmr-bar">
       <span className="qmr-logo">Quantlys Meeting</span>
+
+      {/* Everyone in the room sees this, not just whoever pressed Record. It
+          is the second half of the promise made on the join screen. */}
+      {recBy ? (
+        <span className="qmr-recbadge" role="status">
+          <span className="qmr-dot" />
+          Recording
+          <em className="qmr-recwho"> · started by {recBy}</em>
+        </span>
+      ) : null}
 
       <span className="qmr-people" title={names.join(", ")}>
         {participants.length} in the meeting
@@ -442,6 +623,15 @@ function RoomHeader({ room }: { room: string }) {
             </button>
           )
         ) : null}
+        {isHost ? (
+          <button
+            className={`qmr-ghost${panel ? " qmr-on" : ""}`}
+            onClick={() => setPanel((v) => !v)}
+            title="Mute or remove someone, or lock the meeting"
+          >
+            Manage people
+          </button>
+        ) : null}
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -458,6 +648,81 @@ function RoomHeader({ room }: { room: string }) {
           Leave
         </button>
       </span>
+
+      {isHost && panel ? (
+        <div className="qmr-panel">
+          <div className="qmr-panel-head">
+            <strong>People in this meeting</strong>
+            <button
+              className={`qmr-lock${locked ? " qmr-on" : ""}`}
+              disabled={acting === "lock"}
+              onClick={async () => {
+                setActing("lock");
+                const out = await control(locked ? "unlock" : "lock");
+                if (out?.error) setStatus({ kind: "err", text: out.error });
+                else setLocked(Boolean(out.locked));
+                setActing("");
+              }}
+              title={
+                locked
+                  ? "The link is closed — nobody new can join"
+                  : "Close the link so nobody new can join"
+              }
+            >
+              {locked ? "Locked — unlock" : "Lock the meeting"}
+            </button>
+          </div>
+
+          {hostables.length === 0 ? (
+            <p className="qmr-muted">Nobody else is here yet.</p>
+          ) : (
+            <ul className="qmr-plist">
+              {hostables.map((p) => (
+                <li key={p.identity}>
+                  <span className="qmr-pname">{p.name || p.identity.split("-")[0]}</span>
+                  <button
+                    className="qmr-ghost"
+                    disabled={acting === p.identity}
+                    onClick={async () => {
+                      setActing(p.identity);
+                      const out = await control("mute", p.identity);
+                      setStatus(
+                        out?.error
+                          ? { kind: "err", text: out.error }
+                          : { kind: "ok", text: `Muted ${p.name || "them"} — they can unmute themselves.` }
+                      );
+                      setActing("");
+                    }}
+                  >
+                    Mute
+                  </button>
+                  <button
+                    className="qmr-leave"
+                    disabled={acting === p.identity}
+                    onClick={async () => {
+                      setActing(p.identity);
+                      const out = await control("remove", p.identity);
+                      setStatus(
+                        out?.error
+                          ? { kind: "err", text: out.error }
+                          : { kind: "ok", text: `Removed ${p.name || "them"} from the meeting.` }
+                      );
+                      setActing("");
+                    }}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="qmr-fine">
+            Muting stops them being heard now; it does not stop them unmuting
+            again. Removing ends their connection — the same link would let
+            them back in unless you also lock the meeting.
+          </p>
+        </div>
+      ) : null}
 
       {status ? (
         <span className={`qmr-status qmr-${status.kind}`}>
@@ -516,4 +781,34 @@ const CSS = `
 .qmr-busy{ color: #ffd9a0; border-color: #5a4520; }
 .qmr-x { background: none; border: 0; color: inherit; font-size: 16px;
   line-height: 1; padding: 0 4px; margin-left: auto; }
+
+/* Consent, on the way in. */
+.qmr-consent { margin-top: 18px; padding-top: 16px; border-top: 1px solid #262b36; }
+.qmr-consent-lead { margin: 0 0 10px; font-size: 14px; color: #e9edf5; }
+.qmr-check { display: flex; align-items: flex-start; gap: 9px; font-size: 14px;
+  color: #cfd6e4; cursor: pointer; line-height: 1.45; }
+.qmr-check input { margin-top: 3px; width: 16px; height: 16px; flex: 0 0 auto;
+  accent-color: #00a99d; cursor: pointer; }
+.qmr-consent-fine { margin: 10px 0 0; font-size: 12.5px; color: #8b93a5; line-height: 1.5; }
+
+/* The badge everyone sees while it is happening. */
+.qmr-recbadge { display: inline-flex; align-items: center; gap: 7px;
+  background: #4a1f24; color: #ffd7d7; border: 1px solid #7a2f38;
+  border-radius: 999px; padding: 4px 12px; font-size: 12.5px; font-weight: 600; }
+.qmr-recwho { font-style: normal; font-weight: 400; color: #e2aeb2; }
+
+/* Host controls. */
+.qmr-on { border-color: #00a99d; color: #7fe0d6; }
+.qmr-panel { flex-basis: 100%; background: #10131a; border: 1px solid #262b36;
+  border-radius: 10px; padding: 12px 14px; }
+.qmr-panel-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.qmr-lock { background: transparent; color: #cfd6e4; border: 1px solid #2b3240; }
+.qmr-plist { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 7px; }
+.qmr-plist li { display: flex; align-items: center; gap: 8px; }
+.qmr-pname { flex: 1 1 auto; min-width: 0; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qmr-plist button { padding: 5px 12px; font-size: 12.5px; }
+.qmr-fine { margin: 12px 0 0; font-size: 12px; color: #8b93a5; line-height: 1.5; }
 `;
