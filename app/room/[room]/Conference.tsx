@@ -95,8 +95,33 @@ export default function Conference({ room }: { room: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  const [starts, setStarts] = useState<string | null>(null);
+  const [meetingName, setMeetingName] = useState("");
+
   useEffect(() => {
     setAgreed(alreadyAgreed(room));
+  }, [room]);
+
+  // Someone who opens a scheduled link early meets an empty room and concludes
+  // the app is broken. Tell them when to come back — and never stop them
+  // joining anyway, because "early" is often "the host is already here".
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await db().rpc("meeting_by_code", { code: room });
+        if (!alive || !data) return;
+        const m = Array.isArray(data) ? data[0] : data;
+        if (!m) return;
+        setMeetingName(String(m.title || ""));
+        if (m.scheduled_at) setStarts(String(m.scheduled_at));
+      } catch {
+        /* a room whose name isn't in the table still joins — the code is what matters */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, [room]);
 
   async function join() {
@@ -134,7 +159,17 @@ export default function Conference({ room }: { room: string }) {
       <main className="qmr-prejoin">
         <style>{CSS}</style>
         <div className="qmr-card">
-          <h1>Join meeting</h1>
+          <h1>{meetingName || "Join meeting"}</h1>
+          {starts && new Date(starts).getTime() - Date.now() > 90_000 ? (
+            <p className="qmr-when">
+              Starts{" "}
+              {new Date(starts).toLocaleString([], {
+                weekday: "long", day: "numeric", month: "short",
+                hour: "2-digit", minute: "2-digit",
+              })}
+              . You're early — you can wait here, or come back then. This link keeps working.
+            </p>
+          ) : null}
           <p className="qmr-muted">No account needed — just a name so people know who joined.</p>
           <div className="qmr-row">
             <input
@@ -566,10 +601,19 @@ function RoomHeader({ room }: { room: string }) {
         });
         return;
       }
+      // FIELD 2026-08-17 — this used to say "summary written" whether or not
+      // one was, and never mentioned the email at all when it failed. If a
+      // step didn't happen, the person who pressed Record is the one who needs
+      // to know, at the moment they can still do something about it.
+      const failed: Array<{ label: string; detail: string }> = (out.steps || []).filter(
+        (x: any) => x && !x.ok
+      );
       setStatus({
-        kind: "ok",
+        kind: failed.length ? "err" : "ok",
         text: out.emailed
           ? `Saved and emailed to ${out.emailed} — the summary is on your host page too.`
+          : failed.length
+          ? `Saved ${mb} MB. ${failed[0].detail}${failed.length > 1 ? ` (+${failed.length - 1} more — see “Check my setup” on your host page.)` : ""}`
           : `Saved ${mb} MB — summary written. Find it under Recordings.`,
       });
     } catch {
@@ -790,6 +834,8 @@ const CSS = `
 .qmr-check input { margin-top: 3px; width: 16px; height: 16px; flex: 0 0 auto;
   accent-color: #00a99d; cursor: pointer; }
 .qmr-consent-fine { margin: 10px 0 0; font-size: 12.5px; color: #8b93a5; line-height: 1.5; }
+.qmr-when { margin: 0 0 14px; font-size: 14px; color: #8fd8cf; line-height: 1.5;
+  background: #10131a; border: 1px solid #1f4f49; border-radius: 10px; padding: 11px 13px; }
 
 /* The badge everyone sees while it is happening. */
 .qmr-recbadge { display: inline-flex; align-items: center; gap: 7px;
