@@ -15,7 +15,83 @@ type Meeting = {
   title: string | null;
   active: boolean | null;
   started_at: string | null;
+  scheduled_at: string | null;
+  project: string | null;
 };
+
+type ActionItem = {
+  id: string;
+  project: string | null;
+  room_name: string;
+  meeting_title: string | null;
+  text: string;
+  owner: string | null;
+  ts_seconds: number | null;
+  met_at: string;
+};
+
+function mmss(s: number | null) {
+  if (s === null || s === undefined) return "";
+  const t = Math.max(0, Math.floor(s));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${two(m)}:${two(sec)}` : `${two(m)}:${two(sec)}`;
+}
+
+type Step = { key: string; label: string; ok: boolean; detail: string };
+
+// A meeting people can put in their calendar. Written here rather than fetched
+// from a route: an .ics is 12 lines of text, and a calendar invite that depends
+// on a server being up is a calendar invite that eventually isn't there.
+function icsFor(title: string, startISO: string, link: string, minutes = 60) {
+  const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const start = new Date(startISO);
+  const end = new Date(start.getTime() + minutes * 60000);
+  const esc = (t: string) => t.replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Quantlys Meeting//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:${link}`,
+    `DTSTAMP:${stamp(new Date())}`,
+    `DTSTART:${stamp(start)}`,
+    `DTEND:${stamp(end)}`,
+    `SUMMARY:${esc(title)}`,
+    `DESCRIPTION:${esc("Join: " + link + "\nNo account needed — one click.")}`,
+    `URL:${link}`,
+    `LOCATION:${esc(link)}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+}
+
+function downloadIcs(title: string, startISO: string, link: string) {
+  const blob = new Blob([icsFor(title, startISO, link)], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${title.replace(/[^\w -]/g, "").trim() || "meeting"}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// "In 3 days", "in 20 minutes", "started 5 minutes ago" — a time a person can
+// act on without doing arithmetic.
+function when(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  const abs = Math.abs(ms);
+  const mins = Math.round(abs / 60000);
+  const unit =
+    mins < 60 ? `${mins} minute${mins === 1 ? "" : "s"}` :
+    mins < 60 * 36 ? `${Math.round(mins / 60)} hour${Math.round(mins / 60) === 1 ? "" : "s"}` :
+    `${Math.round(mins / 1440)} day${Math.round(mins / 1440) === 1 ? "" : "s"}`;
+  return ms >= 0 ? `starts in ${unit}` : `started ${unit} ago`;
+}
 
 let _client: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -40,6 +116,13 @@ export default function HostConsole() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [copied, setCopied] = useState("");
+  const [startAt, setStartAt] = useState("");
+  const [health, setHealth] = useState<{ headline: string; steps: Step[] } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [project, setProject] = useState("");
+  const [items, setItems] = useState<ActionItem[]>([]);
+  const [digestNote, setDigestNote] = useState("");
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     db()
@@ -54,20 +137,95 @@ export default function HostConsole() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Paste-order insurance. `scheduled_at` and `project` arrive with a SQL
+  // step, and if the page were pasted first this select would error and the
+  // meetings list would go silently empty — the exact class of failure this
+  // app keeps getting caught by. Ask for everything, and if the database
+  // hasn't caught up yet, ask for what has always been there and say so once.
+  const BASE_COLS = "id, room_name, title, active, started_at";
   const loadMine = useCallback(async () => {
     if (!user) return;
-    const { data } = await db()
+    const full = await db()
       .from("meetings")
-      .select("id, room_name, title, active, started_at")
+      .select(`${BASE_COLS}, scheduled_at, project`)
       .eq("created_by", user.id)
       .order("started_at", { ascending: false })
       .limit(20);
-    setMine((data as Meeting[]) ?? []);
+    if (!full.error) {
+      setMine((full.data as Meeting[]) ?? []);
+      return;
+    }
+    const basic = await db()
+      .from("meetings")
+      .select(BASE_COLS)
+      .eq("created_by", user.id)
+      .order("started_at", { ascending: false })
+      .limit(20);
+    setMine(((basic.data as any[]) ?? []).map((m) => ({ ...m, scheduled_at: null, project: null })));
+    setNote(
+      "Scheduling and projects need one SQL step that hasn't been run yet — everything " +
+        "else works. Run the meet-digest SQL in Supabase and this message goes away."
+    );
+  }, [user]);
+
+  const [itemsReady, setItemsReady] = useState(true);
+  const loadItems = useCallback(async () => {
+    if (!user) return;
+    const { data, error } = await db()
+      .from("action_items")
+      .select("id, project, room_name, meeting_title, text, owner, ts_seconds, met_at")
+      .eq("user_id", user.id)
+      .eq("status", "open")
+      .order("met_at", { ascending: false })
+      .limit(200);
+    // No table yet is a SETUP state, not an empty list. "Nothing open" when the
+    // truth is "nowhere to put it" is the lie this whole app keeps fixing.
+    setItemsReady(!error);
+    setItems((data as ActionItem[]) ?? []);
   }, [user]);
 
   useEffect(() => {
     loadMine();
-  }, [loadMine]);
+    loadItems();
+  }, [loadMine, loadItems]);
+
+  // Ticking something off is the whole contract: anything you don't tick comes
+  // back next Monday. Done is written here and nowhere else, so the list, the
+  // count and the email can never disagree.
+  async function tick(id: string) {
+    setItems((xs) => xs.filter((x) => x.id !== id));   // instant, then confirm
+    const { error } = await db()
+      .from("action_items")
+      .update({ status: "done", done_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) {
+      setDigestNote(`Couldn't tick that off: ${error.message}`);
+      loadItems();
+    }
+  }
+
+  async function sendDigest() {
+    setSending(true);
+    setDigestNote("");
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/digest/weekly", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${sess.session?.access_token ?? ""}` },
+      });
+      const j = await r.json();
+      setDigestNote(
+        j?.sent
+          ? `Sent to ${j.to} — ${j.open} open item${j.open === 1 ? "" : "s"}.`
+          : j?.reason === "nothing open"
+          ? "Nothing is open, so there is nothing to send."
+          : j?.error || "It didn't send. Check “Check my setup” above — the email step is the usual reason."
+      );
+    } catch {
+      setDigestNote("Couldn't reach the digest just now.");
+    }
+    setSending(false);
+  }
 
   function inviteLink(room: string) {
     return `${window.location.origin}/room/${room}`;
@@ -119,6 +277,7 @@ export default function HostConsole() {
       room_name: room,
       title: title.trim() || "Quantlys Meeting",
       created_by: user.id,
+      project: project.trim() || null,
     });
     setBusy(false);
     if (error) {
@@ -132,6 +291,75 @@ export default function HostConsole() {
     }
     setTitle("");
     router.push(`/room/${room}`);
+  }
+
+  // Scheduling, the small honest version: the link exists NOW and works
+  // forever. Nobody has to be let in at the right moment, no invitation can
+  // expire, and a guest who clicks early is told when to come back instead of
+  // meeting an error. The calendar file is what carries the time to everyone
+  // else, because that is where people actually keep their day.
+  async function scheduleMeeting() {
+    if (!user || busy) return;
+    if (!startAt) {
+      setNote("Pick a date and time first.");
+      return;
+    }
+    const iso = new Date(startAt).toISOString();
+    setBusy(true);
+    setNote("");
+    const room = "qm-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const name = title.trim() || "Quantlys Meeting";
+    const { error } = await db().from("meetings").insert({
+      room_name: room,
+      title: name,
+      created_by: user.id,
+      project: project.trim() || null,
+      scheduled_at: iso,
+    });
+    setBusy(false);
+    if (error) {
+      setNote(
+        error.message.includes("scheduled_at")
+          ? "Scheduling needs one more line of SQL — run the meet-sched-0-sql step, then try again."
+          : `Could not schedule: ${error.message}`
+      );
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(inviteLink(room));
+    } catch {
+      /* not a blocker */
+    }
+    downloadIcs(name, iso, inviteLink(room));
+    setTitle("");
+    setStartAt("");
+    setNote(
+      "Scheduled. The invite link is on your clipboard and the calendar file is in your " +
+        "Downloads — send both. The link works from now until you end the meeting, so " +
+        "nobody can arrive to a locked door."
+    );
+    loadMine();
+  }
+
+  // "Will my next meeting actually produce notes in my inbox?" — asked before
+  // the meeting, in two seconds, instead of discovered afterwards by an email
+  // that never arrived.
+  async function checkSetup() {
+    setChecking(true);
+    setHealth(null);
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/recording/selftest", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${sess.session?.access_token ?? ""}` },
+      });
+      const j = await r.json();
+      if (j?.steps) setHealth({ headline: j.headline, steps: j.steps });
+      else setNote(j?.error || "Couldn't check the setup just now.");
+    } catch {
+      setNote("Couldn't reach the setup check.");
+    }
+    setChecking(false);
   }
 
   async function copyInvite(room: string) {
@@ -230,11 +458,65 @@ export default function HostConsole() {
                 onChange={(e) => setTitle(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && startMeeting()}
               />
+              <input
+                className="qm-input qm-narrow"
+                placeholder="Project (optional)"
+                value={project}
+                onChange={(e) => setProject(e.target.value)}
+                title="Meetings in the same project are rolled up together in your weekly digest"
+              />
               <button className="qm-primary" onClick={startMeeting} disabled={busy}>
                 {busy ? "Starting…" : "Start a meeting"}
               </button>
             </div>
+
+            <div className="qm-sched">
+              <p className="qm-muted qm-tight">Or set it for later — you'll get the link and a calendar file to send.</p>
+              <div className="qm-row">
+                <input
+                  className="qm-input"
+                  type="datetime-local"
+                  value={startAt}
+                  onChange={(e) => setStartAt(e.target.value)}
+                  aria-label="Start date and time"
+                />
+                <button className="qm-ghost" onClick={scheduleMeeting} disabled={busy || !startAt}>
+                  Schedule it
+                </button>
+              </div>
+            </div>
             {note ? <p className="qm-note">{note}</p> : null}
+          </section>
+
+          <section className="qm-card">
+            <h2>Will recordings turn into notes?</h2>
+            <p className="qm-muted qm-tight">
+              Transcripts and the email need keys set in Vercel. This asks each service
+              directly, so you find out now rather than after a meeting.
+            </p>
+            <div className="qm-row">
+              <button className="qm-ghost" onClick={checkSetup} disabled={checking}>
+                {checking ? "Checking…" : "Check my setup"}
+              </button>
+            </div>
+            {health ? (
+              <>
+                <p className={`qm-head ${health.steps.every((x) => x.ok) ? "qm-good" : "qm-bad"}`}>
+                  {health.headline}
+                </p>
+                <ul className="qm-steps">
+                  {health.steps.map((st) => (
+                    <li key={st.key} className={st.ok ? "is-ok" : "is-bad"}>
+                      <span className="qm-mark">{st.ok ? "✓" : "✗"}</span>
+                      <span>
+                        <b>{st.label}</b>
+                        <em>{st.detail}</em>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
           </section>
 
           <section className="qm-card">
@@ -246,12 +528,33 @@ export default function HostConsole() {
                 <div className="qm-item" key={m.id}>
                   <span className="qm-name">
                     {m.title || "Quantlys Meeting"}
+                    {m.scheduled_at ? (
+                      <em className="qm-when">
+                        {" · "}
+                        {new Date(m.scheduled_at).toLocaleString([], {
+                          weekday: "short", day: "numeric", month: "short",
+                          hour: "2-digit", minute: "2-digit",
+                        })}
+                        {" · "}
+                        {when(m.scheduled_at)}
+                      </em>
+                    ) : null}
                     {m.active === false ? <em className="qm-ended"> · ended</em> : null}
                   </span>
                   <span className="qm-row">
                     <button className="qm-ghost" onClick={() => copyInvite(m.room_name)}>
                       {copied === m.room_name ? "Copied" : "Copy invite link"}
                     </button>
+                    {m.scheduled_at ? (
+                      <button
+                        className="qm-ghost"
+                        onClick={() =>
+                          downloadIcs(m.title || "Quantlys Meeting", m.scheduled_at!, inviteLink(m.room_name))
+                        }
+                      >
+                        Add to calendar
+                      </button>
+                    ) : null}
                     <button className="qm-ghost" onClick={() => router.push(`/room/${m.room_name}`)}>
                       Open
                     </button>
@@ -261,6 +564,70 @@ export default function HostConsole() {
                       </button>
                     )}
                   </span>
+                </div>
+              ))
+            )}
+          </section>
+
+          <section className="qm-card">
+            <div className="qm-head-row">
+              <h2>Still open</h2>
+              <button className="qm-ghost" onClick={sendDigest} disabled={sending}>
+                {sending ? "Sending…" : "Email me this week's digest"}
+              </button>
+            </div>
+            <p className="qm-muted qm-tight">
+              Everything anyone committed to, across every meeting. Tick it off and it
+              goes. Anything you don't tick comes back next Monday — that's the point.
+            </p>
+            {digestNote ? <p className="qm-note">{digestNote}</p> : null}
+            {!itemsReady ? (
+              <p className="qm-muted">
+                The action-items table hasn't been created yet — run the meet-digest SQL
+                step in Supabase and this list starts filling itself after each recording.
+              </p>
+            ) : items.length === 0 ? (
+              <p className="qm-muted">
+                Nothing open. Action items appear here after a meeting is recorded and
+                transcribed.
+              </p>
+            ) : (
+              Object.entries(
+                items.reduce<Record<string, ActionItem[]>>((acc, i) => {
+                  const k = (i.project || "").trim() || "General";
+                  (acc[k] = acc[k] || []).push(i);
+                  return acc;
+                }, {})
+              ).map(([proj, list]) => (
+                <div key={proj} className="qm-proj">
+                  <div className="qm-projname">
+                    {proj}
+                    <em> · {list.length} open</em>
+                  </div>
+                  {list.map((i) => (
+                    <div className="qm-todo" key={i.id}>
+                      <button
+                        className="qm-tick"
+                        onClick={() => tick(i.id)}
+                        title="Mark it done — it won't come back"
+                        aria-label={`Mark done: ${i.text}`}
+                      >
+                        ○
+                      </button>
+                      <span className="qm-todotext">
+                        {i.text}
+                        <em>
+                          {i.meeting_title || i.room_name}
+                          {" · "}
+                          {new Date(i.met_at).toLocaleDateString([], {
+                            weekday: "short", month: "short", day: "numeric",
+                          })}
+                          {i.ts_seconds !== null ? ` · ${mmss(i.ts_seconds)}` : ""}
+                          {i.owner ? ` · ${i.owner}` : ""}
+                        </em>
+                      </span>
+                    </div>
+                  ))}
                 </div>
               ))
             )}
@@ -303,4 +670,37 @@ const CSS = `
 .qm-name { font-size: 15px; }
 .qm-ended { color: #8b93a5; font-style: normal; font-size: 13px; }
 .qm-player { width: 100%; border-radius: 10px; background: #000; margin-bottom: 14px; }
+.qm-tight { margin-bottom: 10px; }
+.qm-sched { margin-top: 16px; padding-top: 16px; border-top: 1px solid #262b36; }
+.qm-when { color: #8fd8cf; font-style: normal; font-size: 13px; }
+.qm-head { font-size: 14px; margin: 16px 0 10px; font-weight: 600; }
+.qm-good { color: #8fd8cf; }
+.qm-bad { color: #ffc9a0; }
+.qm-steps { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 10px; }
+.qm-steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; }
+.qm-steps li.is-ok .qm-mark { color: #4ac9b5; }
+.qm-steps li.is-bad .qm-mark { color: #ff9d9d; }
+.qm-mark { flex: 0 0 auto; width: 14px; font-weight: 700; }
+.qm-narrow { flex: 0 1 170px; }
+.qm-head-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.qm-head-row h2 { margin: 0; }
+.qm-proj { margin-top: 18px; }
+.qm-projname { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: #00a99d; font-weight: 700; margin-bottom: 8px; }
+.qm-projname em { font-style: normal; color: #8b93a5; letter-spacing: 0;
+  text-transform: none; font-weight: 400; }
+.qm-todo { display: flex; gap: 11px; align-items: flex-start; padding: 8px 0;
+  border-bottom: 1px solid #1c202a; }
+.qm-todo:last-child { border-bottom: 0; }
+.qm-tick { flex: 0 0 auto; width: 24px; height: 24px; padding: 0; line-height: 1;
+  border: 1px solid #2b3240; background: transparent; color: #6f7789;
+  border-radius: 50%; font-size: 13px; }
+.qm-tick:hover { border-color: #00a99d; color: #00a99d; }
+.qm-todotext { flex: 1 1 auto; font-size: 14px; line-height: 1.5; }
+.qm-todotext em { display: block; font-style: normal; color: #8b93a5;
+  font-size: 12px; margin-top: 2px; }
+.qm-steps em { display: block; font-style: normal; color: #8b93a5; font-size: 13px;
+  margin-top: 2px; line-height: 1.5; }
 `;
