@@ -5,6 +5,7 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Step } from "@/lib/notes-health";
 import { checkTranscribe, checkNotes, checkEmail, headline } from "@/lib/notes-health";
+import { pickActionItems } from "@/lib/digest";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -355,7 +356,11 @@ export async function POST(req: Request) {
       .maybeSingle();
     // Prefer the model's cleaned-up actions when it produced them (they read
     // as tasks, not as speech) but keep the raw marks for the timestamps.
-    const rows = marks.map((m) => ({
+    // The model's items are the rows; the raw utterances only lend them their
+    // timestamps. See lib/digest.ts — saving the utterances themselves produced
+    // fifteen fragments and not one task.
+    const picked = pickActionItems(notes.actions, marks);
+    const rows = picked.map((m) => ({
       user_id: user.id,
       meeting_id: meeting?.id ?? null,
       room_name: room,
@@ -366,7 +371,7 @@ export async function POST(req: Request) {
       // only name columns, so `md5(text)` in the index would have made every
       // re-run insert duplicates instead of updating.
       fingerprint: m.text.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 200),
-      owner: m.owner,
+      owner: m.owner || null,
       ts_seconds: m.at,
       video_path: videoPath,
       met_at: meeting?.started_at || new Date().toISOString(),
