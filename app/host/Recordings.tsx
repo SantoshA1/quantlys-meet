@@ -118,9 +118,21 @@ export default function Recordings({ userId }: { userId: string }) {
     }
     try {
       const j = JSON.parse(await data.text());
+      // FIELD 2026-08-17 — "No summary was produced for this one" is a fact
+      // with no cause attached, which is the same as no answer. The finish
+      // route now records WHY each step did or didn't happen, and it travels
+      // with the recording, so the reason is still here weeks later.
+      const steps: Array<{ ok: boolean; label: string; detail: string }> = j.steps || [];
+      const failed = steps.filter((x) => !x.ok);
+      const body = j.summary || j.transcript || "";
+      const why = failed.length
+        ? (body ? "\n\n" : "") +
+          "What didn't happen, and why:\n" +
+          failed.map((f) => `· ${f.label} — ${f.detail}`).join("\n")
+        : "";
       setOpen((o) => ({
         ...o,
-        [rec.path]: j.summary || j.transcript || "No summary was produced for this one.",
+        [rec.path]: (body || (why ? "" : "No summary was produced for this one.")) + why,
       }));
     } catch {
       setNote("That summary file could not be read.");
