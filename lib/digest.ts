@@ -41,6 +41,89 @@ export type Digest = {
 
 export const PROJECT_FALLBACK = "General";
 
+// ── Which commitments actually become rows ─────────────────────────────────
+//
+// FIELD 2026-08-17, first real meeting through the pipeline. Fifteen items were
+// saved and not one was a task. They read: "I I'll be I'll be out", "Yeah. But
+// I'll I'll I'll outline", "and that are properly set up securely." All true
+// fragments of speech; none of them anything a person could do.
+//
+// The cause: rows were built from the RAW utterances that matched a phrase
+// pattern, because those are what carry a timestamp. The model's cleaned-up
+// action items — the ones shaped like tasks — were written into the summary and
+// thrown away. So the digest inherited the stenography and discarded the work.
+//
+// Now the model's items are the rows, and each one is matched BACK to the
+// utterance it came from to inherit that utterance's timestamp and speaker. A
+// commitment you can act on, that still jumps to the moment it was made.
+
+export type Mark = { text: string; owner: string; at: number };
+export type Picked = { text: string; owner: string; at: number | null };
+
+const WORDS = /[a-z'][a-z']{3,}/g;
+const FILLER = new Set(["yeah","okay","like","just","really","actually","gonna",
+  "know","think","mean","sort","kind","stuff","thing","things","well","right"]);
+
+/** How much of the action's substance appears in this utterance (0-1). */
+function overlap(action: string, mark: string): number {
+  const a = new Set((action.toLowerCase().match(WORDS) || []).filter(w => !FILLER.has(w)));
+  if (!a.size) return 0;
+  const m = (mark.toLowerCase().match(WORDS) || []).filter(w => !FILLER.has(w));
+  if (!m.length) return 0;
+  let hit = 0;
+  for (const w of new Set(m)) if (a.has(w)) hit++;
+  return hit / a.size;
+}
+
+/** Is this raw utterance substantial enough to stand on its own as a task?
+ *  Used only when there is no model to write better ones. */
+export function looksLikeATask(text: string): boolean {
+  const t = text.trim();
+  const words = (t.toLowerCase().match(WORDS) || []);
+  if (words.length < 6) return false;                    // "I'll be out" is not a task
+  const real = words.filter(w => !FILLER.has(w));
+  if (real.length < 4) return false;                     // mostly filler
+  // A stutter — the same short word three times running — is speech, not intent.
+  if (/\b(\w{1,4})\b[\s,]+\1\b[\s,]+\1\b/i.test(t)) return false;
+  // A fragment that opens mid-clause reads as a transcript slice, not an item.
+  if (/^(and|but|or|so|then|that|which|because|for)\b/i.test(t)) return false;
+  return true;
+}
+
+/**
+ * The rows to save. Prefers the model's task-shaped items, each carrying the
+ * timestamp of the utterance it came from; falls back to the raw utterances
+ * only when no model wrote anything — and then only the substantial ones.
+ */
+export function pickActionItems(modelActions: string[], marks: Mark[]): Picked[] {
+  const clean = (modelActions || [])
+    .map(a => String(a || "").replace(/^\s*[-*\u2022]\s*/, "").trim())
+    .filter(a => a.length >= 12);
+
+  if (clean.length) {
+    const used = new Set<number>();
+    return clean.map(text => {
+      let best = -1, bestScore = 0;
+      marks.forEach((m, i) => {
+        if (used.has(i)) return;
+        const s = overlap(text, m.text);
+        if (s > bestScore) { bestScore = s; best = i; }
+      });
+      // A weak match is worse than none: a wrong timestamp sends someone to the
+      // wrong minute of a recording, which is how a feature loses trust.
+      if (best >= 0 && bestScore >= 0.3) {
+        used.add(best);
+        return { text, owner: marks[best].owner, at: marks[best].at };
+      }
+      return { text, owner: "", at: null };
+    });
+  }
+
+  return (marks || [])
+    .filter(m => looksLikeATask(m.text))
+    .map(m => ({ text: m.text, owner: m.owner, at: m.at }));
+}
+
 /** mm:ss, or h:mm:ss past an hour — the way a person reads a recording. */
 export function clock(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return "";
