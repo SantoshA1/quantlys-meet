@@ -30,6 +30,28 @@ type ActionItem = {
   met_at: string;
 };
 
+const DAYNAME = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const ORDINAL = ["", "first", "second", "third", "fourth", "last"];
+
+/** The repeat rule in words, from the date the host actually picked. Shown
+ *  under the picker because nobody can proof-read FREQ=MONTHLY;BYSETPOS=3, and
+ *  a recurring meeting that lands on the wrong day repeats the mistake. */
+function saysRepeat(freq: string, startAt: string, times: string): string {
+  if (!freq) return "";
+  const d = startAt ? new Date(startAt) : null;
+  if (!d || isNaN(d.getTime())) return "Pick a date first and this will say what it means.";
+  const day = d.getDay();       // the BROWSER'S day — the same clock the host set it in
+  const nth = Math.ceil(d.getDate() / 7);
+  let base =
+    freq === "WEEKDAYS" ? "Every weekday" :
+    freq === "WEEKLY"   ? `Every ${DAYNAME[day]}` :
+    freq === "BIWEEKLY" ? `Every 2 weeks on ${DAYNAME[day]}` :
+    freq === "MONTHLY"  ? `Monthly on the ${ORDINAL[Math.min(nth, 5)]} ${DAYNAME[day]}` :
+    "Every day";
+  const n = Number(times);
+  return n > 0 ? `${base}, ${n} times` : `${base}, with no end date`;
+}
+
 function mmss(s: number | null) {
   if (s === null || s === undefined) return "";
   const t = Math.max(0, Math.floor(s));
@@ -131,6 +153,10 @@ export default function HostConsole() {
   const [laterGuests, setLaterGuests] = useState("");
   const [inviting, setInviting] = useState(false);
   const [inviteNote, setInviteNote] = useState("");
+  // How often. One event with an RRULE, not fifty rows — the guest's own
+  // calendar expands the series and keeps it after one Yes.
+  const [repeat, setRepeat] = useState("");
+  const [ends, setEnds] = useState("");   // "" = never, else a count
   // Deleting asks once, in place. A browser confirm() is a modal the page
   // can't style, can't explain and can't say what will actually be removed —
   // and it trains people to click through warnings.
@@ -251,7 +277,8 @@ export default function HostConsole() {
   async function sendInvites(
     room: string,
     addresses: string,
-    startISO?: string
+    startISO?: string,
+    rule?: { freq: string; interval?: number; count?: number }
   ): Promise<string> {
     if (!addresses.trim()) return "";
     try {
@@ -263,7 +290,7 @@ export default function HostConsole() {
           Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
         },
         body: JSON.stringify({
-          room, emails: addresses, startISO,
+          room, emails: addresses, startISO, repeat: rule,
           // The clock the host is actually looking at. Without it the
           // invitation prints UTC and every guest does subtraction.
           tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -391,7 +418,14 @@ export default function HostConsole() {
     } catch {
       /* not a blocker */
     }
-    const said = guests.trim() ? await sendInvites(room, guests, iso) : "";
+    const rule = repeat
+      ? {
+          freq: repeat === "BIWEEKLY" ? "WEEKLY" : repeat,
+          interval: repeat === "BIWEEKLY" ? 2 : 1,
+          count: Number(ends) > 0 ? Number(ends) : undefined,
+        }
+      : undefined;
+    const said = guests.trim() ? await sendInvites(room, guests, iso, rule) : "";
     if (!said) downloadIcs(name, iso, inviteLink(room));   // no guests → you're sending it yourself
     setTitle("");
     setStartAt("");
@@ -602,10 +636,43 @@ export default function HostConsole() {
                   onChange={(e) => setStartAt(e.target.value)}
                   aria-label="Start date and time"
                 />
+                <select
+                  className="qm-input qm-narrow"
+                  value={repeat}
+                  onChange={(e) => setRepeat(e.target.value)}
+                  aria-label="How often it repeats"
+                >
+                  <option value="">Doesn&apos;t repeat</option>
+                  <option value="DAILY">Every day</option>
+                  <option value="WEEKDAYS">Every weekday</option>
+                  <option value="WEEKLY">Weekly</option>
+                  <option value="BIWEEKLY">Every 2 weeks</option>
+                  <option value="MONTHLY">Monthly</option>
+                </select>
+                {repeat ? (
+                  <input
+                    className="qm-input qm-tiny"
+                    type="number"
+                    min={2}
+                    max={200}
+                    placeholder="times"
+                    value={ends}
+                    onChange={(e) => setEnds(e.target.value)}
+                    aria-label="Number of occurrences — leave empty for no end"
+                    title="How many times. Leave it empty and it repeats indefinitely."
+                  />
+                ) : null}
                 <button className="qm-ghost" onClick={scheduleMeeting} disabled={busy || !startAt}>
                   {busy ? "Working…" : guests.trim() ? "Schedule and invite" : "Schedule it"}
                 </button>
               </div>
+              {repeat ? (
+                <p className="qm-hint">
+                  {saysRepeat(repeat, startAt, ends)} — everyone gets one invitation
+                  and their calendar fills in the rest. The join link is the same
+                  every time.
+                </p>
+              ) : null}
             </div>
             {note ? <p className="qm-note">{note}</p> : null}
           </section>
@@ -888,6 +955,8 @@ const CSS = `
 .qm-steps li.is-bad .qm-mark { color: #ff9d9d; }
 .qm-mark { flex: 0 0 auto; width: 14px; font-weight: 700; }
 .qm-narrow { flex: 0 1 170px; }
+.qm-tiny { flex: 0 0 90px; }
+select.qm-input { cursor: pointer; }
 .qm-guests { margin-top: 16px; }
 .qm-label { display: block; font-size: 13px; color: #cfd6e4; margin: 0 0 6px; font-weight: 600; }
 .qm-label em { color: #6f7789; font-style: normal; font-weight: 400; }

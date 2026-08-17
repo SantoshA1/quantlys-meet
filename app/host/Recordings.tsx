@@ -100,7 +100,7 @@ export default function Recordings({ userId }: { userId: string }) {
     return data.signedUrl;
   }
 
-  async function play(path: string) {
+  async function play(path: string, at?: number) {
     const u = await signed(path, 3600);
     if (u) setPlaying(u);
   }
@@ -178,6 +178,8 @@ export default function Recordings({ userId }: { userId: string }) {
               data={payload[r.path]}
               tab={tab[r.path] || "summary"}
               onTab={(t) => setTab((x) => ({ ...x, [r.path]: t }))}
+              summaryPath={r.summaryPath || ""}
+              onSeek={(sec) => play(r.path, sec)}
             />
           ) : null}
         </div>
@@ -199,6 +201,14 @@ export default function Recordings({ userId }: { userId: string }) {
 
 /** `**Paddle**` → bold, after escaping. Split rather than regex-replaced into
  *  HTML so nothing from a transcript is ever handed to dangerouslySetInnerHTML. */
+/** mm:ss — the same clock the recording shows, so a citation is scrubbable. */
+function fmtAt(seconds: number): string {
+  const t = Math.max(0, Math.floor(seconds || 0));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+}
+
 function Rich({ text }: { text: string }) {
   const parts = String(text || "").split(/(\*\*[^*]+\*\*)/g);
   return (
@@ -225,8 +235,42 @@ function Bullets({ items }: { items: string[] }) {
 }
 
 function NotesPanel({
-  data, tab, onTab,
-}: { data: any; tab: string; onTab: (t: string) => void }) {
+  data, tab, onTab, summaryPath, onSeek,
+}: {
+  data: any; tab: string; onTab: (t: string) => void;
+  summaryPath: string; onSeek: (seconds: number) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [ans, setAns] = useState<any>(null);
+
+  // ── Ask the meeting a question ──────────────────────────────────────────
+  // The rule that makes this trustworthy: it answers from the transcript
+  // only, and it shows WHERE. An answer you can jump to is one you can check
+  // in ten seconds; an answer without a moment attached is a claim about a
+  // meeting you now have to re-listen to anyway.
+  async function ask(question: string) {
+    const text = (question || "").trim();
+    if (!text || asking) return;
+    setAsking(true);
+    setAns(null);
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/notes/ask", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ summaryPath, question: text }),
+      });
+      setAns(await r.json());
+    } catch {
+      setAns({ error: "Couldn't reach the answer service just now." });
+    }
+    setAsking(false);
+  }
+
   if (!data) return <div className="qm-notes qm-nmuted">Opening the notes…</div>;
 
   const n = data.notes || {};
@@ -247,7 +291,17 @@ function NotesPanel({
   const TABS: Array<[string, string]> = [
     ["summary", "Summary"],
     ["actions", actions.length ? `Action items · ${actions.length}` : "Action items"],
+    ["ask", "Ask"],
     ["transcript", "Transcript"],
+  ];
+
+  // Openers, so the box is not a blank stare. They are the questions people
+  // actually have three weeks later, not a demo of what the model can do.
+  const OPENERS = [
+    "What did we decide?",
+    "Did anyone commit to a date?",
+    "What was left unresolved?",
+    "What are the risks we named?",
   ];
 
   return (
@@ -329,6 +383,59 @@ function NotesPanel({
         )
       ) : null}
 
+      {tab === "ask" ? (
+        <>
+          <div className="qm-nhead">Ask this meeting</div>
+          <p className="qm-nfine" style={{ margin: "0 0 12px" }}>
+            Answered from the transcript only, with the moment it came from — so
+            you can check it rather than take its word for it.
+          </p>
+          <div className="qm-askrow">
+            <input
+              className="qm-askin"
+              placeholder="What did we decide about the billing provider?"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && ask(q)}
+            />
+            <button className="qm-ntab qm-non" onClick={() => ask(q)} disabled={asking || !q.trim()}>
+              {asking ? "Reading…" : "Ask"}
+            </button>
+          </div>
+          <div className="qm-chips">
+            {OPENERS.map((o) => (
+              <button key={o} className="qm-chip" onClick={() => { setQ(o); ask(o); }}>
+                {o}
+              </button>
+            ))}
+          </div>
+
+          {ans?.error ? <p className="qm-nwhy" style={{ marginTop: 14 }}>{ans.error}</p> : null}
+          {ans && !ans.error ? (
+            <div className="qm-answer">
+              <p className={ans.grounded ? "" : "qm-nmuted"}>{ans.answer}</p>
+              {(ans.cites || []).length ? (
+                <>
+                  <div className="qm-nfine" style={{ margin: "12px 0 6px" }}>Where it says so</div>
+                  {ans.cites.map((c: any, i: number) => (
+                    <button key={i} className="qm-cite" onClick={() => onSeek(c.at)}>
+                      <span className="qm-citeat">{fmtAt(c.at)}</span>
+                      <span className="qm-citewho">{c.who}</span>
+                      <span className="qm-citeq">&ldquo;{c.quote}&rdquo;</span>
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <p className="qm-nfine" style={{ marginTop: 10 }}>
+                  Nothing in the transcript settles that — so there is nothing to
+                  point at, and this answer is not one to rely on.
+                </p>
+              )}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+
       {tab === "transcript" ? (
         transcript ? (
           <pre className="qm-ntranscript">{transcript}</pre>
@@ -365,6 +472,25 @@ const NOTES_CSS = `
 .qm-nwhy b { display:block; margin:0 0 6px; }
 .qm-nwhy p { margin:0 0 5px; line-height:1.5; }
 .qm-nwhy em { font-style:normal; color:#ffe6b3; }
+.qm-askrow { display:flex; gap:8px; margin:0 0 10px; }
+.qm-askin { flex:1 1 auto; min-width:0; background:#0b0e14; color:#e9edf5;
+  border:1px solid #2c3342; border-radius:9px; padding:9px 12px; font:inherit; font-size:14px; }
+.qm-askin:focus { outline:0; border-color:#00a99d; }
+.qm-askin::placeholder { color:#5a6272; }
+.qm-chips { display:flex; gap:6px; flex-wrap:wrap; }
+.qm-chip { font:inherit; font-size:12.5px; cursor:pointer; background:#151a23;
+  color:#9aa3b4; border:1px solid #262b36; border-radius:999px; padding:5px 11px; }
+.qm-chip:hover { color:#cfd6e4; border-color:#3b4356; }
+.qm-answer { margin:18px 0 0; padding:14px 16px; background:#0b0e14;
+  border:1px solid #21252f; border-radius:10px; }
+.qm-answer > p { margin:0; font-size:15px; line-height:1.6; color:#dbe2ee; }
+.qm-cite { display:flex; gap:10px; align-items:baseline; width:100%; text-align:left;
+  font:inherit; cursor:pointer; background:transparent; border:0; border-top:1px solid #1b1f28;
+  padding:8px 0; color:#b8c0cf; font-size:13px; }
+.qm-cite:hover .qm-citeq { color:#e9edf5; }
+.qm-citeat { color:#00a99d; font-variant-numeric:tabular-nums; flex:0 0 auto; }
+.qm-citewho { color:#8b93a5; flex:0 0 auto; }
+.qm-citeq { color:#9aa3b4; line-height:1.5; }
 .qm-ntranscript { white-space:pre-wrap; word-break:break-word; margin:0;
   font:13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color:#b8c0cf;
   max-height:420px; overflow:auto; background:#0b0e14; border:1px solid #21252f;
