@@ -3,6 +3,8 @@
 // off and the recording is still there. Nothing here ever fails a recording.
 
 import { createClient } from "@supabase/supabase-js";
+import type { Step } from "@/lib/notes-health";
+import { checkTranscribe, checkNotes, checkEmail, headline } from "@/lib/notes-health";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -75,15 +77,23 @@ function speakerName(n: number | undefined) {
   return typeof n === "number" ? `Speaker ${n + 1}` : "Someone";
 }
 
-function extract(dg: any): { actions: string[]; decisions: string[] } {
+type Marked = { text: string; owner: string; at: number };
+
+function extract(dg: any): { actions: string[]; decisions: string[]; marks: Marked[] } {
   const utts: any[] = dg?.results?.utterances || [];
   const actions: string[] = [];
   const decisions: string[] = [];
+  // QUANTLYS 2026-08-17 — the WHEN was always there in Deepgram's utterances
+  // and was being thrown away. A commitment you can jump to in the recording
+  // is a commitment somebody can settle; one without a timestamp is a claim
+  // you have to re-listen to a whole meeting to check.
+  const marks: Marked[] = [];
   const seen = new Set<string>();
   for (const u of utts) {
     const text = String(u?.transcript || "").trim();
     if (text.length < 12 || NOISE.test(text)) continue;
-    const line = `${speakerName(u?.speaker)} — ${text}`;
+    const who = speakerName(u?.speaker);
+    const line = `${who} — ${text}`;
     const key = text.toLowerCase().slice(0, 80);
     if (seen.has(key)) continue;
     if (DECIDE.test(text)) {
@@ -92,9 +102,10 @@ function extract(dg: any): { actions: string[]; decisions: string[] } {
     } else if (COMMIT.test(text)) {
       seen.add(key);
       if (actions.length < 15) actions.push(line);
+      marks.push({ text, owner: who, at: Math.round(Number(u?.start) || 0) });
     }
   }
-  return { actions, decisions };
+  return { actions, decisions, marks };
 }
 
 // ---- Optional: let a model write the notes properly -----------------------
@@ -241,9 +252,32 @@ export async function POST(req: Request) {
   const forTranscript = audioPath || videoPath;
   const signed = await sb.storage.from("recordings").createSignedUrl(forTranscript, 3600);
 
+  // FIELD 2026-08-17 — every step below used to swallow its own failure, so a
+  // host who got no notes and no email had no way to find out why. Each one
+  // now records what happened, in the same words the "check my setup" button
+  // uses, and the answer travels with the recording forever.
+  const steps: Step[] = [];
+  const say = (key: Step["key"], label: string, ok: boolean, detail: string) =>
+    steps.push({ key, label, ok, detail });
+
   let notes: Notes = { summary: "", actions: [], decisions: [], topics: [], transcript: "" };
+  let marks: Marked[] = [];
+  let heard = false;
   try {
+    if (!signed.data?.signedUrl) {
+      say("transcribe", "Turn speech into text", false,
+          "The audio couldn't be read back out of storage, so there was nothing to transcribe.");
+    }
     const dg = signed.data?.signedUrl ? await listen(signed.data.signedUrl) : null;
+    if (!dg && signed.data?.signedUrl) {
+      // Ask the same question the pre-flight asks, so the reason is specific:
+      // no key, a rejected key, and a bad day at Deepgram all read differently.
+      const why = await checkTranscribe();
+      say("transcribe", "Turn speech into text", false,
+          why.ok
+            ? "Deepgram accepted the key but returned nothing for this recording — usually silence, a muted microphone, or a recording only a second or two long."
+            : why.detail);
+    }
     if (dg) {
       const alt = dg?.results?.channels?.[0]?.alternatives?.[0];
       notes.transcript = alt?.paragraphs?.transcript || alt?.transcript || "";
@@ -257,10 +291,31 @@ export async function POST(req: Request) {
       const found = extract(dg);
       notes.actions = found.actions;
       notes.decisions = found.decisions;
+      marks = found.marks;
+      heard = Boolean(notes.transcript.trim());
+      say("transcribe", "Turn speech into text", heard,
+          heard
+            ? `Transcribed ${notes.transcript.split(/\s+/).filter(Boolean).length} words.`
+            : "Deepgram ran but heard no words — usually silence or a muted microphone.");
+      const before = JSON.stringify([notes.summary, notes.actions, notes.decisions]);
       notes = await refine(notes.transcript, notes);
+      const changed = JSON.stringify([notes.summary, notes.actions, notes.decisions]) !== before;
+      if (heard) {
+        const why = changed ? null : await checkNotes();
+        say("notes", "Write the summary and action items", true,
+            changed
+              ? `A model wrote these notes — ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`
+              : `${why?.detail || "Written by reading the transcript directly."} Found ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`);
+      }
     }
-  } catch {
-    /* notes are a bonus; the recording is the product */
+  } catch (e: any) {
+    // Still not fatal — but no longer invisible.
+    say("transcribe", "Turn speech into text", false,
+        `The transcription step stopped with an error: ${e?.message || e}. The recording itself is safe.`);
+  }
+  if (!steps.some((s) => s.key === "notes")) {
+    say("notes", "Write the summary and action items", false,
+        heard ? "No notes were produced." : "There was no transcript to write notes from.");
   }
 
   const summaryPath = videoPath.replace(/\.[a-z0-9]+$/i, "") + SUMMARY_SUFFIX;
@@ -288,6 +343,52 @@ export async function POST(req: Request) {
     /* the recording still exists; the sidecar is a convenience */
   }
 
+  // ---- The commitments become ROWS -----------------------------------------
+  // This is the line between "a pile of notes" and "a thing that tracks work".
+  // A sentence inside a summary file cannot be ticked off, cannot be counted,
+  // and cannot come back next Monday still open. A row can.
+  try {
+    const { data: meeting } = await sb
+      .from("meetings")
+      .select("id, title, project, started_at")
+      .eq("room_name", room)
+      .maybeSingle();
+    // Prefer the model's cleaned-up actions when it produced them (they read
+    // as tasks, not as speech) but keep the raw marks for the timestamps.
+    const rows = marks.map((m) => ({
+      user_id: user.id,
+      meeting_id: meeting?.id ?? null,
+      room_name: room,
+      project: meeting?.project ?? null,
+      meeting_title: meeting?.title ?? null,
+      text: m.text.slice(0, 500),
+      // A plain column, not an expression index: PostgREST's on_conflict can
+      // only name columns, so `md5(text)` in the index would have made every
+      // re-run insert duplicates instead of updating.
+      fingerprint: m.text.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 200),
+      owner: m.owner,
+      ts_seconds: m.at,
+      video_path: videoPath,
+      met_at: meeting?.started_at || new Date().toISOString(),
+    }));
+    if (rows.length) {
+      // Re-running a recording's notes must update, never duplicate.
+      const { error } = await sb
+        .from("action_items")
+        .upsert(rows, { onConflict: "user_id,room_name,fingerprint", ignoreDuplicates: true });
+      say("items", "Track the action items", !error,
+          error
+            ? `Couldn't save the action items: ${error.message}. Has the action_items table been created?`
+            : `Saved ${rows.length} action item(s) — they'll appear in your weekly digest until you tick them off.`);
+    } else if (heard) {
+      say("items", "Track the action items", true,
+          "Nobody committed to anything in this one — nothing to track.");
+    }
+  } catch (e: any) {
+    say("items", "Track the action items", false,
+        `Couldn't save the action items: ${e?.message || e}`);
+  }
+
   // The email carries the notes and a link — never the file. A recording is
   // tens of megabytes and mail servers reject it.
   const watch = await sb.storage.from("recordings").createSignedUrl(videoPath, 60 * 60 * 24 * 7);
@@ -300,8 +401,33 @@ export async function POST(req: Request) {
       asHtml(room, notes, link)
     );
     emailed = ok ? user.email || "" : false;
-  } catch {
+    if (ok) {
+      say("email", "Email you the notes and a link", true, `Sent to ${user.email}.`);
+    } else {
+      // "It didn't send" is not an answer. Find out which kind of not-sending
+      // this was, and say that instead.
+      const why = await checkEmail();
+      say("email", "Email you the notes and a link", false,
+          why.ok
+            ? "Resend accepted the key but refused this message. The most common cause is a From address on a domain Resend hasn't verified."
+            : why.detail);
+    }
+  } catch (e: any) {
     emailed = false;
+    say("email", "Email you the notes and a link", false,
+        `The email step stopped with an error: ${e?.message || e}. Your notes are still on the host page.`);
+  }
+
+  // Re-save the sidecar now that every step has reported. The notes outlive
+  // this response; so must the explanation of what did and didn't happen.
+  try {
+    await sb.storage
+      .from("recordings")
+      .upload(summaryPath, new Blob([JSON.stringify({ ...payload, steps, health: headline(steps) })],
+        { type: "application/json" }),
+        { contentType: "application/json", upsert: true });
+  } catch {
+    /* the notes are already saved; this is the annotation */
   }
 
   return Response.json({
@@ -311,5 +437,7 @@ export async function POST(req: Request) {
     decisions: notes.decisions.length,
     hasTranscript: Boolean(notes.transcript),
     emailed,
+    steps,
+    health: headline(steps),
   });
 }
