@@ -110,7 +110,12 @@ function extract(dg: any): { actions: string[]; decisions: string[]; marks: Mark
 // Only runs when a key exists. Its output REPLACES the extraction above; if
 // anything goes wrong the extraction is still there, so notes never vanish.
 
-async function refine(transcript: string, base: Notes, hint: string): Promise<Notes> {
+async function refine(
+  transcript: string,
+  base: Notes,
+  hint: string,
+  people: string[]
+): Promise<Notes> {
   const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   if (!key || transcript.length < 200) return base;
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY);
@@ -126,7 +131,7 @@ async function refine(transcript: string, base: Notes, hint: string): Promise<No
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        messages: [{ role: "user", content: notesPrompt(transcript, hint) }],
+        messages: [{ role: "user", content: notesPrompt(transcript, hint, people) }],
         temperature: 0.2,
         max_tokens: 4000,
       }),
@@ -201,6 +206,7 @@ export async function POST(req: Request) {
 
   let notes: Notes = { ...EMPTY_NOTES };
   let marks: Marked[] = [];
+  let timedLines: Array<{ start: number; speaker: number; transcript: string }> = [];
   let heard = false;
   try {
     if (!signed.data?.signedUrl) {
@@ -228,6 +234,14 @@ export async function POST(req: Request) {
       const labels = Array.from(
         new Set(segs.flatMap((s) => (s?.topics || []).map((t: any) => String(t?.topic || ""))))
       ).filter(Boolean).slice(0, 8);
+      // The timed lines, kept so a question can be answered with a moment
+      // rather than a paragraph. Capped: a three-hour meeting is ~4k lines and
+      // the sidecar has to stay a file somebody can download.
+      timedLines = (dg?.results?.utterances || []).slice(0, 4000).map((u: any) => ({
+        start: Math.round(Number(u?.start) || 0),
+        speaker: typeof u?.speaker === "number" ? u.speaker : -1,
+        transcript: String(u?.transcript || ""),
+      }));
       notes.speakers = Array.from(
         new Set((dg?.results?.utterances || []).map((u: any) =>
           typeof u?.speaker === "number" ? `Speaker ${u.speaker + 1}` : ""))
@@ -243,7 +257,8 @@ export async function POST(req: Request) {
             ? `Transcribed ${notes.transcript.split(/\s+/).filter(Boolean).length} words.`
             : "Deepgram ran but heard no words — usually silence or a muted microphone.");
       const before = JSON.stringify([notes.overview, notes.topics, notes.actions, notes.decisions]);
-      notes = await refine(notes.transcript, notes, String(body.title || ""));
+      notes = await refine(notes.transcript, notes, String(body.title || ""),
+                           Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : []);
       const changed = JSON.stringify([notes.overview, notes.topics, notes.actions, notes.decisions]) !== before;
       if (heard) {
         const why = changed ? null : await checkNotes();
@@ -280,6 +295,11 @@ export async function POST(req: Request) {
     followups: notes.followups,
     topics: notes.topics,
     transcript: notes.transcript,
+    // What "ask this meeting a question" reads. Without the timings an answer
+    // can still be right, but it can't be checked — and an answer nobody can
+    // check is the thing that makes people stop trusting the feature.
+    utterances: timedLines,
+    people: Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [],
     createdAt: new Date().toISOString(),
   };
   try {
