@@ -18,6 +18,7 @@ import {
   inviteHtml,
   inviteText,
   inviteSubject,
+  senderLabel,
 } from "@/lib/invite";
 
 export const dynamic = "force-dynamic";
@@ -44,12 +45,16 @@ function appUrl(req: Request): string {
 
 /** The address mail actually leaves from — and the reason a send gets refused,
  *  in the words of the person who has to fix it. */
-function fromAddress(): { from: string; domain: string } {
-  const from = process.env.RESEND_FROM || "Quantlys Meeting <onboarding@resend.dev>";
-  const m = /<([^>]+)>/.exec(from);
-  const address = (m ? m[1] : from).trim();
-  return { from, domain: address.includes("@") ? address.split("@")[1].toLowerCase() : "" };
+function fromAddress(hostEmail: string): { from: string; domain: string } {
+  const configured = process.env.RESEND_FROM || "Quantlys Meeting <onboarding@resend.dev>";
+  const m = /<([^>]+)>/.exec(configured);
+  const address = (m ? m[1] : configured).trim();
+  return {
+    from: senderLabel(hostEmail, configured),
+    domain: address.includes("@") ? address.split("@")[1].toLowerCase() : "",
+  };
 }
+
 
 export async function POST(req: Request) {
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -129,6 +134,12 @@ export async function POST(req: Request) {
     new Date().toISOString();
   const minutes = Math.min(600, Math.max(5, Number(body?.minutes) || 60));
   const note = String(body?.note || "").slice(0, 600);
+  // The zone the meeting was ARRANGED in. Sent from the browser because the
+  // server has no idea what clock the host is looking at, and an invitation
+  // that prints 20:04 UTC for a 4pm meeting asks the reader to do arithmetic.
+  const tz = /^[A-Za-z_]+\/[A-Za-z0-9_+\-\/]+$/.test(String(body?.tz || ""))
+    ? String(body.tz)
+    : undefined;
   const link = `${appUrl(req)}/room/${room}`;
 
   // A re-send has to SUPERSEDE the first one, not sit beside it as a second
@@ -160,7 +171,7 @@ export async function POST(req: Request) {
     cancelled: cancel,
   });
 
-  const { from, domain } = fromAddress();
+  const { from, domain } = fromAddress(user.email || "");
   let sent = 0;
   let failure = "";
   try {
@@ -171,9 +182,9 @@ export async function POST(req: Request) {
         from,
         to: guests,
         reply_to: user.email || undefined,
-        subject: inviteSubject(title, startISO, cancel),
-        html: inviteHtml({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel }),
-        text: inviteText({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel }),
+        subject: inviteSubject(title, startISO, cancel, tz),
+        html: inviteHtml({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel, tz }),
+        text: inviteText({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel, tz }),
         attachments: [
           {
             filename: "invite.ics",
