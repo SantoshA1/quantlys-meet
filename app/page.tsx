@@ -1,103 +1,153 @@
 "use client";
+
+// The front door. Deliberately self-contained: its own Supabase client from
+// the public env vars, its own styles. Guests join here with no account;
+// hosts are sent to their console. There is nothing on this page that ends
+// in a dead end.
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabaseBrowser } from "@/lib/supabase-browser";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+
+let _db: SupabaseClient | null = null;
+function db(): SupabaseClient {
+  if (!_db) {
+    _db = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+  }
+  return _db;
+}
 
 export default function Home() {
-  const supabase = supabaseBrowser();
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
-
-  // guest join
-  const [joinInput, setJoinInput] = useState("");
-  // host code auth
-  const [email, setEmail] = useState(""); const [code, setCode] = useState("");
-  const [stage, setStage] = useState<"email" | "code">("email");
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [email, setEmail] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null));
-    return () => sub.subscription.unsubscribe();
+    db()
+      .auth.getSession()
+      .then(({ data }) => {
+        setEmail(data.session?.user?.email ?? null);
+        setReady(true);
+      });
   }, []);
 
-  function goJoin() {
-    const v = joinInput.trim();
-    if (!v) return;
-    // Accept a full link OR a bare room code.
-    let room = v;
-    try { const u = new URL(v); room = u.pathname.split("/meeting/")[1]?.split("/")[0] || v; } catch {}
-    router.push(`/meeting/${room}`);
+  // "qm-abc123", a full link, or a link with a query string — all the same room.
+  function roomFrom(input: string) {
+    const raw = input.trim();
+    if (!raw) return "";
+    const last = raw.split("?")[0].split("#")[0].split("/").filter(Boolean).pop() || "";
+    return last;
   }
 
-  async function sendCode() {
-    setErr(""); setBusy(true);
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(), options: { shouldCreateUser: true }, // NO emailRedirectTo → code, not link
-    });
+  async function joinAsGuest() {
+    const room = roomFrom(code);
+    if (!room || busy) return;
+    setBusy(true);
+    setNote("");
+    // meetings are owner-only by design, so a guest looks up the one room
+    // they were given by its exact code and nothing else.
+    const { data, error } = await db().rpc("meeting_by_code", { code: room });
     setBusy(false);
-    if (error) { setErr(error.message); return; }
-    setStage("code");
-  }
-  async function verify() {
-    setErr(""); setBusy(true);
-    const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: "email" });
-    setBusy(false);
-    if (error) setErr("That code didn't work — check it or request a new one.");
+    if (error) {
+      // Never strand someone over a lookup: the room name is what matters.
+      router.push(`/room/${room}`);
+      return;
+    }
+    if (!data || (Array.isArray(data) && data.length === 0)) {
+      setNote("That link or code doesn't match a meeting that's running. Check it and try again.");
+      return;
+    }
+    const found = Array.isArray(data) ? data[0] : data;
+    router.push(`/room/${found.room_name || room}`);
   }
 
   return (
-    <div className="wrap">
-      {/* JOIN A MEETING — no account needed */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <h1>Join a meeting</h1>
-        <p className="muted">Paste a meeting link or code — no account needed.</p>
-        <input placeholder="Meeting link or code" value={joinInput}
-          onChange={e => setJoinInput(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && goJoin()} />
-        <button disabled={!joinInput.trim()} onClick={goJoin}
-          style={{ width: "100%" }}>Join as guest</button>
-      </div>
+    <main className="qmh-wrap">
+      <style>{CSS}</style>
 
-      {/* HOST SIGN-IN — 6-digit code */}
-      <div className="card">
-        {user ? (
+      <header className="qmh-bar">
+        <span className="qmh-logo">Quantlys Meeting</span>
+      </header>
+
+      <section className="qmh-card">
+        <h1>Join a meeting</h1>
+        <p className="qmh-muted">Paste a meeting link or code — no account needed.</p>
+        <div className="qmh-row">
+          <input
+            className="qmh-input"
+            placeholder="Meeting link or code"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && joinAsGuest()}
+            autoFocus
+          />
+          <button className="qmh-primary" onClick={joinAsGuest} disabled={busy || !code.trim()}>
+            {busy ? "Finding…" : "Join as guest"}
+          </button>
+        </div>
+        {note ? <p className="qmh-note">{note}</p> : null}
+      </section>
+
+      <section className="qmh-card">
+        <h2>Host a meeting</h2>
+        {!ready ? (
+          <p className="qmh-muted">Loading…</p>
+        ) : email ? (
           <>
-            <h2>Host a meeting</h2>
-            <p className="muted">Signed in as {user.email}</p>
-            {/* create-meeting + active list unchanged */}
-          </>
-        ) : stage === "email" ? (
-          <>
-            <h2>Sign in to host</h2>
-            <p className="muted">Hosting requires an account. We'll email a 6-digit code.</p>
-            <input type="email" placeholder="you@team.com" value={email}
-              onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && email && sendCode()} />
-            <button disabled={!email || busy} onClick={sendCode} style={{ width: "100%" }}>
-              {busy ? "Sending…" : "Send code"}
-            </button>
+            <p className="qmh-muted">
+              Signed in as {email}. Your meetings, invite links and recordings live on your host
+              page.
+            </p>
+            <div className="qmh-row">
+              <button className="qmh-primary" onClick={() => router.push("/host")}>
+                Go to my host page
+              </button>
+            </div>
           </>
         ) : (
           <>
-            <h2>Enter your code</h2>
-            <p className="muted">6-digit code sent to <b>{email}</b>.</p>
-            <input inputMode="numeric" maxLength={6} autoFocus placeholder="000000" value={code}
-              onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              onKeyDown={e => e.key === "Enter" && code.length === 6 && verify()}
-              style={{ letterSpacing: "0.4em", textAlign: "center", fontSize: 22 }} />
-            <button disabled={code.length !== 6 || busy} onClick={verify} style={{ width: "100%" }}>
-              {busy ? "Verifying…" : "Verify & sign in"}
-            </button>
-            <p className="muted" style={{ marginTop: 10 }}>
-              <a onClick={sendCode} style={{ color: "var(--brand)", cursor: "pointer" }}>Email me a new code</a>
-              {" · "}
-              <a onClick={() => { setStage("email"); setCode(""); }} style={{ color: "var(--muted)", cursor: "pointer" }}>Change email</a>
+            <p className="qmh-muted">
+              Only the host needs an account. We'll email you a 6-digit code — everyone you invite
+              joins with one click.
             </p>
+            <div className="qmh-row">
+              <button className="qmh-primary" onClick={() => router.push("/host")}>
+                Sign in to host
+              </button>
+            </div>
           </>
         )}
-        {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
+
+const CSS = `
+.qmh-wrap { max-width: 720px; margin: 0 auto; padding: 24px 20px 72px;
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #e9edf5; }
+.qmh-bar { display: flex; align-items: center; padding-bottom: 18px;
+  border-bottom: 1px solid #262b36; margin-bottom: 24px; }
+.qmh-logo { font-weight: 600; letter-spacing: .01em; }
+.qmh-card { background: #171a22; border: 1px solid #262b36; border-radius: 14px;
+  padding: 22px; margin-bottom: 18px; }
+.qmh-card h1 { font-size: 21px; margin: 0 0 6px; }
+.qmh-card h2 { font-size: 17px; margin: 0 0 6px; }
+.qmh-muted { color: #8b93a5; font-size: 14px; margin: 0 0 16px; }
+.qmh-note { color: #ffb4b4; font-size: 14px; margin: 14px 0 0; }
+.qmh-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.qmh-input { flex: 1 1 240px; min-width: 0; background: #10131a;
+  border: 1px solid #2b3240; border-radius: 10px; padding: 11px 13px;
+  color: #e9edf5; font: inherit; }
+.qmh-input:focus { outline: none; border-color: #00a99d; }
+.qmh-wrap button { font: inherit; cursor: pointer; border-radius: 10px;
+  padding: 11px 18px; width: auto; white-space: nowrap; }
+.qmh-wrap button:disabled { opacity: .55; cursor: default; }
+.qmh-primary { background: #00a99d; color: #06110f; border: 0; font-weight: 600; }
+`;
