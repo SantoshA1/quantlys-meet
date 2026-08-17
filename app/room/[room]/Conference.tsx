@@ -10,6 +10,7 @@ import {
   LiveKitRoom,
   VideoConference,
   useDataChannel,
+  useLocalParticipant,
   useParticipants,
   useRoomContext,
 } from "@livekit/components-react";
@@ -210,11 +211,19 @@ export default function Conference({ room }: { room: string }) {
   return (
     <div className="qmr-stage" data-lk-theme="default">
       <style>{CSS}</style>
-      <LiveKitRoom token={token} serverUrl={url} connect video audio style={{ height: "100%" }}>
+      <LiveKitRoom
+        token={token}
+        serverUrl={url}
+        connect
+        video
+        audio
+        className="qmr-lk"
+      >
         <RoomHeader room={room} />
         <div className="qmr-conf">
           <VideoConference />
         </div>
+        <Reactions />
       </LiveKitRoom>
     </div>
   );
@@ -780,6 +789,245 @@ function RoomHeader({ room }: { room: string }) {
   );
 }
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// Reactions
+//
+// A meeting is people, and people interrupt. Without a way to agree, disagree
+// or ask to speak, the only tool anyone has is to talk over whoever is
+// talking — so the loudest person wins and the quietest one never says the
+// thing they came to say. That is what these buttons are for. They are not
+// decoration.
+//
+// Two kinds, and the difference matters:
+//   · A REACTION is a moment. Clap, thumbs, laugh. It floats up and it is
+//     gone, because "I agreed with that sentence" stops being true a sentence
+//     later.
+//   · A STATE is a fact about a person right now. A raised hand, or stepping
+//     away. It stays until they take it down, everyone can see WHOSE it is,
+//     and — the part that is easy to get wrong — somebody who joins the call
+//     afterwards sees it too.
+//
+// The state half is heartbeated for exactly that reason. A raised hand
+// re-announces itself every few seconds; one that stops announcing is taken
+// down after fifteen. So a late joiner learns about it within a heartbeat,
+// and a hand belonging to somebody whose laptop died does not stay up for the
+// rest of the meeting with nobody able to lower it.
+// ───────────────────────────────────────────────────────────────────────────
+
+const REACT_TOPIC = "qm-react";
+const STATE_TOPIC = "qm-state";
+const STATE_TTL_MS = 15000;
+const STATE_BEAT_MS = 5000;
+
+const QUICK: Array<{ key: string; glyph: string; label: string }> = [
+  { key: "clap",   glyph: "👏", label: "Applaud" },
+  { key: "up",     glyph: "👍", label: "Agree" },
+  { key: "down",   glyph: "👎", label: "Disagree" },
+  { key: "smile",  glyph: "🙂", label: "Smile" },
+  { key: "laugh",  glyph: "😂", label: "Laugh" },
+  { key: "party",  glyph: "🎉", label: "Celebrate" },
+  { key: "heart",  glyph: "❤️", label: "Love it" },
+  { key: "think",  glyph: "🤔", label: "Not sure" },
+];
+
+type Floater = { id: string; glyph: string; who: string; x: number };
+type Held = { kind: "hand" | "brb"; who: string; at: number };
+
+function Reactions() {
+  const { localParticipant } = useLocalParticipant();
+  const participants = useParticipants();
+  const [open, setOpen] = useState(false);
+  const [floaters, setFloaters] = useState<Floater[]>([]);
+  const [held, setHeld] = useState<Record<string, Held>>({});
+  const [mine, setMine] = useState<{ hand: boolean; brb: boolean }>({ hand: false, brb: false });
+  const seq = useRef(0);
+
+  const me = localParticipant?.identity || "me";
+  const myName = localParticipant?.name || me.split("-")[0] || "Someone";
+
+  const show = useCallback((glyph: string, who: string) => {
+    const id = `${Date.now()}-${seq.current++}`;
+    // Spread them across the width so three people clapping at once reads as
+    // three claps rather than one thick smudge.
+    setFloaters((f) => [...f, { id, glyph, who, x: 8 + Math.random() * 76 }].slice(-24));
+    setTimeout(() => setFloaters((f) => f.filter((x) => x.id !== id)), 3200);
+  }, []);
+
+  const { send: sendReact } = useDataChannel(REACT_TOPIC, (msg) => {
+    try {
+      const m = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (m?.glyph) show(String(m.glyph), String(m.who || "Someone"));
+    } catch {
+      /* a malformed reaction is not worth a broken meeting */
+    }
+  });
+
+  const { send: sendState } = useDataChannel(STATE_TOPIC, (msg) => {
+    try {
+      const m = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (!m?.id || !m?.kind) return;
+      setHeld((h) => {
+        const next = { ...h };
+        const key = `${m.id}:${m.kind}`;
+        if (m.on) next[key] = { kind: m.kind, who: String(m.who || "Someone"), at: Date.now() };
+        else delete next[key];
+        return next;
+      });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  const bytes = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+
+  function react(glyph: string) {
+    show(glyph, "You");
+    try {
+      sendReact(bytes({ glyph, who: myName }), { topic: REACT_TOPIC });
+    } catch {
+      /* a reaction that doesn't leave the room is not worth an error */
+    }
+    setOpen(false);
+  }
+
+  const announce = useCallback(
+    (kind: "hand" | "brb", on: boolean) => {
+      try {
+        sendState(bytes({ kind, on, id: me, who: myName }), { topic: STATE_TOPIC });
+      } catch {
+        /* ignore */
+      }
+    },
+    [sendState, me, myName]
+  );
+
+  function toggle(kind: "hand" | "brb") {
+    const on = !mine[kind];
+    setMine((m) => ({ ...m, [kind]: on }));
+    setHeld((h) => {
+      const next = { ...h };
+      const key = `${me}:${kind}`;
+      if (on) next[key] = { kind, who: "You", at: Date.now() };
+      else delete next[key];
+      return next;
+    });
+    announce(kind, on);
+    setOpen(false);
+  }
+
+  // The heartbeat, and the sweep. Whatever I am holding, I keep saying so;
+  // whatever I haven't heard about lately, I take down.
+  useEffect(() => {
+    const beat = setInterval(() => {
+      if (mine.hand) announce("hand", true);
+      if (mine.brb) announce("brb", true);
+      const now = Date.now();
+      setHeld((h) => {
+        const alive: Record<string, Held> = {};
+        for (const [k, v] of Object.entries(h)) {
+          const isMine = k.startsWith(`${me}:`);
+          if (isMine || now - v.at < STATE_TTL_MS) alive[k] = v;
+        }
+        return alive;
+      });
+    }, STATE_BEAT_MS);
+    return () => clearInterval(beat);
+  }, [mine, announce, me]);
+
+  // Someone who leaves takes their hand with them. Without this a person who
+  // drops out mid-question leaves a hand up that nobody in the room is able
+  // to lower.
+  useEffect(() => {
+    const here = new Set(participants.map((p) => p.identity));
+    here.add(me);
+    setHeld((h) => {
+      const kept: Record<string, Held> = {};
+      for (const [k, v] of Object.entries(h)) if (here.has(k.split(":")[0])) kept[k] = v;
+      return Object.keys(kept).length === Object.keys(h).length ? h : kept;
+    });
+  }, [participants, me]);
+
+  const hands = Object.values(held).filter((h) => h.kind === "hand");
+  const away = Object.values(held).filter((h) => h.kind === "brb");
+
+  return (
+    <>
+      {/* Raised hands are the one thing in this whole component that must be
+          impossible to miss — the point of raising your hand is being seen. */}
+      {hands.length || away.length ? (
+        <div className="qmr-held" role="status" aria-live="polite">
+          {hands.length ? (
+            <span className="qmr-heldpill qmr-hand">
+              ✋ {hands.length === 1 ? `${hands[0].who} has a question` : `${hands.length} hands up`}
+              {hands.length > 1 ? <em> · {hands.map((h) => h.who).join(", ")}</em> : null}
+            </span>
+          ) : null}
+          {away.length ? (
+            <span className="qmr-heldpill qmr-brb">
+              ☕ {away.map((a) => a.who).join(", ")} — back shortly
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="qmr-floats" aria-hidden="true">
+        {floaters.map((f) => (
+          <span key={f.id} className="qmr-float" style={{ left: `${f.x}%` }}>
+            {f.glyph}
+            <em>{f.who}</em>
+          </span>
+        ))}
+      </div>
+
+      <div className="qmr-reactdock">
+        {open ? (
+          <div className="qmr-reactmenu" role="menu">
+            {QUICK.map((q) => (
+              <button
+                key={q.key}
+                className="qmr-reactbtn"
+                title={q.label}
+                aria-label={q.label}
+                onClick={() => react(q.glyph)}
+              >
+                {q.glyph}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="qmr-reactrow">
+          <button
+            className={`qmr-hold${mine.hand ? " qmr-holdon" : ""}`}
+            onClick={() => toggle("hand")}
+            aria-pressed={mine.hand}
+            title={mine.hand ? "Put your hand down" : "Raise your hand"}
+          >
+            ✋ <span>{mine.hand ? "Hand up" : "Raise hand"}</span>
+          </button>
+          <button
+            className={`qmr-hold${mine.brb ? " qmr-holdon" : ""}`}
+            onClick={() => toggle("brb")}
+            aria-pressed={mine.brb}
+            title={mine.brb ? "You're back" : "Step away for a moment"}
+          >
+            ☕ <span>{mine.brb ? "Away" : "Be right back"}</span>
+          </button>
+          <button
+            className={`qmr-hold${open ? " qmr-holdon" : ""}`}
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            title="React"
+          >
+            🙂 <span>React</span>
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+
 const CSS = `
 .qmr-prejoin { min-height: 100vh; display: grid; place-items: center; padding: 20px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -806,20 +1054,54 @@ const CSS = `
 .qmr-dot { width: 9px; height: 9px; border-radius: 50%; background: #ff5964;
   animation: qmr-pulse 1.2s ease-in-out infinite; }
 @keyframes qmr-pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
-.qmr-stage { height: 100vh; display: flex; flex-direction: column; background: #0b0d13;
+/* FIELD 2026-08-17, from a screenshot of a live meeting: the controls were
+   off the bottom of the window and you had to scroll a video call to find
+   Leave.
+
+   The cause was one line. ".qmr-stage" was a 100vh flex column, and
+   "<LiveKitRoom>" sat inside it with an inline "height: 100%" — but
+   LiveKitRoom renders a plain <div>, which is NOT a flex container. So
+   ".qmr-conf { flex: 1 }" was addressing a parent that had no flex layout to
+   take part in: the rule did nothing, the conference sized itself to its
+   content, and the whole column grew past the viewport. The header, being
+   "flex-wrap: wrap", then made it worse every time a panel opened.
+
+   Now the chain is unbroken: stage is the viewport, LiveKitRoom is a flex
+   column that fills it, and the conference takes whatever is left. And
+   "overflow: hidden" on the stage means a mistake like this can never again
+   express itself as a scrollbar the user has to discover. */
+.qmr-stage { height: 100vh; height: 100dvh; overflow: hidden;
+  display: flex; flex-direction: column; background: #0b0d13;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }
-.qmr-bar { position: relative; display: flex; align-items: center; gap: 14px;
-  padding: 10px 16px; background: #12151d; border-bottom: 1px solid #262b36;
-  flex-wrap: wrap; }
+.qmr-lk { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.qmr-bar { position: relative; flex: 0 0 auto; display: flex; align-items: center;
+  gap: 12px; padding: 8px 14px; background: #12151d;
+  border-bottom: 1px solid #262b36; flex-wrap: nowrap; overflow: visible; }
 .qmr-logo { font-weight: 600; }
 .qmr-people { color: #8b93a5; font-size: 13px; }
+.qmr-bar button { flex: 0 0 auto; }
 .qmr-names { font-style: normal; color: #6f7789; }
-.qmr-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
-.qmr-conf { flex: 1; min-height: 0; }
-.qmr-status { flex-basis: 100%; display: flex; align-items: center; gap: 10px;
-  font-size: 13px; padding: 7px 11px; border-radius: 8px; border: 1px solid #262b36;
-  background: #10131a; }
+.qmr-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap;
+  overflow-x: auto; scrollbar-width: none; }
+.qmr-actions::-webkit-scrollbar { display: none; }
+.qmr-people { flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.qmr-logo { flex: 0 0 auto; }
+@media (max-width: 720px) {
+  .qmr-logo, .qmr-people { display: none; }   /* the meeting is the point */
+  .qmr-bar { padding: 6px 10px; }
+}
+.qmr-conf { flex: 1 1 auto; min-height: 0; min-width: 0; position: relative; }
+/* Both of these used to be "flex-basis: 100%" inside the header, so opening
+   "Manage people" made the header a second row tall and pushed the video down
+   — the meeting itself got smaller because you asked who was in it. They
+   float over the stage now: the video never moves. */
+.qmr-status { position: absolute; top: calc(100% + 8px); right: 12px; z-index: 30;
+  max-width: min(440px, calc(100vw - 24px)); display: flex; align-items: center;
+  gap: 10px; font-size: 13px; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid #262b36; background: #10131a;
+  box-shadow: 0 12px 30px rgba(0,0,0,.5); }
 .qmr-ok  { color: #8fd8cf; border-color: #1f4f49; }
 .qmr-err { color: #ffb4b4; border-color: #5c2b35; }
 .qmr-busy{ color: #ffd9a0; border-color: #5a4520; }
@@ -845,8 +1127,10 @@ const CSS = `
 
 /* Host controls. */
 .qmr-on { border-color: #00a99d; color: #7fe0d6; }
-.qmr-panel { flex-basis: 100%; background: #10131a; border: 1px solid #262b36;
-  border-radius: 10px; padding: 12px 14px; }
+.qmr-panel { position: absolute; top: calc(100% + 8px); right: 12px; z-index: 40;
+  width: min(360px, calc(100vw - 24px)); max-height: min(60vh, 460px);
+  overflow: auto; background: #10131a; border: 1px solid #262b36;
+  border-radius: 12px; padding: 14px; box-shadow: 0 18px 44px rgba(0,0,0,.6); }
 .qmr-panel-head { display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
 .qmr-lock { background: transparent; color: #cfd6e4; border: 1px solid #2b3240; }
@@ -856,5 +1140,63 @@ const CSS = `
 .qmr-pname { flex: 1 1 auto; min-width: 0; font-size: 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qmr-plist button { padding: 5px 12px; font-size: 12.5px; }
+/* ── Reactions ─────────────────────────────────────────────────────────── */
+.qmr-reactdock { position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 78px; z-index: 25; display: flex; flex-direction: column;
+  align-items: center; gap: 8px; pointer-events: none; }
+.qmr-reactdock > * { pointer-events: auto; }
+.qmr-reactrow { display: flex; gap: 8px; background: rgba(16,19,26,.92);
+  border: 1px solid #2b3240; border-radius: 999px; padding: 6px;
+  backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+.qmr-hold { display: inline-flex; align-items: center; gap: 7px; font: inherit;
+  font-size: 13.5px; cursor: pointer; background: transparent; color: #cfd6e4;
+  border: 1px solid transparent; border-radius: 999px; padding: 7px 14px;
+  white-space: nowrap; }
+.qmr-hold:hover { background: #1a1f2a; }
+.qmr-holdon { background: #0d3d39; color: #7fe0d6; border-color: #00a99d; }
+.qmr-reactmenu { display: flex; gap: 4px; background: rgba(16,19,26,.95);
+  border: 1px solid #2b3240; border-radius: 999px; padding: 6px;
+  backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+.qmr-reactbtn { font-size: 21px; line-height: 1; cursor: pointer;
+  background: transparent; border: 0; border-radius: 50%; width: 40px;
+  height: 40px; transition: transform .12s ease, background .12s ease; }
+.qmr-reactbtn:hover { background: #1f2531; transform: scale(1.22); }
+
+.qmr-floats { position: absolute; inset: 0; overflow: hidden;
+  pointer-events: none; z-index: 24; }
+.qmr-float { position: absolute; bottom: 120px; font-size: 34px; line-height: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  animation: qmr-rise 3.2s cubic-bezier(.22,.7,.3,1) forwards; }
+.qmr-float em { font: 600 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI",
+  Roboto, sans-serif; font-style: normal; color: #e9edf5;
+  background: rgba(11,13,19,.72); border-radius: 999px; padding: 3px 8px;
+  white-space: nowrap; }
+@keyframes qmr-rise {
+  0%   { opacity: 0; transform: translateY(20px) scale(.6); }
+  12%  { opacity: 1; transform: translateY(0) scale(1.1); }
+  30%  { transform: translateY(-40px) scale(1); }
+  100% { opacity: 0; transform: translateY(-230px) scale(.85); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qmr-float { animation: qmr-fade 2.2s linear forwards; }
+  @keyframes qmr-fade { 0%,70% { opacity: 1 } 100% { opacity: 0 } }
+  .qmr-dot { animation: none; }
+}
+
+.qmr-held { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 26; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100% - 24px); pointer-events: none; }
+.qmr-heldpill { display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 600; border-radius: 999px; padding: 6px 14px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+.qmr-heldpill em { font-style: normal; font-weight: 400; opacity: .8; }
+.qmr-hand { background: #4a3a13; color: #ffe08a; border: 1px solid #7a611f; }
+.qmr-brb  { background: #1b2430; color: #a9c2dd; border: 1px solid #33455c; }
+@media (max-width: 720px) {
+  .qmr-hold span { display: none; }
+  .qmr-hold { padding: 9px 12px; font-size: 17px; }
+  .qmr-reactdock { bottom: 72px; }
+}
+
 .qmr-fine { margin: 12px 0 0; font-size: 12px; color: #8b93a5; line-height: 1.5; }
 `;
