@@ -273,9 +273,57 @@ export async function POST(req: Request) {
     say("transcribe", "Turn speech into text", false,
         `The transcription step stopped with an error: ${e?.message || e}. The recording itself is safe.`);
   }
+  // FIELD 2026-08-17 — the fallback that should always have existed.
+  //
+  // If the meeting was captioned live, every word is already here: it went
+  // past on everyone's screen. Reporting "no transcript" because one API key
+  // is missing, or because the upload was rejected, is the app choosing to
+  // know less than it does — and the person is left with a recording and
+  // nothing to read.
+  //
+  // Only used when the real transcription produced nothing. Captions are a
+  // live convenience and the recording's own transcript is the better record;
+  // this is what happens when there isn't one.
+  const ccLines: Array<{ start: number; speaker: number; transcript: string; who?: string }> =
+    Array.isArray(body.captions) ? body.captions.slice(0, 4000) : [];
+  const ccText = String(body.captionText || "");
+  if (!heard && (ccText.trim() || ccLines.length)) {
+    notes.transcript = ccText.trim() || ccLines.map((l) => l.transcript).join("\n");
+    timedLines = ccLines.map((l) => ({
+      start: Math.max(0, Math.round(Number(l.start) || 0)),
+      speaker: Number(l.speaker) >= 0 ? Number(l.speaker) : -1,
+      transcript: String(l.transcript || ""),
+    }));
+    marks = ccLines
+      .filter((l) => COMMIT.test(String(l.transcript || "")))
+      .map((l) => ({
+        text: String(l.transcript || ""),
+        owner: String(l.who || "Someone"),
+        at: Math.max(0, Math.round(Number(l.start) || 0)),
+      }));
+    heard = true;
+    // Replace the failure rather than adding a success beside it. Two
+    // "Turn speech into text" rows, one red and one green, is a report that
+    // makes a person work out what happened — the whole point of this list is
+    // that they don't have to.
+    for (let i = steps.length - 1; i >= 0; i--) if (steps[i].key === "transcribe") steps.splice(i, 1);
+    say("transcribe", "Turn speech into text", true,
+        `The recording couldn't be transcribed, so these notes were written from the ${ccLines.length} live caption line(s) instead. Captions are less accurate than the transcript — treat anything surprising as worth checking against the recording.`);
+    const people = Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [];
+    const before = JSON.stringify([notes.overview, notes.topics, notes.actions]);
+    notes = await refine(notes.transcript, notes, String(body.title || ""), people);
+    const changed = JSON.stringify([notes.overview, notes.topics, notes.actions]) !== before;
+    say("notes", "Write the summary and action items", true,
+        changed
+          ? `Written from the live captions — ${notes.topics.length} topic(s), ${notes.actions.length} action item(s).`
+          : "Written from the live captions by reading them directly.");
+  }
+
   if (!steps.some((s) => s.key === "notes")) {
     say("notes", "Write the summary and action items", false,
-        heard ? "No notes were produced." : "There was no transcript to write notes from.");
+        heard
+          ? "No notes were produced."
+          : "There was no transcript to write notes from, and captions weren't on during the meeting — turn them on next time and the notes can be written from those even when transcription fails.");
   }
 
   const summaryPath = videoPath.replace(/\.[a-z0-9]+$/i, "") + SUMMARY_SUFFIX;
@@ -300,6 +348,7 @@ export async function POST(req: Request) {
     // check is the thing that makes people stop trusting the feature.
     utterances: timedLines,
     people: Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [],
+    fromCaptions: !ccLines.length ? false : notes.transcript === (ccText.trim() || ccLines.map((l) => l.transcript).join("\n")),
     createdAt: new Date().toISOString(),
   };
   try {
