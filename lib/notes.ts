@@ -39,7 +39,22 @@ export const EMPTY: Notes = {
 // a set of notes that adds a decision nobody made is worse than no notes,
 // because somebody will act on it.
 
-export function notesPrompt(transcript: string, hint?: string): string {
+export function notesPrompt(
+  transcript: string,
+  hint?: string,
+  people?: string[]
+): string {
+  // FIELD 2026-08-17: every set of notes said "Speaker 1" and "Speaker 2".
+  // The app KNEW the names — everybody types one on the way in — and threw
+  // them away before the model ever saw them. Notes full of Speaker 2 are
+  // notes nobody can act on: you cannot chase a commitment made by a number.
+  //
+  // But the mapping has to stay honest. Diarisation gives you "these two
+  // stretches are the same voice", not "this voice is Kiran". So the names go
+  // in as a LIST of who was in the room, with an explicit instruction to keep
+  // the number whenever the transcript doesn't settle it. A confidently wrong
+  // name is worse than an anonymous one — it puts words in someone's mouth.
+  const roster = (people || []).map((x) => String(x || "").trim()).filter(Boolean);
   return [
     "You are writing the notes for the people who were in this meeting, and",
     "for the one person who missed it. Read the transcript and return STRICT",
@@ -86,6 +101,15 @@ export function notesPrompt(transcript: string, hint?: string): string {
     "   leave it out rather than guessing at it.",
     "5. Return JSON only. No prose before or after, no code fences.",
     hint ? `\nThe host called this meeting: ${hint}` : "",
+    roster.length
+      ? "\nThe people in the room were: " + roster.join(", ") + ".\n" +
+        "Where the transcript makes it CLEAR which of them a speaker label " +
+        "belongs to — they introduce themselves, somebody addresses them by " +
+        "name, they say something only one of them could say — use the name " +
+        "instead of \"Speaker 2\". Where it is not clear, KEEP the speaker " +
+        "number. Guessing puts words in somebody's mouth, and a name attached " +
+        "to a commitment is the thing people are chased about."
+      : "",
     "",
     "TRANSCRIPT:",
     transcript.slice(0, 120000),
@@ -256,4 +280,123 @@ export function notesSubject(n: Notes, room: string): string {
   const t = n.title || "Meeting notes";
   const n_ = n.actions.length;
   return n_ ? `${t} · ${n_} action item${n_ === 1 ? "" : "s"}` : `${t} · ${room}`;
+}
+
+
+// ── asking the meeting a question ──────────────────────────────────────────
+//
+// FIELD 2026-08-17: the notes answer the questions we thought to ask. The one
+// somebody actually has is narrower and arrives three weeks later — "what did
+// we decide about the billing provider?", "did anyone commit to a date?",
+// "who said the margin number was wrong?" — and today the only way to answer
+// it is to play a fifty-minute recording.
+//
+// The rule that makes this trustworthy rather than impressive: it answers
+// from the transcript ONLY, and it says WHERE. An answer with a timestamp is
+// one you can check in ten seconds. An answer without one is a claim about a
+// meeting you now have to re-listen to anyway, which is the problem it was
+// supposed to solve.
+
+export type AskCite = { at: number; who: string; quote: string };
+export type Answer = { answer: string; cites: AskCite[]; grounded: boolean };
+
+export function askPrompt(question: string, transcript: string, people?: string[]): string {
+  const roster = (people || []).filter(Boolean);
+  return [
+    "You are answering a question about a meeting, using ONLY the transcript",
+    "below. Return STRICT JSON:",
+    "",
+    '{"answer": string, "cites": [{"at": number, "who": string, "quote": string}],',
+    ' "grounded": boolean}',
+    "",
+    "answer — 1 to 4 sentences, plain language, straight at the question. No",
+    "  preamble, no \"based on the transcript\".",
+    "",
+    "cites — up to 4 moments that support the answer. `at` is the number of",
+    "  SECONDS from the start, taken from the [123s] marker at the beginning",
+    "  of the line you are quoting. `quote` is a short verbatim fragment, 20",
+    "  words at most. `who` is the speaker label on that line.",
+    "",
+    "grounded — true only if the transcript actually answers the question.",
+    "",
+    "THE RULE: if the transcript does not answer it, set grounded to false,",
+    "return an empty cites array, and say so in the answer — \"That did not",
+    "come up\" or \"They discussed X but never settled it\". Do NOT reason from",
+    "general knowledge, do NOT infer what they probably meant, and",
+    "do NOT soften a no into a maybe. The whole value of this is that it can be",
+    "checked in ten seconds; an answer that cannot be checked is worse than",
+    "no answer, because the person will act on it.",
+    roster.length ? `\nPeople in the room: ${roster.join(", ")}.` : "",
+    "",
+    `QUESTION: ${String(question || "").slice(0, 500)}`,
+    "",
+    "TRANSCRIPT:",
+    String(transcript || "").slice(0, 120000),
+  ].join("\n");
+}
+
+export function parseAnswer(raw: string): Answer {
+  const fallback: Answer = {
+    answer: "I couldn't read an answer out of that. Try asking it a different way.",
+    cites: [], grounded: false,
+  };
+  const text = String(raw || "");
+  const a = text.indexOf("{");
+  const b = text.lastIndexOf("}");
+  if (a < 0 || b <= a) return fallback;
+  let p: any;
+  try {
+    p = JSON.parse(text.slice(a, b + 1));
+  } catch {
+    return fallback;
+  }
+  const answer = str(p?.answer);
+  if (!answer) return fallback;
+  const cites: AskCite[] = Array.isArray(p?.cites)
+    ? p.cites
+        .map((c: any) => ({
+          at: Math.max(0, Math.round(Number(c?.at) || 0)),
+          who: str(c?.who) || "Someone",
+          quote: str(c?.quote).slice(0, 240),
+        }))
+        .filter((c: AskCite) => c.quote)
+        .slice(0, 4)
+    : [];
+  // A "yes" with nothing behind it is the failure mode this whole feature has
+  // to avoid, so grounded is not taken on the model's word alone: claiming to
+  // have found something while citing nothing is treated as not finding it.
+  const grounded = Boolean(p?.grounded) && cites.length > 0;
+  return { answer, cites, grounded };
+}
+
+/** The transcript the model reads, with a second-marker on every line so a
+ *  citation can point at a moment instead of a paragraph. */
+export function timedTranscript(
+  utterances: Array<{ start?: number; speaker?: number; transcript?: string }>,
+  names?: string[]
+): string {
+  return (utterances || [])
+    .map((u) => {
+      const said = String(u?.transcript || "").trim();
+      const secs = Math.max(0, Math.round(Number(u?.start) || 0));
+      const i = typeof u?.speaker === "number" ? u.speaker : -1;
+      const who =
+        i >= 0 && names && names[i] ? names[i] : i >= 0 ? `Speaker ${i + 1}` : "Someone";
+      return { said, line: `[${secs}s] ${who}: ${said}` };
+    })
+    // Measure WHAT WAS SAID, not the formatted line. The first version tested
+    // the line, and "[61s] Kiran: ok" is fifteen characters — so every "ok",
+    // "yeah" and "mm-hm" survived as a citable moment and the model had a
+    // hundred meaningless things to point at.
+    .filter((x) => x.said.length > 12)
+    .map((x) => x.line)
+    .join("\n");
+}
+
+/** mm:ss for a citation, so a person can scrub to it. */
+export function at(seconds: number): string {
+  const t = Math.max(0, Math.floor(seconds || 0));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s2 = t % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${two(m)}:${two(s2)}` : `${two(m)}:${two(s2)}`;
 }

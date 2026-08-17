@@ -14,6 +14,114 @@
 
 export type Person = { email: string };
 
+// ── how often ─────────────────────────────────────────────────────────────
+//
+// FIELD 2026-08-17: "there is no way to set a recurring meeting". Every
+// standup, every weekly, every one-to-one had to be created by hand, one at a
+// time, forever — which is most of the meetings anybody actually has.
+//
+// The right way to do this is NOT to write a row per occurrence. It is one
+// event carrying an RFC 5545 RRULE, so every guest's own calendar expands the
+// series, keeps it after they accept once, and updates the whole thing when
+// you move it. A row per occurrence means fifty invitations, fifty things to
+// cancel, and a series that drifts the moment anyone edits one of them.
+export type Repeat = {
+  freq: "DAILY" | "WEEKDAYS" | "WEEKLY" | "MONTHLY";
+  interval?: number;          // every N days/weeks/months
+  count?: number;             // ends after N occurrences
+  until?: string;             // ISO — ends on this date (exclusive of count)
+};
+
+const DAYCODE = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+
+/** The weekday and day-of-month AS THE HOST SEES THEM.
+ *
+ *  This is the whole trap. A meeting at 8pm on Monday in New York is 00:00
+ *  TUESDAY in UTC. Read the weekday off the UTC date and you emit
+ *  `BYDAY=TU` for a Monday-evening standup — the calendar then shows it on
+ *  Tuesdays forever and nobody can work out why. */
+export function localParts(startISO: string, tz?: string): { day: number; dom: number } {
+  const d = new Date(startISO);
+  if (isNaN(d.getTime())) return { day: 0, dom: 1 };
+  if (!tz) return { day: d.getUTCDay(), dom: d.getUTCDate() };
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, weekday: "short", day: "numeric",
+    }).formatToParts(d);
+    const wd = parts.find((p) => p.type === "weekday")?.value || "";
+    const dom = Number(parts.find((p) => p.type === "day")?.value || 1);
+    const idx = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(wd);
+    return { day: idx < 0 ? d.getUTCDay() : idx, dom };
+  } catch {
+    return { day: d.getUTCDay(), dom: d.getUTCDate() };
+  }
+}
+
+/** One RRULE line, or "" for a one-off. */
+export function rrule(rep: Repeat | undefined, startISO: string, tz?: string): string {
+  if (!rep || !rep.freq) return "";
+  const { day, dom } = localParts(startISO, tz);
+  const bits: string[] = [];
+  const every = Math.max(1, Math.min(52, Math.floor(rep.interval || 1)));
+
+  if (rep.freq === "WEEKDAYS") {
+    bits.push("FREQ=WEEKLY", "BYDAY=MO,TU,WE,TH,FR");
+  } else if (rep.freq === "WEEKLY") {
+    bits.push("FREQ=WEEKLY", `BYDAY=${DAYCODE[day]}`);
+    if (every > 1) bits.push(`INTERVAL=${every}`);
+  } else if (rep.freq === "MONTHLY") {
+    // "the third Tuesday", not "the 17th" — that is what people mean by a
+    // monthly meeting, and it is what keeps it off a weekend.
+    const nth = Math.ceil(dom / 7);
+    bits.push("FREQ=MONTHLY", `BYDAY=${DAYCODE[day]}`, `BYSETPOS=${nth > 4 ? -1 : nth}`);
+    if (every > 1) bits.push(`INTERVAL=${every}`);
+  } else {
+    bits.push("FREQ=DAILY");
+    if (every > 1) bits.push(`INTERVAL=${every}`);
+  }
+
+  // COUNT and UNTIL are mutually exclusive in RFC 5545 — a file with both is
+  // rejected outright by Outlook, so the series silently never appears.
+  if (rep.count && rep.count > 0) {
+    bits.push(`COUNT=${Math.min(400, Math.floor(rep.count))}`);
+  } else if (rep.until) {
+    const u = new Date(rep.until);
+    if (!isNaN(u.getTime())) {
+      bits.push(`UNTIL=${u.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")}`);
+    }
+  }
+  return `RRULE:${bits.join(";")}`;
+}
+
+const DAYNAME = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const ORDINAL = ["", "first", "second", "third", "fourth", "last"];
+
+/** The same rule, in words, so the host can check it before sending. A person
+ *  cannot proof-read `FREQ=MONTHLY;BYDAY=TU;BYSETPOS=3`. */
+export function describeRepeat(rep: Repeat | undefined, startISO: string, tz?: string): string {
+  if (!rep || !rep.freq) return "Doesn't repeat";
+  const { day, dom } = localParts(startISO, tz);
+  const every = Math.max(1, Math.floor(rep.interval || 1));
+  let base: string;
+  if (rep.freq === "WEEKDAYS") base = "Every weekday";
+  else if (rep.freq === "WEEKLY")
+    base = every > 1 ? `Every ${every} weeks on ${DAYNAME[day]}` : `Every ${DAYNAME[day]}`;
+  else if (rep.freq === "MONTHLY") {
+    const nth = Math.ceil(dom / 7);
+    base = `Monthly on the ${ORDINAL[Math.min(nth, 5)]} ${DAYNAME[day]}`;
+    if (every > 1) base = base.replace("Monthly", `Every ${every} months`);
+  } else base = every > 1 ? `Every ${every} days` : "Every day";
+
+  if (rep.count && rep.count > 0) return `${base}, ${rep.count} times`;
+  if (rep.until) {
+    const u = new Date(rep.until);
+    if (!isNaN(u.getTime())) {
+      return `${base}, until ${u.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`;
+    }
+  }
+  return base;
+}
+
 export type InviteSpec = {
   title: string;
   startISO: string;
@@ -26,6 +134,8 @@ export type InviteSpec = {
   note?: string;
   cancelled?: boolean;
   now?: string;               // injectable so the file is testable byte-for-byte
+  repeat?: Repeat;
+  tz?: string;                // the host's zone — the RRULE weekday depends on it
 };
 
 // ── who's coming ───────────────────────────────────────────────────────────
@@ -122,6 +232,7 @@ export function icsInvite(spec: InviteSpec): string {
     `DTSTART:${stampUTC(start)}`,
     `DTEND:${stampUTC(end)}`,
     `SEQUENCE:${Math.max(0, spec.sequence ?? 0)}`,
+    ...(rrule(spec.repeat, spec.startISO, spec.tz) ? [rrule(spec.repeat, spec.startISO, spec.tz)] : []),
     `STATUS:${spec.cancelled ? "CANCELLED" : "CONFIRMED"}`,
     `SUMMARY:${escText(spec.title)}`,
     `DESCRIPTION:${escText(desc)}`,
@@ -192,6 +303,7 @@ export function inviteHtml(o: {
   note?: string;
   cancelled?: boolean;
   tz?: string;
+  repeats?: string;
 }): string {
   const when = whenLabel(o.startISO, o.tz);
   const head = o.cancelled ? "This meeting was cancelled" : "You're invited";
@@ -203,6 +315,7 @@ export function inviteHtml(o: {
     <tr><td style="padding:16px 18px">
       <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#8b93a5;font-weight:700;margin:0 0 6px">When</div>
       <div style="font-size:16px;color:#e9edf5;margin:0 0 2px">${esc(when)}</div>
+      ${o.repeats ? `<div style="font-size:13px;color:#8fd8cf;margin:0 0 4px">&#8635; ${esc(o.repeats)}</div>` : ""}
       <div style="font-size:12px;color:#8b93a5">${o.tz ? "That's the host's time zone. Your" : "Your"} calendar shows this in your own — the invite is attached.</div>
     </td></tr>
   </table>
@@ -232,12 +345,14 @@ export function inviteText(o: {
   note?: string;
   cancelled?: boolean;
   tz?: string;
+  repeats?: string;
 }): string {
   return [
     o.cancelled ? "CANCELLED" : "You're invited",
     "",
     `${o.organizer} invited you to ${o.title}.`,
     `When: ${whenLabel(o.startISO, o.tz)} (your calendar will show your own time zone)`,
+    o.repeats ? `Repeats: ${o.repeats}` : "",
     o.note ? `\n${o.note}` : "",
     o.cancelled ? "" : `\nJoin: ${o.link}`,
     o.cancelled ? "" : "No account, no download — it opens in your browser.",
