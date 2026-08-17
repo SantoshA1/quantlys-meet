@@ -19,7 +19,9 @@ import {
   inviteText,
   inviteSubject,
   senderLabel,
+  describeRepeat,
 } from "@/lib/invite";
+import type { Repeat } from "@/lib/invite";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -140,6 +142,18 @@ export async function POST(req: Request) {
   const tz = /^[A-Za-z_]+\/[A-Za-z0-9_+\-\/]+$/.test(String(body?.tz || ""))
     ? String(body.tz)
     : undefined;
+  // How often. Validated here rather than trusted: a bad FREQ produces a file
+  // every calendar rejects, and the series then silently never appears.
+  const FREQS = ["DAILY", "WEEKDAYS", "WEEKLY", "MONTHLY"];
+  const rawRep = body?.repeat && typeof body.repeat === "object" ? body.repeat : null;
+  const repeat: Repeat | undefined =
+    rawRep && FREQS.includes(String(rawRep.freq))
+      ? {
+          freq: String(rawRep.freq) as Repeat["freq"],
+          interval: Number(rawRep.interval) > 1 ? Math.min(52, Number(rawRep.interval)) : undefined,
+          count: Number(rawRep.count) > 0 ? Math.min(400, Number(rawRep.count)) : undefined,
+        }
+      : undefined;
   const link = `${appUrl(req)}/room/${room}`;
 
   // A re-send has to SUPERSEDE the first one, not sit beside it as a second
@@ -169,7 +183,13 @@ export async function POST(req: Request) {
     sequence,
     note,
     cancelled: cancel,
+    repeat,
+    tz,
   });
+
+  // The series, in words, for the body — a guest should be able to see it is
+  // a weekly before they accept, not discover it from their calendar.
+  const repeatWords = repeat ? describeRepeat(repeat, startISO, tz) : "";
 
   const { from, domain } = fromAddress(user.email || "");
   let sent = 0;
@@ -183,8 +203,8 @@ export async function POST(req: Request) {
         to: guests,
         reply_to: user.email || undefined,
         subject: inviteSubject(title, startISO, cancel, tz),
-        html: inviteHtml({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel, tz }),
-        text: inviteText({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel, tz }),
+        html: inviteHtml({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel, tz, repeats: repeatWords }),
+        text: inviteText({ title, startISO, link, organizer: user.email || "", note, cancelled: cancel, tz, repeats: repeatWords }),
         attachments: [
           {
             filename: "invite.ics",
@@ -235,6 +255,7 @@ export async function POST(req: Request) {
   }
   return Response.json({
     ok: true,
+    repeats: repeatWords,
     sent,
     guests,
     bad,                    // typed-but-unsendable addresses come BACK, not dropped
