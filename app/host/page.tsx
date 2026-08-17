@@ -257,7 +257,12 @@ export default function HostConsole() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
         },
-        body: JSON.stringify({ room, emails: addresses, startISO }),
+        body: JSON.stringify({
+          room, emails: addresses, startISO,
+          // The clock the host is actually looking at. Without it the
+          // invitation prints UTC and every guest does subtraction.
+          tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }),
       });
       const j = await r.json();
       if (!r.ok || j?.error) return j?.error || "The invitations didn't send.";
