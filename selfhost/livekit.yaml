@@ -1,0 +1,16 @@
+# Self-hosted LiveKit — the whole point of Phase 0.
+# No LiveKit Cloud account. No external service. One binary, one config file,
+# keys the operator generated themselves. This is what a customer would run.
+port: 7880
+bind_addresses:
+  - "127.0.0.1"
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50060
+  use_external_ip: false
+keys:
+  APIselfhostdev: GENERATE-YOUR-OWN-44-CHAR-SECRET
+logging:
+  level: info
+  json: false

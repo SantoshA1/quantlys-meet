@@ -1,0 +1,119 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Phase 0 client</title></head>
+<body>
+<div id="state">idle</div>
+<script src="/livekit-client.umd.js"></script>
+<script>
+const LK = window.LivekitClient;
+window.__log = [];
+const log = (m) => { window.__log.push(String(m)); document.getElementById("state").textContent = m; };
+
+window.__join = async function (url, token, opts) {
+  opts = opts || {};
+  const room = new LK.Room({ adaptiveStream: false, dynacast: false });
+  window.__room = room;
+  window.__subs = [];          // remote tracks we were given
+  window.__disconnect = null;
+
+  room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    window.__subs.push({ kind: track.kind, sid: pub.trackSid, from: participant.identity });
+    if (track.kind === "audio") window.__remoteAudio = track;
+    if (track.kind === "video") window.__remoteVideo = track;
+  });
+  room.on(LK.RoomEvent.Disconnected, (reason) => { window.__disconnect = String(reason); });
+
+  try {
+    await room.connect(url, token);
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e), name: String(e && e.name || "") };
+  }
+  log("connected as " + room.localParticipant.identity);
+
+  if (opts.publish !== false) {
+    await room.localParticipant.setMicrophoneEnabled(true);
+    await room.localParticipant.setCameraEnabled(true);
+  }
+  return { ok: true, identity: room.localParticipant.identity, sid: room.localParticipant.sid };
+};
+
+// Did sound actually arrive? Two independent measurements, because each one
+// can lie on its own.
+//
+//  1. inbound-rtp totalAudioEnergy — what the decoder says it decoded. This is
+//     authoritative and does not depend on anything being rendered.
+//  2. an AnalyserNode on the played-out track — what a human would hear.
+//
+// Chrome will not pump a remote track into WebAudio unless it is also attached
+// to a media element, so we attach one. Getting this wrong reads as silence
+// and would have sent us hunting a bug that is not there.
+window.__measureIncomingAudio = async function (ms) {
+  const t = window.__remoteAudio;
+  if (!t) return { error: "no remote audio track" };
+
+  const el = document.createElement("audio");
+  el.autoplay = true;
+  el.srcObject = new MediaStream([t.mediaStreamTrack]);
+  document.body.appendChild(el);
+  try { await el.play(); } catch (e) { /* autoplay policy is disabled in the harness */ }
+
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(new MediaStream([t.mediaStreamTrack]));
+  const an = ctx.createAnalyser();
+  an.fftSize = 2048;
+  src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  let peak = 0, samples = 0;
+  const until = Date.now() + (ms || 3000);
+  while (Date.now() < until) {
+    an.getFloatTimeDomainData(buf);
+    for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); if (v > peak) peak = v; }
+    samples++;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await ctx.close();
+
+  const rtp = { bytes: 0, packets: 0, energy: 0, level: 0, concealed: 0, samplesRcvd: 0 };
+  try {
+    const pc = window.__room.engine.pcManager.subscriber.pc;
+    const stats = await pc.getStats();
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "audio") {
+        rtp.bytes += r.bytesReceived || 0;
+        rtp.packets += r.packetsReceived || 0;
+        rtp.energy += r.totalAudioEnergy || 0;
+        rtp.level = Math.max(rtp.level, r.audioLevel || 0);
+        rtp.concealed += r.concealedSamples || 0;
+        rtp.samplesRcvd += r.totalSamplesReceived || 0;
+      }
+    });
+  } catch (e) { rtp.error = String(e); }
+
+  return { peak, samples, rtp, trackEnded: t.mediaStreamTrack.readyState === "ended" };
+};
+
+window.__videoStats = async function () {
+  const t = window.__remoteVideo;
+  if (!t) return { error: "no remote video track" };
+  const s = t.mediaStreamTrack.getSettings();
+  let framesDecoded = 0, bytes = 0;
+  try {
+    const pc = window.__room.engine.pcManager.subscriber.pc;
+    const stats = await pc.getStats();
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "video") {
+        framesDecoded += r.framesDecoded || 0;
+        bytes += r.bytesReceived || 0;
+      }
+    });
+  } catch (e) { return { error: String(e), width: s.width, height: s.height }; }
+  return { width: s.width || 0, height: s.height || 0, framesDecoded, bytes };
+};
+
+window.__state = () => ({
+  state: window.__room ? window.__room.state : "none",
+  remotes: window.__room ? Array.from(window.__room.remoteParticipants.values()).map((p) => p.identity) : [],
+  subs: window.__subs || [],
+  disconnect: window.__disconnect,
+});
+</script>
+</body></html>
