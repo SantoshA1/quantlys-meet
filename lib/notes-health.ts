@@ -14,17 +14,17 @@
 // setup") or read it AFTER one.
 
 import { chooseModel } from "@/lib/model";
+import { whereToSetEnv } from "@/lib/hosting";
 
 export type Step = {
-  key: "transcribe" | "notes" | "email" | "storage" | "items";
+  key: "transcribe" | "notes" | "email" | "storage" | "items" | "meeting" | "recording";
   label: string;
   ok: boolean;
   detail: string;
 };
 
 export const NOT_SET = (envVar: string, what: string) =>
-  `${envVar} isn't set, so ${what}. Add it in Vercel → Settings → Environment ` +
-  `Variables, then redeploy — a new variable only reaches code on the next build.`;
+  `${envVar} isn't set, so ${what}. ${whereToSetEnv()}`;
 
 /** Deepgram: is the key present, and does Deepgram accept it? */
 export async function checkTranscribe(): Promise<Step> {
