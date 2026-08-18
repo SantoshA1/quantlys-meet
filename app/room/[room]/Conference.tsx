@@ -22,6 +22,7 @@ import { describeMediaError, connectionAdvice } from "@/lib/media";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
+import { catchLive, caughtCounts, talked, atLabel } from "@/lib/live";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
   toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
@@ -111,6 +112,22 @@ export default function Conference({ room }: { room: string }) {
   const [wait, setWait] = useState<{ state: string; hostPresent?: boolean; position?: number }>({ state: "connecting" });
 
   const [starts, setStarts] = useState<string | null>(null);
+  // Who is already inside, who invited you, whether others are waiting —
+  // everything the link already grants, fetched fresh so the lobby cannot
+  // disagree with the room.
+  const [info, setInfo] = useState<{ host: string | null; in: string[]; waiting: number } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`/api/room/info?room=${encodeURIComponent(room)}`);
+        const j = await r.json();
+        if (alive && j && !j.error) setInfo({ host: j.host || null, in: j.in || [], waiting: j.waiting || 0 });
+      } catch { /* the lobby renders what it has */ }
+    })();
+    return () => { alive = false; };
+  }, [room]);
   const [meetingName, setMeetingName] = useState("");
 
   useEffect(() => {
@@ -235,7 +252,7 @@ export default function Conference({ room }: { room: string }) {
     const denied = wait.state === "denied";
     return (
       <main className="qmr-prejoin">
-        <style>{CSS}</style>
+        <style dangerouslySetInnerHTML={{ __html: CSS }} />
         <div className="qmr-card">
           <h1>{meetingName || "Waiting to be let in"}</h1>
           <div className={`qmr-knock${denied ? " qmr-knockno" : ""}`}>
@@ -265,7 +282,7 @@ export default function Conference({ room }: { room: string }) {
   if (!joined) {
     return (
       <main className="qmr-prejoin">
-        <style>{CSS}</style>
+        <style dangerouslySetInnerHTML={{ __html: CSS }} />
         <div className="qmr-card">
           {/* The design's lobby is two columns: what you look like on the
               left, what you are about to join on the right. They are the two
@@ -289,9 +306,24 @@ export default function Conference({ room }: { room: string }) {
               </>
             ) : null}
             <span>{room.toUpperCase()}</span>
-            <span className="qmr-sep">│</span>
-            <span>LINK WORKS UNTIL THE HOST ENDS IT</span>
+            {info && info.waiting > 0 ? (
+              <>
+                <span className="qmr-sep">│</span>
+                <span>{info.waiting} ALREADY WAITING</span>
+              </>
+            ) : null}
           </div>
+          {info && (info.in.length || info.host) ? (
+            <div className="qmr-lobbyfacts">
+              {info.in.length ? (
+                <span><i>ALREADY IN</i><b>{info.in.join(", ")}</b></span>
+              ) : null}
+              {info.host ? (
+                <span><i>HOST</i><b>{info.host}</b></span>
+              ) : null}
+              <span><i>THIS LINK</i><b>Works until the host ends it</b></span>
+            </div>
+          ) : null}
           {starts && new Date(starts).getTime() - Date.now() > 90_000 ? (
             <p className="qmr-when">
               You&apos;re early — you can wait here, or come back then. This link keeps working.
@@ -347,7 +379,7 @@ export default function Conference({ room }: { room: string }) {
 
   return (
     <div className="qmr-stage" data-lk-theme="default">
-      <style>{CSS}</style>
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
       {/* FIELD 2026-08-18. This used to read `connect video audio` — LiveKit's
           hello-world — which grabs whatever the browser calls "default" at the
           instant you join, publishes it, and never looks at it again. No
@@ -572,6 +604,21 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
   const meId = ctx?.localParticipant?.identity || "me";
   const meName = ctx?.localParticipant?.name || meId.split("-")[0] || "You";
   const cc = useCaptions(room, meId, meName);
+
+  // The meeting writing itself down — the rail on the right. Open by default
+  // where there is room for it; a laptop keeps the video and gets a button.
+  const [railOpen, setRailOpen] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.matchMedia("(min-width: 1180px)").matches : false);
+  // Moments the host marks by hand. They ride into the recording's captions
+  // payload, so the transcript and the search can find them afterwards —
+  // a flag that lives only on this screen dies with the tab.
+  const [flags, setFlags] = useState<Array<{ at: number; by: string }>>([]);
+  const flagNow = () => {
+    const last = finals(cc.log).slice(-1)[0];
+    const at = cc.on && last ? last.at : recording ? elapsed * 1000 : -1;
+    if (at < 0) return;   // nothing durable to anchor to — button is disabled in that state
+    setFlags((f) => [...f, { at, by: meName }]);
+  };
 
   // Round-trip time straight off the WebRTC stats, and the quality LiveKit
   // already computes. Reported together because they answer different halves
@@ -872,7 +919,12 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
           // transcribe the file afterwards — no key, silence, a rejected
           // upload — these ARE the transcript, and the notes are written from
           // them instead of the app reporting that it heard nothing.
-          captions: toUtterances(cc.log).slice(0, 4000),
+          captions: [
+            ...toUtterances(cc.log),
+            // Flagged moments become lines of the record itself.
+            ...flags.map((f) => ({ start: Math.round(f.at / 1000), speaker: -1,
+                                   transcript: `⚑ Moment flagged by ${f.by}` })),
+          ].slice(0, 4000),
           captionText: toTranscript(cc.log).slice(0, 200000),
         }),
       });
@@ -979,6 +1031,14 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
           title={cc.note || "Show what is being said, as it is said"}
         >
           {toggleLabel(cc.engine === "none" && !cc.on ? "browser" : cc.engine, cc.on)}
+        </button>
+        <button
+          className={`qmr-ghost${railOpen ? " qmr-on" : ""}`}
+          onClick={() => setRailOpen((v) => !v)}
+          aria-pressed={railOpen}
+          title="What was just said, and what got caught as a decision or an action"
+        >
+          Live notes
         </button>
         {/* The watchdog lives in the header because that is where somebody
             looks when they suspect they cannot be heard. */}
@@ -1103,6 +1163,17 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
             </div>
           ) : null}
 
+      {railOpen ? (
+        <LiveRail
+          cc={cc}
+          recording={recording}
+          flags={flags}
+          onFlag={flagNow}
+          canFlag={cc.on || recording}
+          onClose={() => setRailOpen(false)}
+        />
+      ) : null}
+
           {hostables.length === 0 ? (
             <p className="qmr-muted">Nobody else is here yet.</p>
           ) : (
@@ -1212,6 +1283,103 @@ const QUICK: Array<{ key: string; glyph: string; label: string }> = [
 
 type Floater = { id: string; glyph: string; who: string; x: number };
 type Held = { kind: "hand" | "brb"; who: string; at: number };
+
+// ── LIVE NOTES — the rail where the meeting writes itself down ──────────
+//
+// DESIGN 2026-08-18. Timestamped finals, and cards for the two kinds of
+// sentence a meeting exists to produce. The rules are lib/live's — the SAME
+// ones the finish route applies to the recording, so tonight's email can
+// never disagree with what this rail showed in the room.
+function LiveRail({
+  cc, recording, flags, onFlag, canFlag, onClose,
+}: {
+  cc: CaptionsApi;
+  recording: boolean;
+  flags: Array<{ at: number; by: string }>;
+  onFlag: () => void;
+  canFlag: boolean;
+  onClose: () => void;
+}) {
+  const settled = finals(cc.log);
+  const caught = catchLive(settled.map((c) => ({ who: c.who, text: c.text, at: c.at })));
+  const counts = caughtCounts(caught);
+  const talk = talked(settled.map((c) => ({ who: c.who, text: c.text })));
+  const talkers = Object.entries(talk).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const feed = [
+    ...settled.slice(-14).map((c) => ({ kind: "said" as const, at: c.at, who: c.who, text: c.text })),
+    ...caught.map((c) => ({ kind: c.kind, at: c.at, who: c.who, text: c.text })),
+    ...flags.map((f) => ({ kind: "flag" as const, at: f.at, who: f.by, text: "Moment flagged" })),
+  ].sort((a, b) => a.at - b.at).slice(-24);
+  const box = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [feed.length]);
+
+  return (
+    <aside className="qmr-liverail" aria-label="Live notes">
+      <div className="qmr-lrhead">
+        <span className="qmr-lrtitle"><span className="q-dot q-beat" /> LIVE NOTES</span>
+        <span className="qmr-lrsub">NOBODY TAKES MINUTES</span>
+        <button className="qmr-lrclose" onClick={onClose} aria-label="Close live notes">×</button>
+      </div>
+
+      {!cc.on ? (
+        <p className="qmr-lrnote">
+          Turn captions on and the meeting starts writing itself down here —
+          decisions and commitments get caught as they are said.
+        </p>
+      ) : null}
+
+      <div className="qmr-lrfeed" ref={box}>
+        {feed.length === 0 && cc.on ? <p className="qmr-lrnote">Listening…</p> : null}
+        {feed.map((f, i) =>
+          f.kind === "said" ? (
+            <p className="qmr-lrsaid" key={`${f.at}-${i}`}>
+              <span className="qmr-lrat">{atLabel(f.at)}</span>
+              <b>{f.who}:</b> {f.text}
+            </p>
+          ) : (
+            <div className={`qmr-lrcard ${f.kind === "decision" ? "is-dec" : f.kind === "flag" ? "is-flag" : "is-act"}`}
+                 key={`${f.at}-${i}`}>
+              <p className="qmr-lrkind">
+                {atLabel(f.at)} {f.kind === "decision" ? "DECISION CAUGHT"
+                  : f.kind === "flag" ? `FLAGGED BY ${f.who.toUpperCase()}` : `ACTION → ${f.who.toUpperCase()}`}
+              </p>
+              {f.kind !== "flag" ? <p className="qmr-lrtext">{f.text}</p> : null}
+            </div>
+          )
+        )}
+      </div>
+
+      {talkers.length ? (
+        <div className="qmr-lrtalk">
+          {talkers.map(([who, pct]) => (
+            <span key={who} title={`${who} — ${pct}% of the words so far`}>
+              {who.split(" ")[0].toUpperCase()} {pct}%
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="qmr-lrfoot">
+        <span className="qmr-lrcount">
+          CAUGHT SO FAR&nbsp;&nbsp;<b>{counts.decisions}</b> DECISION{counts.decisions === 1 ? "" : "S"} ·{" "}
+          <b>{counts.actions}</b> ACTION{counts.actions === 1 ? "" : "S"}
+        </span>
+        <button className="qmr-lrflag" onClick={onFlag} disabled={!canFlag}
+          title={canFlag ? "Mark this moment — it goes into the transcript and the notes"
+                         : "Turn captions on (or record) first — a flag needs a clock to attach to"}>
+          FLAG THIS MOMENT
+        </button>
+        <p className="qmr-lrfine">
+          Everyone here sees the recording badge for as long as it lasts. Notes and
+          the summary email go out the moment you stop.
+        </p>
+      </div>
+    </aside>
+  );
+}
 
 function Reactions() {
   const { localParticipant } = useLocalParticipant();
@@ -1909,6 +2077,55 @@ const CSS = DEVICE_CSS + GUARD_CSS + `
 .qmr-ccat { color: #6f7789; font-variant-numeric: tabular-nums; margin-right: 8px;
   font-size: 12px; }
 .qmr-ccnone { color: #8b93a5 !important; }
+
+/* ── live notes rail ── */
+.qmr-liverail { position: absolute; top: 64px; right: 12px; bottom: 96px; width: 320px;
+  z-index: 26; display: flex; flex-direction: column; border: 1px solid #16202c;
+  background: rgba(6, 10, 15, .96); backdrop-filter: blur(8px); }
+.qmr-liverail::before { content: ""; position: absolute; top: -1px; left: -1px; width: 12px;
+  height: 12px; border-top: 2px solid #00a99d; border-left: 2px solid #00a99d; }
+.qmr-lrhead { display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  border-bottom: 1px solid #131c26; }
+.qmr-lrtitle { display: flex; align-items: center; gap: 7px; font: 600 10.5px/1 'IBM Plex Mono', monospace;
+  letter-spacing: .2em; color: #4dd7cf; }
+.qmr-lrsub { font: 9.5px/1 'IBM Plex Mono', monospace; letter-spacing: .14em; color: #4a566b; margin-left: auto; }
+.qmr-lrclose { background: none; border: 0; color: #7b8aa0; font-size: 16px; cursor: pointer; padding: 0 2px; }
+.qmr-lrclose:hover { color: #e8eef5; }
+.qmr-lrnote { padding: 10px 14px; margin: 0; font-size: 12.5px; line-height: 1.55; color: #7b8aa0; }
+.qmr-lrfeed { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 14px; }
+.qmr-lrsaid { margin: 0 0 9px; font-size: 12.5px; line-height: 1.5; color: #a9b3c4; }
+.qmr-lrsaid b { color: #cfd6e4; font-weight: 600; }
+.qmr-lrat { font: 10px/1 'IBM Plex Mono', monospace; color: #4a566b; margin-right: 7px;
+  font-variant-numeric: tabular-nums; }
+.qmr-lrcard { margin: 4px 0 10px; padding: 9px 12px; border-left: 2px solid #00a99d;
+  background: rgba(0, 169, 157, .08); }
+.qmr-lrcard.is-act { border-left-color: #ffc98a; background: rgba(255, 201, 138, .07); }
+.qmr-lrcard.is-flag { border-left-color: #4dd7cf; background: rgba(77, 215, 207, .07); }
+.qmr-lrkind { margin: 0 0 3px; font: 600 9.5px/1.4 'IBM Plex Mono', monospace;
+  letter-spacing: .14em; color: #4dd7cf; }
+.qmr-lrcard.is-act .qmr-lrkind { color: #ffc98a; }
+.qmr-lrtext { margin: 0; font-size: 12.5px; line-height: 1.5; color: #e2e8f2; }
+.qmr-lrtalk { display: flex; gap: 10px; flex-wrap: wrap; padding: 8px 14px;
+  border-top: 1px solid #131c26; font: 9.5px/1 'IBM Plex Mono', monospace;
+  letter-spacing: .1em; color: #7b8aa0; }
+.qmr-lrfoot { border-top: 1px solid #131c26; padding: 10px 14px; }
+.qmr-lrcount { display: block; font: 10px/1.5 'IBM Plex Mono', monospace; letter-spacing: .12em;
+  color: #7b8aa0; margin-bottom: 8px; }
+.qmr-lrcount b { color: #4dd7cf; }
+.qmr-lrflag { display: block; width: 100%; padding: 9px; background: none;
+  border: 1px solid #1e2937; color: #c3cddb; font: 10.5px/1 'IBM Plex Mono', monospace;
+  letter-spacing: .16em; cursor: pointer; }
+.qmr-lrflag:hover:not(:disabled) { border-color: #00a99d; color: #7ff0e8; }
+.qmr-lrflag:disabled { opacity: .45; cursor: default; }
+.qmr-lrfine { margin: 8px 0 0; font-size: 10.5px; line-height: 1.5; color: #4a566b; }
+@media (max-width: 900px) { .qmr-liverail { display: none; } }
+
+/* ── lobby facts row ── */
+.qmr-lobbyfacts { display: flex; gap: 26px; flex-wrap: wrap; margin: 14px 0 2px;
+  padding-top: 12px; border-top: 1px solid #131c26; }
+.qmr-lobbyfacts i { display: block; font: 9.5px/1 'IBM Plex Mono', monospace; font-style: normal;
+  letter-spacing: .18em; color: #4a566b; margin-bottom: 4px; }
+.qmr-lobbyfacts b { font-size: 13px; font-weight: 500; color: #c3cddb; }
 .qmr-ccfine { margin: 0; padding: 10px 14px; border-top: 1px solid #21252f;
   font-size: 11.5px; line-height: 1.5; color: #6f7789; }
 @media (max-width: 720px) {
