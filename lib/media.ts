@@ -1,0 +1,325 @@
+// Microphones, cameras, and the ways they fail quietly.
+//
+// FIELD 2026-08-18, and it cost a real meeting: he had to abandon Quantlys
+// mid-call and move his team to Google Meet. Two symptoms:
+//
+//   1. "webcam is on but the preview was not visible to a team member"
+//   2. "people had trouble listening to me — I could hear them, they could
+//      not hear me"
+//
+// Both trace to the same line of code. The room was mounted as
+//
+//     <LiveKitRoom connect video audio />
+//
+// which is LiveKit's hello-world. It takes whatever the browser calls
+// "default" at the moment you join, publishes it, and then never looks at it
+// again. There is no device memory, no error handler, and — the expensive one
+// — nothing watching whether the track it is publishing is still alive.
+//
+// THE BLUETOOTH MECHANISM, precisely, because the fix follows from it:
+// a Bluetooth headset on Windows is TWO devices. A2DP is the good-sounding,
+// output-only profile. HFP/HSP is the low-bandwidth one that has a microphone
+// in it. Windows switches between them when an application opens the mic —
+// and when that switch happens, or the headset drops for a second, or another
+// app grabs it, the MediaStreamTrack the browser handed us ENDS.
+//
+// WebRTC does not care. The publication stays up. Opus keeps encoding an empty
+// signal. Everyone in the room still sees you un-muted, with no warning icon,
+// and you carry on talking. You can still hear them, because receiving is
+// completely unaffected — which is exactly the asymmetry he described.
+//
+// So: this module is the part that can be reasoned about and tested without a
+// browser. The rule it exists to enforce is that a control which says ON must
+// be checked against what is actually leaving the machine.
+
+// ── what went wrong, in words a person can act on ──────────────────────────
+
+export type MediaKind = "audioinput" | "videoinput" | "audiooutput";
+
+export type Explained = {
+  /** machine-readable, so the UI can decide whether to offer a retry */
+  code: "denied" | "inuse" | "missing" | "constraints" | "insecure" | "hardware" | "unknown";
+  what: string;
+  fix: string;
+};
+
+/** Every getUserMedia rejection, named.
+ *
+ *  The one that mattered here is NotReadableError. On Windows it means another
+ *  application already holds the camera — Teams left running, Zoom in the
+ *  background, the Camera app, a virtual-camera driver. The webcam LED comes
+ *  ON, because the other program lit it, and the person reasonably concludes
+ *  their camera is working and ours is broken. Nobody sees them. Saying the
+ *  words "another app is using it" turns a twenty-minute mystery into a
+ *  five-second fix, and no meeting app can afford to leave that unsaid. */
+export function describeMediaError(err: any, kind: MediaKind = "audioinput"): Explained {
+  const thing = kind === "videoinput" ? "camera" : kind === "audiooutput" ? "speaker" : "microphone";
+  const name = String(err?.name || err?.constructor?.name || "").trim();
+  const msg = String(err?.message || err || "");
+
+  if (/NotAllowed|PermissionDenied|SecurityError.*permission/i.test(name)) {
+    return {
+      code: "denied",
+      what: `Your browser is blocking access to your ${thing}.`,
+      fix: `Click the padlock (or camera icon) in the address bar, set ${thing === "camera" ? "Camera" : "Microphone"} to Allow, then rejoin.`,
+    };
+  }
+  if (/NotReadable|TrackStart/i.test(name) || /in use|could not start/i.test(msg)) {
+    return {
+      code: "inuse",
+      what: `Another app is already using your ${thing}, so this meeting can't.`,
+      fix:
+        thing === "camera"
+          ? "Quit Zoom, Teams, the Camera app or any other video app — including ones minimised to the system tray — then press Retry. The camera light being on usually means the other app has it, not that you're on screen here."
+          : "Quit any other app that might be holding the microphone, then press Retry. On Windows, check the system tray for apps still running in the background.",
+    };
+  }
+  if (/NotFound|DevicesNotFound/i.test(name)) {
+    return {
+      code: "missing",
+      what: `No ${thing} was found on this computer.`,
+      fix: `Plug one in, or check Settings → Sound${thing === "camera" ? " / Camera" : ""} to see whether it's disabled.`,
+    };
+  }
+  if (/OverConstrained|ConstraintNotSatisfied/i.test(name)) {
+    return {
+      code: "constraints",
+      what: `The ${thing} you used last time isn't here any more.`,
+      fix: `Pick a different ${thing} from the list and it will be remembered.`,
+    };
+  }
+  if (/SecurityError/i.test(name) || /https/i.test(msg)) {
+    return {
+      code: "insecure",
+      what: "Browsers only allow camera and microphone access over a secure connection.",
+      fix: "Open this meeting on its https:// address.",
+    };
+  }
+  if (/Abort|Invalid/i.test(name)) {
+    return {
+      code: "hardware",
+      what: `Your ${thing} stopped responding — usually a driver or a Bluetooth hiccup.`,
+      fix: "Press Retry. If it keeps happening, unpair and re-pair the device, or switch to a wired one for this call.",
+    };
+  }
+  return {
+    code: "unknown",
+    what: `Your ${thing} couldn't be started${name ? ` (${name})` : ""}.`,
+    fix: "Press Retry, or pick a different device from the list.",
+  };
+}
+
+// ── the constraints, and the one word that decides whether a dropout is a
+//    blip or the rest of the meeting ───────────────────────────────────────
+
+/** THE IMPORTANT DETAIL: `deviceId: { ideal }`, never `{ exact }`.
+ *
+ *  With `exact`, the moment the remembered device disappears — the headset
+ *  goes to sleep, the dock is unplugged, Windows renumbers a USB port —
+ *  getUserMedia throws OverconstrainedError and you get NOTHING. Silence for
+ *  the rest of the call, with the mic button still lit.
+ *
+ *  With `ideal`, the browser takes the next best microphone and you stay in
+ *  the meeting. That is the whole difference between "you cut out for a
+ *  second" and "nobody heard you after 10:04". */
+export function audioConstraints(deviceId?: string): MediaTrackConstraints {
+  const c: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,   // the reason people say "you're very quiet"
+  };
+  if (deviceId && deviceId !== "default") (c as any).deviceId = { ideal: deviceId };
+  return c;
+}
+
+export function videoConstraints(deviceId?: string): MediaTrackConstraints {
+  const c: MediaTrackConstraints = {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30 },
+  };
+  if (deviceId && deviceId !== "default") (c as any).deviceId = { ideal: deviceId };
+  return c;
+}
+
+// ── reading a device list a human can use ─────────────────────────────────
+
+export type Device = { deviceId: string; label: string; kind: string };
+
+/** Chrome hands back `"Default - Microphone (Realtek(R) Audio) (10ec:0289)"`.
+ *  Nobody needs the hardware ids, and before permission is granted the label
+ *  is an empty string — which renders as a blank row that looks broken. */
+export function deviceLabel(d: Device | undefined, index = 0, kind: MediaKind = "audioinput"): string {
+  const thing = kind === "videoinput" ? "Camera" : kind === "audiooutput" ? "Speaker" : "Microphone";
+  let s = String(d?.label || "").trim();
+  if (!s) return `${thing} ${index + 1}`;
+  s = s.replace(/^(Default|Communications)\s+-\s+/i, "");
+  s = s.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "");
+  return s.trim() || `${thing} ${index + 1}`;
+}
+
+/** Which device to use. Returns the choice AND whether the remembered one
+ *  vanished, because silently using a different microphone from the one
+ *  somebody picked is how you end up broadcasting your laptop lid. */
+export function pickDevice(
+  devices: Device[],
+  savedId?: string
+): { id: string; device?: Device; savedIsGone: boolean } {
+  const list = (devices || []).filter((d) => d && d.deviceId);
+  if (!list.length) return { id: "", savedIsGone: Boolean(savedId) };
+  if (savedId) {
+    const found = list.find((d) => d.deviceId === savedId);
+    if (found) return { id: found.deviceId, device: found, savedIsGone: false };
+  }
+  const dflt = list.find((d) => d.deviceId === "default") || list[0];
+  return { id: dflt.deviceId, device: dflt, savedIsGone: Boolean(savedId) };
+}
+
+/** Bluetooth changes the advice, so it is worth knowing. A Bluetooth mic that
+ *  goes quiet is almost always the HFP profile switch, and the reliable fix is
+ *  different from the fix for a USB mic. */
+export function isBluetooth(label: string): boolean {
+  return /bluetooth|airpod|wireless|headset|buds|beats|jabra|bose|sony wh|galaxy bud/i.test(
+    String(label || "")
+  );
+}
+
+// ── the level meter, and the watchdog it feeds ────────────────────────────
+
+/** RMS from getByteTimeDomainData, where 128 is silence. Returned 0..1.
+ *  Pure, so the thing that decides "your microphone is dead" can be tested
+ *  without a microphone. */
+export function levelFrom(bytes: Uint8Array | number[]): number {
+  const n = bytes?.length || 0;
+  if (!n) return 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = (Number(bytes[i]) - 128) / 128;
+    sum += v * v;
+  }
+  return Math.min(1, Math.sqrt(sum / n) * 2.2);
+}
+
+/** Anything under this is indistinguishable from a disconnected microphone.
+ *  A live mic in a silent room still shows electrical noise above it. */
+export const FLOOR = 0.012;
+
+/** How long we let a live, un-muted microphone produce nothing before we say
+ *  so. Long enough to sit quietly in someone else's meeting; short enough that
+ *  you find out inside one paragraph of talking. */
+export const QUIET_MS = 20000;
+
+export type MicState = {
+  /** the person pressed mute — this is never a fault */
+  mutedByUser: boolean;
+  /** the MediaStreamTrack has ended: the device is gone */
+  ended: boolean;
+  /** the OS muted the track under us — a Bluetooth profile switch does this */
+  mutedBySystem: boolean;
+  /** ms since we last saw any sound at all */
+  quietMs: number;
+  /** loudest level seen recently, 0..1 */
+  peak: number;
+  /** is there a published microphone at all */
+  publishing: boolean;
+  /** how many times we have already tried to bring it back */
+  attempts: number;
+  label?: string;
+};
+
+export type Verdict = {
+  level: "ok" | "warn" | "dead";
+  title: string;
+  detail: string;
+  action: "none" | "recover" | "pick";
+};
+
+/** The whole point of this file.
+ *
+ *  Ordered so that the honest states come first: a person who muted
+ *  themselves is not broken, and telling them "nobody can hear you" is the
+ *  alarm that teaches everybody to ignore alarms. */
+export function micVerdict(s: MicState): Verdict {
+  if (s.mutedByUser) {
+    return { level: "ok", title: "Muted", detail: "You're muted. Nobody can hear you — press the microphone button to talk.", action: "none" };
+  }
+  if (!s.publishing) {
+    return {
+      level: "dead",
+      title: "No microphone is being sent",
+      detail: "Your microphone isn't being sent to the meeting. Nobody can hear you.",
+      action: s.attempts >= 3 ? "pick" : "recover",
+    };
+  }
+  if (s.ended || s.mutedBySystem) {
+    const bt = isBluetooth(s.label || "");
+    return {
+      level: "dead",
+      title: "Your microphone stopped",
+      detail: bt
+        ? `${s.label || "Your Bluetooth headset"} dropped out of the call. This is the usual Bluetooth one — the headset switches audio profiles and the microphone goes dead while the sound still plays. Reconnecting it now.`
+        : `${s.label || "Your microphone"} stopped sending. Reconnecting it now — if this keeps happening, pick a different microphone below.`,
+      action: s.attempts >= 3 ? "pick" : "recover",
+    };
+  }
+  if (s.quietMs >= QUIET_MS && s.peak < FLOOR) {
+    return {
+      level: "warn",
+      title: "We can't hear anything from your microphone",
+      detail: isBluetooth(s.label || "")
+        ? `Nothing has come from ${s.label || "your microphone"} for ${Math.round(s.quietMs / 1000)} seconds. If you've been talking, nobody heard you. Bluetooth headsets often need picking again from the list below.`
+        : `Nothing has come from ${s.label || "your microphone"} for ${Math.round(s.quietMs / 1000)} seconds. If you've been talking, nobody heard you — check it isn't muted in hardware, or pick a different one below.`,
+      action: "pick",
+    };
+  }
+  return { level: "ok", title: "Microphone working", detail: "", action: "none" };
+}
+
+/** A meter that reads as a meter. Discrete segments, so a small real signal is
+ *  visibly different from nothing at all — a continuous bar at 3% looks the
+ *  same as a continuous bar at 0%, which is the exact distinction the person
+ *  is trying to make. */
+export function bars(level: number, n = 12): boolean[] {
+  const lit = Math.round(Math.max(0, Math.min(1, level)) * n);
+  return Array.from({ length: n }, (_, i) => i < lit);
+}
+
+/** Backoff for bringing a dead microphone back. Fast on the first try because
+ *  somebody is mid-sentence; then slower, then stop and ask — a loop that
+ *  retries for ever burns the CPU of a machine already having a bad day. */
+export function retryDelay(attempt: number): number {
+  const steps = [400, 1500, 4000];
+  return attempt < steps.length ? steps[attempt] : 0;
+}
+
+export function shouldKeepTrying(attempt: number): boolean {
+  return retryDelay(attempt) > 0;
+}
+
+// ── the connection, in plain words ────────────────────────────────────────
+
+export function connectionAdvice(quality: string): string {
+  switch (String(quality || "").toLowerCase()) {
+    case "poor":
+      return "Your connection is struggling. Others may hear you break up — turning your camera off usually fixes the audio.";
+    case "lost":
+      return "Your connection dropped. Trying to get back in — nobody can hear or see you until it returns.";
+    default:
+      return "";
+  }
+}
+
+/** setSinkId — choosing which speaker plays the meeting — exists in Chrome
+ *  and Edge and not in Firefox or Safari. A picker that silently does nothing
+ *  is worse than no picker, so the UI asks first. */
+export function speakerPickerWorks(el?: any): boolean {
+  if (typeof el?.setSinkId === "function") return true;
+  if (typeof HTMLMediaElement === "undefined") return false;
+  return typeof (HTMLMediaElement.prototype as any)?.setSinkId === "function";
+}
+
+export function speakerNote(works: boolean): string {
+  return works
+    ? "Choose which speaker or headset plays the meeting."
+    : "This browser can't choose an output device — the meeting plays through whatever your computer's sound settings say. Chrome and Edge can choose; Firefox and Safari can't.";
+}
