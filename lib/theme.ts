@@ -252,7 +252,31 @@ body { font-family:"Space Grotesk", system-ui, sans-serif;
    viewport — otherwise every change to the header re-breaks the room. */
 .qmr-stage { background:var(--bg) !important; height:auto !important;
   flex:1 1 auto; min-height:0; }
-.qmr-prejoin { flex:1 1 auto; }
+/* FIELD, read off the live screenshot: making the stage flex to fill the shell
+   also made the LOBBY a flex child, and "place-items:center" on a grid stops
+   meaning anything the moment its parent decides the width. The card drifted
+   to the right edge. Centre it explicitly instead of relying on a rule that
+   only worked while the page was the whole viewport. */
+.qmr-prejoin { flex:1 1 auto; min-height:0 !important;
+  display:grid !important; place-items:center !important; padding:28px 20px !important;
+  font-family:"Space Grotesk", system-ui, sans-serif !important; }
+
+/* The design's lobby is two columns: what you look like on the left, what you
+   are joining on the right. On a phone it stacks, because a 16:9 preview and a
+   consent checkbox side by side on 390px is neither. */
+.qmr-card { width:min(920px, 100%) !important; padding:30px !important; }
+.qmr-lobby { display:grid; gap:26px; align-items:start; }
+@media (min-width: 900px) { .qmr-lobby { grid-template-columns:1.15fr 1fr; gap:30px; } }
+.qmr-lobbyside { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.qmr-lobby > .qmd { min-width:0; }
+.qmr-lobby > .qmr-consent, .qmr-lobby > .qmr-error { grid-column:1 / -1; }
+.qmr-eyebrow { font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:10px;
+  letter-spacing:.22em; text-transform:uppercase; color:var(--dim); margin:0 0 10px; }
+.qmr-meta { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:11px;
+  letter-spacing:.06em; color:var(--muted); }
+.qmr-meta .qmr-sep { color:var(--line); }
+.qmr-meta b { color:var(--accent2); font-weight:500; }
 .qmr-bar { background:var(--panel) !important; border-bottom:1px solid var(--line2) !important; }
 .qmr-logo b, .qmr-logo { color:var(--text) !important; font-weight:600;
   letter-spacing:.09em; text-transform:uppercase; font-size:13px !important; }
