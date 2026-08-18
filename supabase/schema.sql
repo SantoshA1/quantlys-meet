@@ -78,3 +78,22 @@ create policy "attendees read transcripts" on transcripts for select using (
   or exists (select 1 from recordings r join participants p on p.meeting_id=r.meeting_id
              where r.id=transcripts.recording_id and p.user_id=auth.uid())
 );
+
+-- Host controls (2026-08-17). A locked meeting stops the link letting new
+-- people in — the small version of a waiting room, with nobody left standing
+-- outside. Existing meetings default to unlocked, so nothing changes until a
+-- host presses the button.
+alter table meetings add column if not exists locked boolean default false;
+
+-- Waiting room (2026-08-18). The `locked` flag above is the cheap version: it
+-- turns the link off and anybody who arrives after that is told to go away by
+-- a machine, with no way to appeal to the human twenty feet away. A waiting
+-- room is the opposite bargain — the door is never open to strangers AND
+-- nobody who belongs is ever turned away, because a person decides.
+alter table meetings add column if not exists waiting_room boolean default false;
+
+-- pending_admissions already exists (Phase 6) and was never wired to anything.
+-- These are what make it usable as a queue.
+alter table pending_admissions add column if not exists decided_at timestamptz;
+create index if not exists pending_admissions_room_idx
+  on pending_admissions (room_name, status, requested_at);
