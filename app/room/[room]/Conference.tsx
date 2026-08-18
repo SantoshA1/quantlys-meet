@@ -22,7 +22,7 @@ import { describeMediaError, connectionAdvice } from "@/lib/media";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
-import { catchLive, caughtCounts, talked, atLabel } from "@/lib/live";
+import { catchLive, caughtCounts, talked, atLabel, flagAt } from "@/lib/live";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
   toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
@@ -613,9 +613,41 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
   // payload, so the transcript and the search can find them afterwards —
   // a flag that lives only on this screen dies with the tab.
   const [flags, setFlags] = useState<Array<{ at: number; by: string }>>([]);
+  // Ending the whole meeting asks once, in place — never a browser confirm.
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [ending, setEnding] = useState(false);
+  // Where the header actually ends. The rail pins below it — measured, not
+  // assumed, because the theme strip above and flex wrapping below both move
+  // it, and a guessed offset already shipped a rail tangled into the header.
+  const barRef = useRef<HTMLElement | null>(null);
+  const [headroom, setHeadroom] = useState(110);
+  useEffect(() => {
+    const read = () => {
+      const r = barRef.current?.getBoundingClientRect();
+      if (r) setHeadroom(Math.round(r.bottom + 6));
+    };
+    read();
+    window.addEventListener("resize", read);
+    const t = setInterval(read, 2000);   // the header wraps when chips appear
+    return () => { window.removeEventListener("resize", read); clearInterval(t); };
+  }, []);
+  // When captions switched on — so a flag pressed before anyone has spoken
+  // still gets a clock. FIELD 2026-08-18: that case used to return -1 and the
+  // button silently did nothing.
+  const ccStartRef = useRef<number>(0);
+  useEffect(() => {
+    if (cc.on && !ccStartRef.current) ccStartRef.current = Date.now();
+    if (!cc.on) ccStartRef.current = 0;
+  }, [cc.on]);
   const flagNow = () => {
     const last = finals(cc.log).slice(-1)[0];
-    const at = cc.on && last ? last.at : recording ? elapsed * 1000 : -1;
+    const at = flagAt({
+      ccOn: cc.on,
+      lastFinalAt: last ? last.at : null,
+      ccElapsedMs: ccStartRef.current ? Date.now() - ccStartRef.current : null,
+      recording,
+      recElapsedSec: elapsed,
+    });
     if (at < 0) return;   // nothing durable to anchor to — button is disabled in that state
     setFlags((f) => [...f, { at, by: meName }]);
   };
@@ -961,7 +993,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
   const hostables = participants.filter((p) => p.identity !== ctx.localParticipant?.identity);
 
   return (
-    <header className="qmr-bar">
+    <header className="qmr-bar" ref={barRef}>
       <span className="qmr-logo">Quantlys Meeting</span>
 
       {/* Everyone in the room sees this, not just whoever pressed Record. It
@@ -1163,17 +1195,6 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
             </div>
           ) : null}
 
-      {railOpen ? (
-        <LiveRail
-          cc={cc}
-          recording={recording}
-          flags={flags}
-          onFlag={flagNow}
-          canFlag={cc.on || recording}
-          onClose={() => setRailOpen(false)}
-        />
-      ) : null}
-
           {hostables.length === 0 ? (
             <p className="qmr-muted">Nobody else is here yet.</p>
           ) : (
@@ -1222,7 +1243,59 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
             again. Removing ends their connection — the same link would let
             them back in unless you also lock the meeting.
           </p>
+
+          {/* FIELD 2026-08-18, his words: "there no way to end the meeting."
+              LEAVE walks YOU out and the meeting carries on; the host also
+              needs the other thing — the whole room ends, for everyone, and
+              the meeting is marked over. It lives here with the other
+              host-only controls, and it asks once, in place. */}
+          <div className="qmr-endrow">
+            {confirmEnd ? (
+              <>
+                <span className="qmr-fine" style={{ margin: 0 }}>
+                  Everyone is disconnected and the meeting is marked ended.
+                  {recording ? " Stop the recording first or it is cut off here." : ""}
+                </span>
+                <button
+                  className="qmr-endbtn"
+                  disabled={ending}
+                  onClick={async () => {
+                    setEnding(true);
+                    const out = await control("end");
+                    setEnding(false);
+                    if (out?.error) {
+                      setStatus({ kind: "err", text: out.error });
+                      setConfirmEnd(false);
+                      return;
+                    }
+                    ctx.disconnect();
+                    window.location.href = "/host";
+                  }}
+                >
+                  {ending ? "Ending…" : "Yes — end it for everyone"}
+                </button>
+                <button className="qmr-ghost" onClick={() => setConfirmEnd(false)}>Keep going</button>
+              </>
+            ) : (
+              <button className="qmr-endbtn" onClick={() => setConfirmEnd(true)}>
+                End meeting for everyone
+              </button>
+            )}
+          </div>
         </div>
+      ) : null}
+
+      {railOpen ? (
+        <LiveRail
+          cc={cc}
+          recording={recording}
+          flags={flags}
+          onFlag={flagNow}
+          canFlag={cc.on || recording}
+          onClose={() => setRailOpen(false)}
+          shifted={isHost && panel}
+          top={headroom}
+        />
       ) : null}
 
       <CaptionBar cc={cc} open={ccOpen} onOpen={() => setCcOpen((o) => !o)} />
@@ -1291,7 +1364,7 @@ type Held = { kind: "hand" | "brb"; who: string; at: number };
 // ones the finish route applies to the recording, so tonight's email can
 // never disagree with what this rail showed in the room.
 function LiveRail({
-  cc, recording, flags, onFlag, canFlag, onClose,
+  cc, recording, flags, onFlag, canFlag, onClose, shifted, top,
 }: {
   cc: CaptionsApi;
   recording: boolean;
@@ -1299,7 +1372,12 @@ function LiveRail({
   onFlag: () => void;
   canFlag: boolean;
   onClose: () => void;
+  shifted?: boolean;
+  top: number;
 }) {
+  // The button answers the press even when the newest card is off-screen —
+  // an action with no acknowledgement reads as a button that does nothing.
+  const [flashed, setFlashed] = useState(false);
   const settled = finals(cc.log);
   const caught = catchLive(settled.map((c) => ({ who: c.who, text: c.text, at: c.at })));
   const counts = caughtCounts(caught);
@@ -1317,7 +1395,7 @@ function LiveRail({
   }, [feed.length]);
 
   return (
-    <aside className="qmr-liverail" aria-label="Live notes">
+    <aside className={`qmr-liverail${shifted ? " is-shifted" : ""}`} style={{ top }} aria-label="Live notes">
       <div className="qmr-lrhead">
         <span className="qmr-lrtitle"><span className="q-dot q-beat" /> LIVE NOTES</span>
         <span className="qmr-lrsub">NOBODY TAKES MINUTES</span>
@@ -1367,10 +1445,11 @@ function LiveRail({
           CAUGHT SO FAR&nbsp;&nbsp;<b>{counts.decisions}</b> DECISION{counts.decisions === 1 ? "" : "S"} ·{" "}
           <b>{counts.actions}</b> ACTION{counts.actions === 1 ? "" : "S"}
         </span>
-        <button className="qmr-lrflag" onClick={onFlag} disabled={!canFlag}
+        <button className="qmr-lrflag" disabled={!canFlag}
+          onClick={() => { onFlag(); setFlashed(true); setTimeout(() => setFlashed(false), 1200); }}
           title={canFlag ? "Mark this moment — it goes into the transcript and the notes"
                          : "Turn captions on (or record) first — a flag needs a clock to attach to"}>
-          FLAG THIS MOMENT
+          {flashed ? "FLAGGED ✓" : "FLAG THIS MOMENT"}
         </button>
         <p className="qmr-lrfine">
           Everyone here sees the recording badge for as long as it lasts. Notes and
@@ -2079,16 +2158,19 @@ const CSS = DEVICE_CSS + GUARD_CSS + `
 .qmr-ccnone { color: #8b93a5 !important; }
 
 /* ── live notes rail ── */
-.qmr-liverail { position: absolute; top: 64px; right: 12px; bottom: 96px; width: 320px;
-  z-index: 26; display: flex; flex-direction: column; border: 1px solid #16202c;
-  background: rgba(6, 10, 15, .96); backdrop-filter: blur(8px); }
+.qmr-liverail { position: fixed; top: 60px; right: 12px; bottom: 92px; width: 320px;
+  z-index: 45; display: flex; flex-direction: column; border: 1px solid #1b2735;
+  background: rgba(5, 8, 13, .97); backdrop-filter: blur(10px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  transition: right .18s ease; }
+.qmr-liverail.is-shifted { right: calc(12px + min(360px, calc(100vw - 24px)) + 10px); }
 .qmr-liverail::before { content: ""; position: absolute; top: -1px; left: -1px; width: 12px;
   height: 12px; border-top: 2px solid #00a99d; border-left: 2px solid #00a99d; }
 .qmr-lrhead { display: flex; align-items: center; gap: 10px; padding: 11px 14px;
   border-bottom: 1px solid #131c26; }
 .qmr-lrtitle { display: flex; align-items: center; gap: 7px; font: 600 10.5px/1 'IBM Plex Mono', monospace;
-  letter-spacing: .2em; color: #4dd7cf; }
-.qmr-lrsub { font: 9.5px/1 'IBM Plex Mono', monospace; letter-spacing: .14em; color: #4a566b; margin-left: auto; }
+  letter-spacing: .18em; color: #4dd7cf; white-space: nowrap; }
+.qmr-lrsub { font: 9px/1 'IBM Plex Mono', monospace; letter-spacing: .1em; color: #4a566b; margin-left: auto; white-space: nowrap; }
 .qmr-lrclose { background: none; border: 0; color: #7b8aa0; font-size: 16px; cursor: pointer; padding: 0 2px; }
 .qmr-lrclose:hover { color: #e8eef5; }
 .qmr-lrnote { padding: 10px 14px; margin: 0; font-size: 12.5px; line-height: 1.55; color: #7b8aa0; }
@@ -2119,6 +2201,15 @@ const CSS = DEVICE_CSS + GUARD_CSS + `
 .qmr-lrflag:disabled { opacity: .45; cursor: default; }
 .qmr-lrfine { margin: 8px 0 0; font-size: 10.5px; line-height: 1.5; color: #4a566b; }
 @media (max-width: 900px) { .qmr-liverail { display: none; } }
+
+/* ── end meeting ── */
+.qmr-endrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid #262b36; }
+.qmr-endbtn { background: transparent; border: 1px solid #7a2f38; color: #ff5964;
+  padding: 9px 14px; font: 600 11px 'IBM Plex Mono', monospace; letter-spacing: .1em;
+  cursor: pointer; }
+.qmr-endbtn:hover:not(:disabled) { background: rgba(255, 89, 100, .1); }
+.qmr-endbtn:disabled { opacity: .5; cursor: default; }
 
 /* ── lobby facts row ── */
 .qmr-lobbyfacts { display: flex; gap: 26px; flex-wrap: wrap; margin: 14px 0 2px;

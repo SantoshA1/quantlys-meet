@@ -190,7 +190,13 @@ export default function DeviceCheck({
     setTimeout(() => setTesting(false), 800);
   }
 
-  const spkWorks = speakerPickerWorks();
+  // Detected AFTER mount. speakerPickerWorks() answers differently on the
+  // server (no Audio element) and in the browser, and rendering that
+  // difference is a hydration mismatch — the "1 error" badge that sat in the
+  // corner of every dev screenshot. Until the effect runs we assume the
+  // picker works, which renders identically on both sides.
+  const [spkWorks, setSpkWorks] = useState(true);
+  useEffect(() => { setSpkWorks(speakerPickerWorks()); }, []);
   const micLabel = deviceLabel(mics.find((d) => d.deviceId === micId), 0, "audioinput");
   const heard = peak > 0.02;
 
