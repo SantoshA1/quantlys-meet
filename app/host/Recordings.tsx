@@ -3,7 +3,7 @@
 // A recording you cannot find is not a recording. This is where they live —
 // with the summary that was written after the meeting.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 let _db: SupabaseClient | null = null;
@@ -44,6 +44,7 @@ export default function Recordings({ userId }: { userId: string }) {
   const [items, setItems] = useState<Rec[]>([]);
   const [note, setNote] = useState("Loading…");
   const [playing, setPlaying] = useState("");
+  const player = useRef<HTMLVideoElement | null>(null);
   const [open, setOpen] = useState<Record<string, string>>({});
   // The notes arrive as STRUCTURE now, not a wall of text, so they are held
   // as the parsed object and rendered as sections. Re-parsing headings back
@@ -51,20 +52,35 @@ export default function Recordings({ userId }: { userId: string }) {
   const [payload, setPayload] = useState<Record<string, any>>({});
   const [tab, setTab] = useState<Record<string, string>>({});
 
+  // FIELD 2026-08-18 (Conclave round 39): this asked for 100 folders and 200
+  // files and then rendered the answer as "your recordings". Somebody with a
+  // longer history than that would see a list that simply stopped, with no
+  // error and nothing saying it had stopped — so the honest reading is that
+  // the older ones were lost. Page until a page comes back short.
+  async function listAll(prefix: string, cap: number) {
+    const out: any[] = [];
+    for (let offset = 0; offset < cap; offset += 100) {
+      const r = await db().storage.from("recordings").list(prefix, { limit: 100, offset });
+      if (r.error) return { rows: out, error: r.error.message };
+      const page = r.data ?? [];
+      out.push(...page);
+      if (page.length < 100) break;
+    }
+    return { rows: out, error: "" };
+  }
+
   const load = useCallback(async () => {
-    const rooms = await db().storage.from("recordings").list(userId, { limit: 100 });
-    if (rooms.error) {
-      setNote(`Could not read your recordings: ${rooms.error.message}`);
+    const rooms = await listAll(userId, 2000);
+    if (rooms.error && !rooms.rows.length) {
+      setNote(`Could not read your recordings: ${rooms.error}`);
       return;
     }
     const out: Rec[] = [];
-    for (const folder of rooms.data ?? []) {
+    for (const folder of rooms.rows) {
       if (folder.id) continue; // a stray file at the top level, not a meeting folder
-      const files = await db()
-        .storage.from("recordings")
-        .list(`${userId}/${folder.name}`, { limit: 200 });
+      const files = await listAll(`${userId}/${folder.name}`, 1000);
       const byStem = new Map<string, Rec>();
-      for (const f of files.data ?? []) {
+      for (const f of files.rows) {
         const key = stem(f.name);
         const rec =
           byStem.get(key) ||
@@ -102,7 +118,23 @@ export default function Recordings({ userId }: { userId: string }) {
 
   async function play(path: string, at?: number) {
     const u = await signed(path, 3600);
-    if (u) setPlaying(u);
+    if (!u) return;
+    // FIELD 2026-08-18: this took the second and dropped it. A citation you
+    // still have to scrub for is a citation you have to verify by hand, which
+    // is exactly the work it was supposed to remove. The media fragment gets
+    // it right on load; the listener catches the browsers that ignore it and
+    // the case where the same file is already open.
+    const sec = Math.max(0, Math.floor(at || 0));
+    setPlaying(sec ? `${u}#t=${sec}` : u);
+    if (!sec) return;
+    requestAnimationFrame(() => {
+      const v = player.current;
+      if (!v) return;
+      const seek = () => { try { v.currentTime = sec; } catch {} };
+      if (v.readyState >= 1) seek();
+      v.addEventListener("loadedmetadata", seek, { once: true });
+      v.play().catch(() => {});
+    });
   }
 
   async function get(path: string) {
@@ -146,7 +178,7 @@ export default function Recordings({ userId }: { userId: string }) {
     <section className="qm-card">
       <h2>Recordings</h2>
       {note ? <p className="qm-muted">{note}</p> : null}
-      {playing ? <video className="qm-player" src={playing} controls autoPlay playsInline /> : null}
+      {playing ? <video ref={player} className="qm-player" src={playing} controls autoPlay playsInline /> : null}
       {items.map((r) => (
         <div key={r.path}>
           <div className="qm-item">

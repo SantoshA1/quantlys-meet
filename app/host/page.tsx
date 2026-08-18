@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Recordings from "./Recordings";
+import Search from "./Search";
 
 type Meeting = {
   id: string;
@@ -135,6 +136,7 @@ export default function HostConsole() {
   const [user, setUser] = useState<{ id: string; email?: string } | null>(null);
   const [title, setTitle] = useState("");
   const [mine, setMine] = useState<Meeting[]>([]);
+  const [mineTotal, setMineTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [copied, setCopied] = useState("");
@@ -143,6 +145,7 @@ export default function HostConsole() {
   const [checking, setChecking] = useState(false);
   const [project, setProject] = useState("");
   const [items, setItems] = useState<ActionItem[]>([]);
+  const [itemsTotal, setItemsTotal] = useState(0);
   const [digestNote, setDigestNote] = useState("");
   const [sending, setSending] = useState(false);
   // Who's coming. One free-text box on purpose: people paste addresses out of
@@ -182,25 +185,35 @@ export default function HostConsole() {
   // app keeps getting caught by. Ask for everything, and if the database
   // hasn't caught up yet, ask for what has always been there and say so once.
   const BASE_COLS = "id, room_name, title, active, started_at";
+  // Bounded on purpose — but a bound the person is told about. A list that
+  // silently stops is the app saying "that's all of them" when it isn't.
+  const MINE_LIMIT = 50;
+  const ITEMS_LIMIT = 200;
   const loadMine = useCallback(async () => {
     if (!user) return;
+    // FIELD 2026-08-18 (Conclave round 39): this asked for 20 and drew them
+    // under the heading "Your Meetings" — so meeting 21 onwards just wasn't
+    // there, with no error and nothing saying so. Ask for the true count as
+    // well, and when the bound bites, say it on the screen.
     const full = await db()
       .from("meetings")
-      .select(`${BASE_COLS}, scheduled_at, project`)
+      .select(`${BASE_COLS}, scheduled_at, project`, { count: "exact" })
       .eq("created_by", user.id)
       .order("started_at", { ascending: false })
-      .limit(20);
+      .limit(MINE_LIMIT);
     if (!full.error) {
       setMine((full.data as Meeting[]) ?? []);
+      setMineTotal(full.count ?? (full.data?.length ?? 0));
       return;
     }
     const basic = await db()
       .from("meetings")
-      .select(BASE_COLS)
+      .select(BASE_COLS, { count: "exact" })
       .eq("created_by", user.id)
       .order("started_at", { ascending: false })
-      .limit(20);
+      .limit(MINE_LIMIT);
     setMine(((basic.data as any[]) ?? []).map((m) => ({ ...m, scheduled_at: null, project: null })));
+    setMineTotal(basic.count ?? (basic.data?.length ?? 0));
     setNote(
       "Scheduling and projects need one SQL step that hasn't been run yet — everything " +
         "else works. Run the meet-digest SQL in Supabase and this message goes away."
@@ -210,13 +223,15 @@ export default function HostConsole() {
   const [itemsReady, setItemsReady] = useState(true);
   const loadItems = useCallback(async () => {
     if (!user) return;
-    const { data, error } = await db()
+    const { data, error, count } = await db()
       .from("action_items")
-      .select("id, project, room_name, meeting_title, text, owner, ts_seconds, met_at")
+      .select("id, project, room_name, meeting_title, text, owner, ts_seconds, met_at",
+              { count: "exact" })
       .eq("user_id", user.id)
       .eq("status", "open")
       .order("met_at", { ascending: false })
-      .limit(200);
+      .limit(ITEMS_LIMIT);
+    setItemsTotal(count ?? (data?.length ?? 0));
     // No table yet is a SETUP state, not an empty list. "Nothing open" when the
     // truth is "nowhere to put it" is the lie this whole app keeps fixing.
     setItemsReady(!error);
@@ -710,6 +725,12 @@ export default function HostConsole() {
 
           <section className="qm-card">
             <h2>Your meetings</h2>
+            {mineTotal > mine.length ? (
+              <p className="qm-muted qm-tight">
+                Showing your {mine.length} most recent of {mineTotal}. Everything
+                older is still recorded and still searchable above.
+              </p>
+            ) : null}
             {mine.length === 0 ? (
               <p className="qm-muted">Nothing yet — start one above and share the link.</p>
             ) : (
@@ -853,6 +874,11 @@ export default function HostConsole() {
               goes. Anything you don't tick comes back next Monday — that's the point.
             </p>
             {digestNote ? <p className="qm-note">{digestNote}</p> : null}
+            {itemsTotal > items.length ? (
+              <p className="qm-muted qm-tight">
+                Showing {items.length} of {itemsTotal} open items — the newest first.
+              </p>
+            ) : null}
             {!itemsReady ? (
               <p className="qm-muted">
                 The action-items table hasn't been created yet — run the meet-digest SQL
@@ -904,6 +930,8 @@ export default function HostConsole() {
               ))
             )}
           </section>
+
+          <Search />
 
           <Recordings userId={user.id} />
         </>
