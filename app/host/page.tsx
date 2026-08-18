@@ -9,6 +9,8 @@ import { useRouter } from "next/navigation";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Recordings from "./Recordings";
 import Search from "./Search";
+import Intelligence from "./Intelligence";
+import { nextUp, inWords, stillOpen } from "@/lib/intelligence";
 
 type Meeting = {
   id: string;
@@ -564,148 +566,115 @@ export default function HostConsole() {
   const allGood = Boolean(health && health.steps.every((x) => x.ok));
   const brokenCount = (health?.steps || []).filter((x) => !x.ok).length;
 
-  return (
-    <main className="qm-wrap">
-      <style>{CSS}</style>
+  const up = nextUp(mine);
+  const groups = stillOpen(items.map((i) => ({ ...i, project: i.project })));
 
-      <header className="qm-bar">
-        <span className="qm-logo">Console</span>
+  return (
+    <main className="qh-wrap">
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
+      <style dangerouslySetInnerHTML={{ __html: QH }} />
+
+      <header className="qh-top">
+        <span className="qh-logo">
+          <span className="qh-cube" aria-hidden>◇</span>
+          HOST<em> CONSOLE</em>
+        </span>
         {user ? (
           <>
-            {/* The design asks for a status strip. It is not decoration: every
-                one of these is a key that, when missing, produces a meeting
-                that records fine and then silently never emails anybody. The
-                check already existed behind a button nobody presses — this
-                runs it on arrival and puts the answer where you cannot miss
-                it. */}
-            <span className="qm-chips">
+            <span className="qh-chips">
               <span className={`q-chip${allGood ? " q-live" : ""}`} title={health?.headline || "Checking your setup…"}>
                 <span className={`q-dot${allGood ? " q-beat" : ""}`}
                       style={{ background: health ? (allGood ? "var(--accent2)" : "var(--danger)") : "var(--dim)" }} />
                 {health ? (allGood ? "ALL SYSTEMS NOMINAL" : `${brokenCount} NEED ATTENTION`) : "CHECKING…"}
               </span>
-              {(health?.steps || []).map((st) => (
+              {(health?.steps || []).filter((st) => CHIP[st.key]).map((st) => (
                 <span key={st.key} className="q-chip" title={st.detail}
                       style={{ color: st.ok ? "var(--muted)" : "var(--danger)",
                                borderColor: st.ok ? "var(--fieldline)" : "var(--dangerLine)" }}>
-                  {CHIP[st.key] || st.key.toUpperCase()} {st.ok ? "READY" : "OFF"}
+                  {CHIP[st.key]} {st.ok ? "READY" : "OFF"}
                 </span>
               ))}
-              <span className="q-chip" title={user.email || ""}>{user.email}</span>
             </span>
-            <button className="qm-ghost" onClick={signOut}>Sign out</button>
+            <span className="qh-user" title={user.email || ""}>{user.email}</span>
+            <button className="qh-ghost" onClick={signOut}>SIGN OUT</button>
           </>
         ) : null}
       </header>
 
       {!ready ? (
-        <p className="qm-muted">Loading…</p>
+        <p className="qh-dim">Loading…</p>
       ) : !user ? (
-        <section className="qm-card">
-          <h1>Sign in to host</h1>
-          <p className="qm-muted">
+        <section className="qh-panel qh-signin">
+          <p className="qh-eyebrow">HOST SIGN-IN</p>
+          <h1 className="qh-h1">Sign in to host</h1>
+          <p className="qh-dim">
             Only the host needs an account. Everyone you invite joins with one click, no sign-up.
           </p>
           {stage === "email" ? (
-            <div className="qm-row">
-              <input
-                className="qm-input"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                placeholder="you@company.com"
-                value={email}
+            <div className="qh-row">
+              <input className="qh-input" type="email" inputMode="email" autoComplete="email"
+                placeholder="you@company.com" value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendCode()}
-              />
-              <button className="qm-primary" onClick={sendCode} disabled={busy}>
-                {busy ? "Sending…" : "Email me a code"}
+                onKeyDown={(e) => e.key === "Enter" && sendCode()} />
+              <button className="qh-primary" onClick={sendCode} disabled={busy}>
+                {busy ? "SENDING…" : "EMAIL ME A CODE"}
               </button>
             </div>
           ) : (
-            <div className="qm-row">
-              <input
-                className="qm-input"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                placeholder="6-digit code"
-                value={code}
+            <div className="qh-row">
+              <input className="qh-input" inputMode="numeric" autoComplete="one-time-code"
+                placeholder="6-digit code" value={code}
                 onChange={(e) => setCode(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && verify()}
-              />
-              <button className="qm-primary" onClick={verify} disabled={busy}>
-                {busy ? "Checking…" : "Sign in"}
+                onKeyDown={(e) => e.key === "Enter" && verify()} />
+              <button className="qh-primary" onClick={verify} disabled={busy}>
+                {busy ? "CHECKING…" : "SIGN IN"}
               </button>
-              <button className="qm-ghost" onClick={sendCode} disabled={busy}>
-                Send a new code
-              </button>
+              <button className="qh-ghost" onClick={sendCode} disabled={busy}>SEND A NEW CODE</button>
             </div>
           )}
-          {note ? <p className="qm-note">{note}</p> : null}
+          {note ? <p className="qh-note">{note}</p> : null}
         </section>
       ) : (
-        <>
-          <section className="qm-card">
-            <h1>Start a meeting</h1>
-            <p className="qm-muted">
-              Signed in as {user.email}. Starting a meeting copies its invite link straight to your
-              clipboard.
-            </p>
-            <div className="qm-row">
-              <input
-                className="qm-input"
-                placeholder="Meeting name (optional)"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && startMeeting()}
-              />
-              <input
-                className="qm-input qm-narrow"
-                placeholder="Project (optional)"
-                value={project}
-                onChange={(e) => setProject(e.target.value)}
-                title="Meetings in the same project are rolled up together in your weekly digest"
-              />
-              <button className="qm-primary" onClick={startMeeting} disabled={busy}>
-                {busy ? "Starting…" : "Start a meeting"}
-              </button>
-            </div>
+        <div className="qh-grid">
+          <div className="qh-main">
 
-            <div className="qm-guests">
-              <label className="qm-label" htmlFor="qm-guests">
-                Who's coming? <em>(optional)</em>
-              </label>
-              <textarea
-                id="qm-guests"
-                className="qm-area"
-                rows={2}
-                placeholder="maya@company.com, sam@partner.co — or paste a whole column"
-                value={guests}
-                onChange={(e) => setGuests(e.target.value)}
-              />
-              <p className="qm-hint">
-                They get a proper calendar invitation with the join link — Yes / No / Maybe,
-                straight into their calendar. Commas, semicolons, new lines or “Name
-                &lt;address&gt;” all work. Leave it empty and you'll get the link to send yourself.
+            {/* ── LAUNCH ─────────────────────────────────────────────── */}
+            <section className="qh-panel qh-launch">
+              <p className="qh-eyebrow">LAUNCH</p>
+              <h1 className="qh-h1">Start a meeting</h1>
+              <p className="qh-dim">
+                The invite link is on your clipboard the instant it opens. Anyone you name
+                gets a real calendar invitation — Yes / No / Maybe, straight into their calendar.
               </p>
-            </div>
-
-            <div className="qm-sched">
-              <p className="qm-muted qm-tight">Or set it for later.</p>
-              <div className="qm-row">
-                <input
-                  className="qm-input"
-                  type="datetime-local"
-                  value={startAt}
-                  onChange={(e) => setStartAt(e.target.value)}
-                  aria-label="Start date and time"
-                />
-                <select
-                  className="qm-input qm-narrow"
-                  value={repeat}
-                  onChange={(e) => setRepeat(e.target.value)}
-                  aria-label="How often it repeats"
-                >
+              <div className="qh-row">
+                <input className="qh-input qh-grow" placeholder="Meeting name" value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && startMeeting()} />
+                <input className="qh-input qh-mid" placeholder="Project" value={project}
+                  onChange={(e) => setProject(e.target.value)}
+                  title="Meetings in the same project are rolled up together in your weekly digest" />
+                <button className="qh-primary" onClick={startMeeting} disabled={busy}>
+                  {busy ? "STARTING…" : "START NOW"}
+                </button>
+              </div>
+              <div className="qh-row">
+                <textarea className="qh-input qh-grow qh-area" rows={1}
+                  placeholder="Who's coming?  maya@company.com, sam@partner.co — or paste a whole column"
+                  value={guests} onChange={(e) => setGuests(e.target.value)} />
+                <input className="qh-input qh-mid" type="datetime-local" value={startAt}
+                  onChange={(e) => setStartAt(e.target.value)} aria-label="Start date and time" />
+                <button className="qh-ghost qh-btn" onClick={scheduleMeeting} disabled={busy || !startAt}>
+                  {busy ? "WORKING…" : "SCHEDULE"}
+                </button>
+              </div>
+              <div className="qh-row qh-fineline">
+                <span className="qh-fine">
+                  Commas, semicolons, new lines or “Name &lt;address&gt;” all work · leave it
+                  empty and you&apos;ll get the link to send yourself.
+                </span>
+                <span className="qh-spacer" />
+                <select className="qh-input qh-tiny" value={repeat}
+                  onChange={(e) => setRepeat(e.target.value)} aria-label="How often it repeats">
                   <option value="">Doesn&apos;t repeat</option>
                   <option value="DAILY">Every day</option>
                   <option value="WEEKDAYS">Every weekday</option>
@@ -714,276 +683,200 @@ export default function HostConsole() {
                   <option value="MONTHLY">Monthly</option>
                 </select>
                 {repeat ? (
-                  <input
-                    className="qm-input qm-tiny"
-                    type="number"
-                    min={2}
-                    max={200}
-                    placeholder="times"
-                    value={ends}
-                    onChange={(e) => setEnds(e.target.value)}
-                    aria-label="Number of occurrences — leave empty for no end"
-                    title="How many times. Leave it empty and it repeats indefinitely."
-                  />
+                  <input className="qh-input qh-tiny" type="number" min={2} max={200} placeholder="times"
+                    value={ends} onChange={(e) => setEnds(e.target.value)}
+                    aria-label="Number of occurrences — leave empty for no end" />
                 ) : null}
-                <button className="qm-ghost" onClick={scheduleMeeting} disabled={busy || !startAt}>
-                  {busy ? "Working…" : guests.trim() ? "Schedule and invite" : "Schedule it"}
-                </button>
               </div>
-              {repeat ? (
-                <p className="qm-hint">
-                  {saysRepeat(repeat, startAt, ends)} — everyone gets one invitation
-                  and their calendar fills in the rest. The join link is the same
-                  every time.
-                </p>
-              ) : null}
-            </div>
-            {note ? <p className="qm-note">{note}</p> : null}
-          </section>
+              {repeat ? <p className="qh-fine">{saysRepeat(repeat, startAt, ends)} — everyone gets one
+                invitation and their calendar fills in the rest.</p> : null}
+              {note ? <p className="qh-note">{note}</p> : null}
+            </section>
 
-          <section className="qm-card">
-            <h2>Will recordings turn into notes?</h2>
-            <p className="qm-muted qm-tight">
-              Transcripts and the email need keys set in Vercel. This asks each service
-              directly, so you find out now rather than after a meeting.
-            </p>
-            <div className="qm-row">
-              <button className="qm-ghost" onClick={checkSetup} disabled={checking}>
-                {checking ? "Checking…" : "Check my setup"}
-              </button>
-            </div>
-            {health ? (
-              <>
-                <p className={`qm-head ${health.steps.every((x) => x.ok) ? "qm-good" : "qm-bad"}`}>
-                  {health.headline}
-                </p>
-                <ul className="qm-steps">
-                  {health.steps.map((st) => (
-                    <li key={st.key} className={st.ok ? "is-ok" : "is-bad"}>
-                      <span className="qm-mark">{st.ok ? "✓" : "✗"}</span>
-                      <span>
-                        <b>{st.label}</b>
-                        <em>{st.detail}</em>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-          </section>
+            {/* ── MEETING INTELLIGENCE ───────────────────────────────── */}
+            <Intelligence userId={user.id} openItems={items} onTick={tick} />
 
-          <section className="qm-card">
-            <h2>Your meetings</h2>
-            {mineTotal > mine.length ? (
-              <p className="qm-muted qm-tight">
-                Showing your {mine.length} most recent of {mineTotal}. Everything
-                older is still recorded and still searchable above.
-              </p>
-            ) : null}
-            {mine.length === 0 ? (
-              <p className="qm-muted">Nothing yet — start one above and share the link.</p>
-            ) : (
-              mine.map((m) => (
-                <div className="qm-itemwrap" key={m.id}>
-                <div className="qm-item">
-                  <span className="qm-name">
-                    {m.title || "Quantlys Meeting"}
-                    {m.scheduled_at ? (
-                      <em className="qm-when">
-                        {" · "}
-                        {new Date(m.scheduled_at).toLocaleString([], {
-                          weekday: "short", day: "numeric", month: "short",
-                          hour: "2-digit", minute: "2-digit",
-                        })}
-                        {" · "}
-                        {when(m.scheduled_at)}
-                      </em>
-                    ) : null}
-                    {m.active === false ? <em className="qm-ended"> · ended</em> : null}
-                  </span>
-                  <span className="qm-row">
-                    <button className="qm-ghost" onClick={() => copyInvite(m.room_name)}>
-                      {copied === m.room_name ? "Copied" : "Copy invite link"}
-                    </button>
-                    {m.scheduled_at ? (
-                      <button
-                        className="qm-ghost"
-                        onClick={() =>
-                          downloadIcs(m.title || "Quantlys Meeting", m.scheduled_at!, inviteLink(m.room_name))
-                        }
-                      >
-                        Add to calendar
-                      </button>
-                    ) : null}
-                    <button
-                      className="qm-ghost"
-                      onClick={() => {
-                        setInviteFor(inviteFor === m.room_name ? "" : m.room_name);
-                        setLaterGuests("");
-                        setInviteNote("");
-                      }}
-                    >
-                      {inviteFor === m.room_name ? "Cancel" : "Invite people"}
-                    </button>
-                    <button className="qm-ghost" onClick={() => router.push(`/room/${m.room_name}`)}>
-                      Open
-                    </button>
-                    {m.active === false ? null : (
-                      <button className="qm-ghost" onClick={() => endMeeting(m.id)}>
-                        End
-                      </button>
-                    )}
-                    {confirmDel === m.room_name ? (
-                      <>
-                        <button
-                          className="qm-danger"
-                          disabled={deleting === m.room_name}
-                          onClick={() => deleteMeeting(m.room_name)}
-                        >
-                          {deleting === m.room_name ? "Deleting…" : "Yes, delete it"}
-                        </button>
-                        <button className="qm-ghost" onClick={() => setConfirmDel("")}>
-                          Keep it
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="qm-ghost qm-dellink"
-                        onClick={() => { setConfirmDel(m.room_name); setInviteNote(""); }}
-                        title="Delete this meeting, its recordings and its notes"
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </span>
-                </div>
-
-                {confirmDel === m.room_name ? (
-                  <p className="qm-warn">
-                    This removes the meeting, its recording files and any action
-                    items that came out of it. There is no undo.
-                  </p>
+            {/* ── YOUR MEETINGS ──────────────────────────────────────── */}
+            <section className="qh-panel">
+              <div className="qh-panelhead">
+                <span className="qh-eyebrow">YOUR MEETINGS</span>
+                {mineTotal > mine.length ? (
+                  <span className="qh-fine">SHOWING {mine.length} OF {mineTotal} — OLDER ONES STAY SEARCHABLE</span>
                 ) : null}
-
-                {/* Inviting someone to a meeting that already exists — the case
-                    that comes up most: one more person, the morning of. */}
-                {inviteFor === m.room_name ? (
-                  <div className="qm-invite">
-                    <textarea
-                      className="qm-area"
-                      rows={2}
-                      autoFocus
-                      placeholder="maya@company.com, sam@partner.co"
-                      value={laterGuests}
-                      onChange={(e) => setLaterGuests(e.target.value)}
-                    />
-                    <div className="qm-row">
-                      <button
-                        className="qm-primary"
-                        disabled={inviting || !laterGuests.trim()}
-                        onClick={async () => {
-                          setInviting(true);
-                          const said = await sendInvites(
-                            m.room_name,
-                            laterGuests,
-                            m.scheduled_at || m.started_at || new Date().toISOString()
-                          );
-                          setInviting(false);
-                          setInviteNote(said);
-                          if (said.startsWith("Invitation sent")) {
-                            setLaterGuests("");
-                            setInviteFor("");
-                          }
-                        }}
-                      >
-                        {inviting ? "Sending…" : "Send invitation"}
+              </div>
+              {mine.length === 0 ? (
+                <p className="qh-dim">Nothing yet — start one above and share the link.</p>
+              ) : (
+                mine.map((m) => (
+                  <div className="qm-itemwrap" key={m.id}>
+                  <div className="qm-item">
+                    <span className="qm-name">
+                      {m.title || "Quantlys Meeting"}
+                      {m.scheduled_at ? (
+                        <em className="qm-when">
+                          {" · "}
+                          {new Date(m.scheduled_at).toLocaleString([], {
+                            weekday: "short", day: "numeric", month: "short",
+                            hour: "2-digit", minute: "2-digit",
+                          })}
+                          {" · "}
+                          {when(m.scheduled_at)}
+                        </em>
+                      ) : null}
+                      {m.active === false ? <em className="qm-ended"> · ended</em> : null}
+                    </span>
+                    <span className="qm-row">
+                      <button className="qh-ghost" onClick={() => copyInvite(m.room_name)}>
+                        {copied === m.room_name ? "COPIED" : "COPY LINK"}
                       </button>
-                      <span className="qm-hint">
-                        Same meeting, same link — an invitation already accepted is
-                        updated, not duplicated.
-                      </span>
-                    </div>
+                      {m.scheduled_at ? (
+                        <button className="qh-ghost"
+                          onClick={() => downloadIcs(m.title || "Quantlys Meeting", m.scheduled_at!, inviteLink(m.room_name))}>
+                          CALENDAR
+                        </button>
+                      ) : null}
+                      <button className="qh-ghost"
+                        onClick={() => { setInviteFor(inviteFor === m.room_name ? "" : m.room_name); setLaterGuests(""); setInviteNote(""); }}>
+                        {inviteFor === m.room_name ? "CANCEL" : "INVITE"}
+                      </button>
+                      <button className="qh-primary qh-small" onClick={() => router.push(`/room/${m.room_name}`)}>
+                        OPEN
+                      </button>
+                      {m.active === false ? null : (
+                        <button className="qh-ghost" onClick={() => endMeeting(m.id)}>END</button>
+                      )}
+                      {confirmDel === m.room_name ? (
+                        <>
+                          <button className="qm-danger" disabled={deleting === m.room_name}
+                            onClick={() => deleteMeeting(m.room_name)}>
+                            {deleting === m.room_name ? "Deleting…" : "Yes, delete it"}
+                          </button>
+                          <button className="qh-ghost" onClick={() => setConfirmDel("")}>KEEP IT</button>
+                        </>
+                      ) : (
+                        <button className="qh-ghost qh-del"
+                          onClick={() => { setConfirmDel(m.room_name); setInviteNote(""); }}
+                          title="Delete this meeting, its recordings and its notes">
+                          DELETE
+                        </button>
+                      )}
+                    </span>
                   </div>
-                ) : null}
-                </div>
-              ))
-            )}
-            {inviteNote ? <p className="qm-note">{inviteNote}</p> : null}
-          </section>
+                  {confirmDel === m.room_name ? (
+                    <p className="qm-warn">
+                      This removes the meeting, its recording files and any action
+                      items that came out of it. There is no undo.
+                    </p>
+                  ) : null}
+                  {inviteFor === m.room_name ? (
+                    <div className="qm-invite">
+                      <textarea className="qh-input qh-area" rows={2} autoFocus
+                        placeholder="maya@company.com, sam@partner.co"
+                        value={laterGuests} onChange={(e) => setLaterGuests(e.target.value)} />
+                      <div className="qh-row">
+                        <button className="qh-primary qh-small" disabled={inviting || !laterGuests.trim()}
+                          onClick={async () => {
+                            setInviting(true);
+                            const said = await sendInvites(
+                              m.room_name, laterGuests,
+                              m.scheduled_at || m.started_at || new Date().toISOString()
+                            );
+                            setInviting(false);
+                            setInviteNote(said);
+                            if (said.startsWith("Invitation sent")) { setLaterGuests(""); setInviteFor(""); }
+                          }}>
+                          {inviting ? "SENDING…" : "SEND INVITATION"}
+                        </button>
+                        <span className="qh-fine">
+                          Same meeting, same link — an invitation already accepted is updated, not duplicated.
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
+                  </div>
+                ))
+              )}
+              {inviteNote ? <p className="qh-note">{inviteNote}</p> : null}
+            </section>
 
-          <section className="qm-card">
-            <div className="qm-head-row">
-              <h2>Still open</h2>
-              <button className="qm-ghost" onClick={sendDigest} disabled={sending}>
-                {sending ? "Sending…" : "Email me this week's digest"}
-              </button>
-            </div>
-            <p className="qm-muted qm-tight">
-              Everything anyone committed to, across every meeting. Tick it off and it
-              goes. Anything you don't tick comes back next Monday — that's the point.
-            </p>
-            {digestNote ? <p className="qm-note">{digestNote}</p> : null}
-            {itemsTotal > items.length ? (
-              <p className="qm-muted qm-tight">
-                Showing {items.length} of {itemsTotal} open items — the newest first.
-              </p>
-            ) : null}
+            <Search />
+            <Recordings userId={user.id} />
+          </div>
+
+          {/* ── THE RAIL ───────────────────────────────────────────── */}
+          <aside className="qh-rail">
+            <p className="qh-railhead">NEXT UP</p>
+            {up && up.scheduled_at ? (
+              <div className="qh-next">
+                <p className="qh-nextwhen"><span className="q-dot q-beat" /> {inWords(up.scheduled_at).toUpperCase()}</p>
+                <p className="qh-nexttitle">{up.title || "Quantlys Meeting"}</p>
+                <p className="qh-fine">
+                  {new Date(up.scheduled_at).toLocaleString([], {
+                    weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+                  }).toUpperCase()}
+                </p>
+                <div className="qh-row">
+                  <button className="qh-primary qh-small" onClick={() => router.push(`/room/${up.room_name}`)}>JOIN</button>
+                  <button className="qh-ghost" onClick={() => copyInvite(up.room_name)}>
+                    {copied === up.room_name ? "COPIED" : "COPY LINK"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="qh-dim qh-railnote">Nothing scheduled. Set a time in the launch card and it appears here.</p>
+            )}
+
+            <p className="qh-railhead">STILL OPEN {itemsReady && items.length ? <em className="qh-count">{itemsTotal}</em> : null}</p>
             {!itemsReady ? (
-              <p className="qm-muted">
-                The action-items table hasn't been created yet — run the meet-digest SQL
-                step in Supabase and this list starts filling itself after each recording.
+              <p className="qh-dim qh-railnote">
+                The action-items table hasn&apos;t been created yet — run the meet-digest SQL step
+                in Supabase and this list starts filling itself after each recording.
               </p>
             ) : items.length === 0 ? (
-              <p className="qm-muted">
-                Nothing open. Action items appear here after a meeting is recorded and
-                transcribed.
-              </p>
+              <p className="qh-dim qh-railnote">Nothing open. Commitments land here after a recorded meeting.</p>
             ) : (
-              Object.entries(
-                items.reduce<Record<string, ActionItem[]>>((acc, i) => {
-                  const k = (i.project || "").trim() || "General";
-                  (acc[k] = acc[k] || []).push(i);
-                  return acc;
-                }, {})
-              ).map(([proj, list]) => (
-                <div key={proj} className="qm-proj">
-                  <div className="qm-projname">
-                    {proj}
-                    <em> · {list.length} open</em>
+              <>
+                {groups.map((g) => (
+                  <div key={g.project} className="qh-proj">
+                    <p className="qh-projname">{g.project} <em>· {g.items.length} OPEN</em></p>
+                    {g.items.slice(0, 6).map((i: any) => (
+                      <label className="qh-open" key={i.id}>
+                        <input type="checkbox" onChange={() => tick(i.id)} aria-label={`Mark done: ${i.text}`} />
+                        <span>{i.text}</span>
+                      </label>
+                    ))}
+                    {g.items.length > 6 ? <p className="qh-fine">+ {g.items.length - 6} more in the digest</p> : null}
                   </div>
-                  {list.map((i) => (
-                    <div className="qm-todo" key={i.id}>
-                      <button
-                        className="qm-tick"
-                        onClick={() => tick(i.id)}
-                        title="Mark it done — it won't come back"
-                        aria-label={`Mark done: ${i.text}`}
-                      >
-                        ○
-                      </button>
-                      <span className="qm-todotext">
-                        {i.text}
-                        <em>
-                          {i.meeting_title || i.room_name}
-                          {" · "}
-                          {new Date(i.met_at).toLocaleDateString([], {
-                            weekday: "short", month: "short", day: "numeric",
-                          })}
-                          {i.ts_seconds !== null ? ` · ${mmss(i.ts_seconds)}` : ""}
-                          {i.owner ? ` · ${i.owner}` : ""}
-                        </em>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ))
+                ))}
+                {itemsTotal > items.length ? (
+                  <p className="qh-fine">Showing {items.length} of {itemsTotal} — newest first.</p>
+                ) : null}
+                <p className="qh-fine">Anything you don&apos;t tick comes back next Monday. That&apos;s the point.</p>
+              </>
             )}
-          </section>
+            <button className="qh-wide" onClick={sendDigest} disabled={sending}>
+              {sending ? "SENDING…" : "EMAIL ME THIS WEEK'S DIGEST"}
+            </button>
+            {digestNote ? <p className="qh-note">{digestNote}</p> : null}
 
-          <Search />
-
-          <Recordings userId={user.id} />
-        </>
+            <p className="qh-railhead">PIPELINE</p>
+            <div className="qh-pipe">
+              {(health?.steps || []).map((st) => (
+                <div key={st.key} className={`qh-pipestep ${st.ok ? "is-ok" : "is-bad"}`} title={st.detail}>
+                  <span className="qh-pipemark">{st.ok ? "✓" : "✗"}</span>
+                  <span className="qh-pipelabel">{st.label}</span>
+                </div>
+              ))}
+              {!health ? <p className="qh-dim qh-railnote">Checking your setup…</p> : null}
+            </div>
+            <button className="qh-wide" onClick={checkSetup} disabled={checking}>
+              {checking ? "CHECKING…" : "CHECK MY SETUP"}
+            </button>
+            {health && !allGood ? (
+              <p className="qh-note qh-railnote">{health.headline}</p>
+            ) : null}
+          </aside>
+        </div>
       )}
     </main>
   );
@@ -1074,4 +967,163 @@ select.qm-input { cursor: pointer; }
   font-size: 12px; margin-top: 2px; }
 .qm-steps em { display: block; font-style: normal; color: #8b93a5; font-size: 13px;
   margin-top: 2px; line-height: 1.5; }
+`;
+
+// The console's own composition — built on the design tokens globals.css
+// already ships. The qm-* styles above stay because the meetings list and
+// Recordings/Search still wear them; these are the design's console shell.
+const QH = `
+.qh-wrap { max-width: 1520px; margin: 0 auto; padding: 0 24px 80px;
+  font-family: 'Space Grotesk', -apple-system, system-ui, sans-serif;
+  color: var(--text, #e8eef5); }
+.qh-top { position: sticky; top: 0; z-index: 30; display: flex; align-items: center;
+  gap: 14px; flex-wrap: wrap; padding: 13px 4px; margin-bottom: 22px;
+  background: color-mix(in srgb, var(--bg, #04060a) 86%, transparent);
+  backdrop-filter: blur(10px); border-bottom: 1px solid var(--line2, #131c26); }
+.qh-logo { display: flex; align-items: center; gap: 10px; font-weight: 600;
+  font-size: 14px; letter-spacing: .09em; text-transform: uppercase; }
+.qh-logo em { color: var(--accent2, #4DD7CF); font-style: normal; font-weight: 400; }
+.qh-cube { color: var(--accent, #00A99D); filter: drop-shadow(0 0 8px var(--glow, rgba(0,169,157,.16))); }
+.qh-chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.qh-user { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  color: var(--muted, #7b8aa0); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qh-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; align-items: start; }
+@media (max-width: 1080px) { .qh-grid { grid-template-columns: 1fr; } }
+.qh-main { min-width: 0; }
+
+.qh-panel { position: relative; border: 1px solid var(--line, #16202c); background:
+  radial-gradient(900px 420px at 80% -20%, var(--glow, rgba(0,169,157,.16)), transparent 62%),
+  repeating-linear-gradient(0deg, var(--grid, rgba(255,255,255,.014)) 0 1px, transparent 1px 64px),
+  repeating-linear-gradient(90deg, var(--grid, rgba(255,255,255,.014)) 0 1px, transparent 1px 64px),
+  var(--panel, #070b10);
+  padding: 22px 26px; margin-bottom: 20px; }
+.qh-panel::before { content: ""; position: absolute; top: -1px; left: -1px; width: 14px; height: 14px;
+  border-top: 2px solid var(--accent, #00A99D); border-left: 2px solid var(--accent, #00A99D); }
+.qh-launch { padding: 26px 30px 24px; }
+.qh-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .24em;
+  color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
+.qh-h1 { font-size: 30px; font-weight: 600; margin: 2px 0 8px; letter-spacing: -0.01em; }
+.qh-dim { color: var(--muted, #7b8aa0); font-size: 14px; line-height: 1.55; margin: 4px 0 14px; }
+.qh-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 0; }
+.qh-fineline { align-items: baseline; }
+.qh-spacer { flex: 1; }
+.qh-grow { flex: 1 1 260px; }
+.qh-mid { flex: 0 1 200px; }
+.qh-tiny { flex: 0 0 auto; width: auto; }
+.qh-input { background: var(--sunk, #070a0f); border: 1px solid var(--fieldline, #1e2937);
+  color: var(--text, #e8eef5); padding: 12px 14px; font: inherit; font-size: 14px;
+  border-radius: 0; min-width: 0; }
+.qh-input:focus { outline: none; border-color: var(--accent, #00A99D);
+  box-shadow: 0 0 0 1px var(--accent, #00A99D) inset; }
+.qh-area { resize: vertical; line-height: 1.45; }
+.qh-primary { background: var(--accent, #00A99D); color: var(--onAccent, #031310);
+  border: 0; padding: 13px 22px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+  letter-spacing: .14em; font-weight: 600; cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%); }
+.qh-primary:hover { background: var(--accent2, #4DD7CF); }
+.qh-primary:disabled { opacity: .55; cursor: default; }
+.qh-small { padding: 9px 16px; }
+.qh-ghost, .qh-btn { background: transparent; border: 1px solid var(--fieldline, #1e2937);
+  color: var(--text2, #c3cddb); padding: 9px 14px; font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; letter-spacing: .12em; cursor: pointer; }
+.qh-ghost:hover { border-color: var(--accent, #00A99D); color: var(--accentBright, #7ff0e8); }
+.qh-ghost:disabled { opacity: .5; cursor: default; }
+.qh-btn { padding: 12px 18px; }
+.qh-del:hover { border-color: var(--dangerLine, #7a2f38); color: var(--danger, #ff5964); }
+.qh-wide { display: block; width: 100%; margin: 14px 0 4px; padding: 12px;
+  background: transparent; border: 1px solid var(--fieldline, #1e2937);
+  color: var(--text2, #c3cddb); font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  letter-spacing: .16em; cursor: pointer; }
+.qh-wide:hover { border-color: var(--accent, #00A99D); color: var(--accentBright, #7ff0e8); }
+.qh-fine { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--dim, #4a566b);
+  letter-spacing: .04em; line-height: 1.6; }
+.qh-note { margin-top: 12px; padding: 10px 14px; border: 1px solid var(--fieldline, #1e2937);
+  background: var(--sunk, #070a0f); color: var(--text2, #c3cddb); font-size: 13.5px; line-height: 1.5; }
+.qh-signin { max-width: 640px; margin: 60px auto; padding: 34px 38px; }
+
+/* ── intelligence panel ── */
+.qh-panelhead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: 1px solid var(--line2, #131c26); margin-bottom: 14px; }
+.qh-ready { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .14em;
+  color: var(--muted, #7b8aa0); display: flex; align-items: center; gap: 7px; }
+.qh-introw { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.qh-mtitle { font-size: 24px; font-weight: 600; margin: 0 0 4px; }
+.qh-msub { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted, #7b8aa0);
+  letter-spacing: .08em; margin: 0; }
+.qh-sep { color: var(--faint, #3f4a5c); padding: 0 4px; }
+.qh-stats { display: flex; gap: 26px; }
+.qh-stat i { display: block; font-family: 'IBM Plex Mono', monospace; font-style: normal;
+  font-size: 9.5px; letter-spacing: .18em; color: var(--dim, #4a566b); margin-bottom: 2px; }
+.qh-stat b { font-size: 30px; font-weight: 600; color: var(--accent2, #4DD7CF);
+  font-variant-numeric: tabular-nums; }
+.qh-strip { margin: 18px 0 6px; border: 1px solid var(--line2, #131c26);
+  background: var(--sunk, #070a0f); padding: 14px 16px 10px; }
+.qh-bars { display: flex; align-items: flex-end; gap: 4px; height: 74px; }
+.qh-bars span { flex: 1; min-width: 3px; background: linear-gradient(180deg,
+  var(--accent2, #4DD7CF), var(--accent, #00A99D)); opacity: .85; }
+.qh-stripmeta { display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  margin-top: 9px; font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+  color: var(--dim, #4a566b); letter-spacing: .08em; }
+.qh-stripmeta > span:last-child { margin-left: auto; }
+.qh-mark { color: var(--accent2, #4DD7CF); }
+.qh-mark.is-act { color: var(--warn, #ffc98a); }
+.qh-cols { display: grid; grid-template-columns: 1.2fr 1fr; gap: 26px; margin-top: 16px; }
+@media (max-width: 860px) { .qh-cols { grid-template-columns: 1fr; } }
+.qh-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .2em;
+  color: var(--dim, #4a566b); margin: 0 0 10px; }
+.qh-count { font-style: normal; color: var(--accent2, #4DD7CF); margin-left: 6px; }
+.qh-body { font-size: 14.5px; line-height: 1.65; color: var(--text2, #c3cddb); margin: 0 0 14px; }
+.qh-decision { display: flex; gap: 10px; padding: 9px 12px; margin-bottom: 8px;
+  border-left: 2px solid var(--accent, #00A99D);
+  background: color-mix(in srgb, var(--accent, #00A99D) 7%, transparent);
+  font-size: 13.5px; line-height: 1.5; }
+.qh-decision em { color: var(--muted, #7b8aa0); font-style: normal; }
+.qh-at { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--accent2, #4DD7CF);
+  font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.qh-owe { display: flex; gap: 11px; align-items: flex-start; padding: 10px 2px;
+  border-bottom: 1px solid var(--line2, #131c26); cursor: pointer; }
+.qh-owe input { margin-top: 3px; accent-color: var(--accent, #00A99D); }
+.qh-owe b { display: block; font-weight: 500; font-size: 13.5px; line-height: 1.45; }
+.qh-owe em { font-family: 'IBM Plex Mono', monospace; font-style: normal; font-size: 10px;
+  letter-spacing: .1em; color: var(--dim, #4a566b); }
+.qh-owe.is-plain { cursor: default; }
+.qh-tickmark { color: var(--accent, #00A99D); margin-top: 1px; }
+.qh-transcript { margin-top: 16px; max-height: 380px; overflow: auto;
+  border: 1px solid var(--line2, #131c26); background: var(--sunk, #070a0f); padding: 14px 16px; }
+.qh-transcript p { margin: 0 0 8px; font-size: 13px; line-height: 1.55; color: var(--text2, #c3cddb); }
+.qh-transcript .qh-at { margin-right: 10px; }
+.qh-who { color: var(--accent, #00A99D); font-weight: 600; margin-right: 8px; }
+.qh-transcript pre { white-space: pre-wrap; font: 12.5px/1.6 'IBM Plex Mono', monospace;
+  color: var(--text2, #c3cddb); }
+
+/* ── the rail ── */
+.qh-rail { min-width: 0; }
+.qh-railhead { display: flex; align-items: center; gap: 8px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .22em;
+  color: var(--dim, #4a566b); margin: 26px 0 10px; }
+.qh-railhead:first-child { margin-top: 4px; }
+.qh-railhead::after { content: ""; flex: 1; height: 1px; background: var(--line, #16202c); }
+.qh-next { border: 1px solid var(--accent, #00A99D); background:
+  color-mix(in srgb, var(--accent, #00A99D) 6%, var(--panel, #070b10));
+  padding: 16px 18px; box-shadow: 0 0 24px var(--glow, rgba(0,169,157,.16)); }
+.qh-nextwhen { display: flex; align-items: center; gap: 8px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .18em;
+  color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
+.qh-nexttitle { font-size: 19px; font-weight: 600; margin: 0 0 4px; }
+.qh-railnote { margin: 6px 0 0; font-size: 13px; }
+.qh-proj { margin-bottom: 12px; }
+.qh-projname { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .16em;
+  color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
+.qh-projname em { font-style: normal; color: var(--dim, #4a566b); }
+.qh-open { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0;
+  font-size: 13.5px; line-height: 1.45; color: var(--text2, #c3cddb); cursor: pointer; }
+.qh-open input { margin-top: 3px; accent-color: var(--accent, #00A99D); }
+.qh-pipe { border: 1px solid var(--line2, #131c26); background: var(--sunk, #070a0f); padding: 6px 14px; }
+.qh-pipestep { display: flex; gap: 10px; align-items: center; padding: 8px 0;
+  border-bottom: 1px solid var(--line2, #131c26); font-size: 13px; }
+.qh-pipestep:last-child { border-bottom: 0; }
+.qh-pipemark { font-family: 'IBM Plex Mono', monospace; }
+.qh-pipestep.is-ok .qh-pipemark { color: var(--accent, #00A99D); }
+.qh-pipestep.is-bad .qh-pipemark { color: var(--danger, #ff5964); }
+.qh-pipestep.is-bad .qh-pipelabel { color: var(--danger, #ff5964); }
 `;

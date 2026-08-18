@@ -216,7 +216,7 @@ export default function Recordings({ userId }: { userId: string }) {
           ) : null}
         </div>
       ))}
-      <style>{NOTES_CSS}</style>
+      <style dangerouslySetInnerHTML={{ __html: NOTES_CSS }} />
     </section>
   );
 }

@@ -268,7 +268,7 @@ export default function Search() {
         </>
       ) : null}
 
-      <style>{CSS}</style>
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
     </section>
   );
 }
