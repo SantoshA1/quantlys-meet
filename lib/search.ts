@@ -453,6 +453,17 @@ export function suggest(missing: string[], vocab: Map<string, number>): string {
     let bestF = 0;
     for (const [w, f] of vocab) {
       if (Math.abs(w.length - m.length) > 2) continue;
+      // FIELD 2026-08-18, live: searching "meeting" offered "Did you mean
+      // week?"; "quantlys" offered "uat"; "recording" offered "second". All
+      // three are within edit distance two and all three are nonsense, and a
+      // product that says them looks stupid in a way the user remembers.
+      //
+      // What separates a typo from a coincidence is the START of the word.
+      // People mistype the middle and the end — they transpose, they drop a
+      // letter, they double one. They very rarely get the first two letters
+      // of a word wrong. Requiring the prefix to match kills meet→week and
+      // record→second while keeping stipe→stripe, which is the whole job.
+      if (w === m || w.slice(0, 2) !== m.slice(0, 2)) continue;
       const d = editDistance(m, w, 2);
       if (d < bestD || (d === bestD && f > bestF)) { bestD = d; bestWord = w; bestF = f; }
     }
