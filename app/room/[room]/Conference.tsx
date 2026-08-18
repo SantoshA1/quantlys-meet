@@ -15,7 +15,11 @@ import {
   useRoomContext,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { Track } from "livekit-client";
+import { Track, AudioPresets, VideoPresets } from "livekit-client";
+import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
+import MediaGuard, { GUARD_CSS } from "./MediaGuard";
+import { describeMediaError } from "@/lib/media";
+import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
 import {
@@ -100,6 +104,11 @@ export default function Conference({ room }: { room: string }) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [choice, setChoice] = useState<Choice>({ micId: "", camId: "", spkId: "", camOn: true, micOn: true });
+  const [mediaFail, setMediaFail] = useState("");
+  // The waiting room, from the outside.
+  const [knock, setKnock] = useState<{ id: string; since: number } | null>(null);
+  const [wait, setWait] = useState<{ state: string; hostPresent?: boolean; position?: number }>({ state: "connecting" });
 
   const [starts, setStarts] = useState<string | null>(null);
   const [meetingName, setMeetingName] = useState("");
@@ -130,8 +139,9 @@ export default function Conference({ room }: { room: string }) {
     };
   }, [room]);
 
-  async function join() {
+  async function join(c?: Choice) {
     if (busy || !agreed) return;
+    if (c) setChoice(c);
     setBusy(true);
     setError("");
     try {
@@ -146,6 +156,28 @@ export default function Conference({ room }: { room: string }) {
         body: JSON.stringify({ room, name: name.trim() || "Guest" }),
       });
       const data = await r.json();
+
+      // 202: the host runs a waiting room. Nobody has been refused — a person
+      // is going to decide. That distinction is the whole feature.
+      if (r.status === 202 && data?.waiting) {
+        const who = name.trim() || "Guest";
+        const kr = await fetch("/api/room/knock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room, name: who }),
+        });
+        const kd = await kr.json();
+        if (!kr.ok || !kd?.knockId) {
+          setError(kd?.error || "Could not let the host know you're here.");
+          setBusy(false);
+          return;
+        }
+        setKnock({ id: kd.knockId, since: Date.now() });
+        setWait({ state: "pending", hostPresent: kd.hostPresent, position: kd.position });
+        setBusy(false);
+        return;
+      }
+
       if (!r.ok || !data.token) {
         setError(data.error || "Could not join this meeting.");
         setBusy(false);
@@ -158,6 +190,76 @@ export default function Conference({ room }: { room: string }) {
       setError("Could not reach the meeting service. Check your connection and try again.");
     }
     setBusy(false);
+  }
+
+  // Poll while waiting. Quick at first — the host is watching them not appear —
+  // then settling down, so a ten-minute wait does not hammer anything.
+  useEffect(() => {
+    if (!knock || joined) return;
+    let alive = true;
+    let timer: any;
+    const beat = async () => {
+      if (!alive) return;
+      try {
+        const r = await fetch("/api/room/knock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room, knockId: knock.id }),
+        });
+        const d = await r.json();
+        if (!alive) return;
+        if (d?.state === "admitted" && d.token) {
+          setToken(d.token);
+          setUrl(d.url);
+          setJoined(true);
+          return;
+        }
+        if (d?.state === "expired") {
+          // Knock again rather than leaving somebody polling a ghost.
+          setKnock(null);
+          setWait({ state: "connecting" });
+          return;
+        }
+        setWait({ state: d?.state || "pending", hostPresent: d?.hostPresent, position: d?.position });
+      } catch {
+        if (alive) setWait((w) => ({ ...w, state: w.state === "pending" ? "pending" : "error" }));
+      }
+      if (alive) timer = setTimeout(beat, pollDelay(Date.now() - knock.since));
+    };
+    beat();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [knock, joined, room]);
+
+  // ── the view from outside the door ──────────────────────────────────────
+  if (knock && !joined) {
+    const denied = wait.state === "denied";
+    return (
+      <main className="qmr-prejoin">
+        <style>{CSS}</style>
+        <div className="qmr-card">
+          <h1>{meetingName || "Waiting to be let in"}</h1>
+          <div className={`qmr-knock${denied ? " qmr-knockno" : ""}`}>
+            {!denied ? <span className="qmr-knockdot" aria-hidden /> : null}
+            <p>
+              {waitingMessage(wait.state as any, {
+                hostPresent: wait.hostPresent,
+                position: wait.position,
+                waitedMs: Date.now() - knock.since,
+              })}
+            </p>
+          </div>
+          <p className="qmr-muted">
+            You're knocking as <b>{name.trim() || "Guest"}</b>. Keep this tab open —
+            it will take you in by itself.
+          </p>
+          {denied ? (
+            <button className="qmr-primary" onClick={() => { setKnock(null); setWait({ state: "connecting" }); }}>
+              Try again
+            </button>
+          ) : null}
+        </div>
+      </main>
+    );
   }
 
   if (!joined) {
@@ -183,13 +285,21 @@ export default function Conference({ room }: { room: string }) {
               placeholder="Your name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && join()}
+              onKeyDown={(e) => e.key === "Enter" && agreed && join(choice)}
               autoFocus
             />
-            <button className="qmr-primary" onClick={join} disabled={busy || !agreed}>
-              {busy ? "Joining…" : "Join meeting"}
-            </button>
           </div>
+
+          {/* FIELD 2026-08-18: there used to be nothing between typing your
+              name and being live in front of people, so the first thing that
+              ever tested your microphone was the meeting itself. He found out
+              he was inaudible from his team, mid-call. */}
+          <DeviceCheck
+            name={name.trim()}
+            busy={busy || !agreed}
+            joinLabel={!agreed ? "Tick the box below to join" : undefined}
+            onJoin={(c) => { setChoice(c); join(c); }}
+          />
 
           <div className="qmr-consent">
             <p className="qmr-consent-lead">This meeting may be recorded.</p>
@@ -216,15 +326,62 @@ export default function Conference({ room }: { room: string }) {
   return (
     <div className="qmr-stage" data-lk-theme="default">
       <style>{CSS}</style>
+      {/* FIELD 2026-08-18. This used to read `connect video audio` — LiveKit's
+          hello-world — which grabs whatever the browser calls "default" at the
+          instant you join, publishes it, and never looks at it again. No
+          device memory, no error handler, and nothing watching whether the
+          track it is publishing is still alive. That last one is what let a
+          Bluetooth headset go dead mid-sentence while everybody in the room
+          still saw him un-muted. */}
       <LiveKitRoom
         token={token}
         serverUrl={url}
         connect
-        video
-        audio
+        video={choice.camOn ? { deviceId: choice.camId || undefined } : false}
+        audio={
+          choice.micOn
+            ? {
+                deviceId: choice.micId || undefined,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,   // the fix for "you're very quiet"
+              }
+            : false
+        }
+        options={{
+          // Voice quality. The default preset is 32kbps; 64kbps mono Opus is
+          // transparent for speech and costs nothing next to 1.7Mbps of video.
+          // RED sends each packet twice over, which is what keeps a voice
+          // intelligible on a lossy hotel connection rather than robotic.
+          publishDefaults: {
+            audioPreset: AudioPresets.musicHighQuality,
+            dtx: true,
+            red: true,
+            simulcast: true,
+            // VP8 on purpose: every browser and every phone can decode it.
+            // VP9 and AV1 look better and are exactly how one person in a
+            // meeting ends up as a black rectangle to everyone else.
+            videoCodec: "vp8",
+            videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
+            stopMicTrackOnMute: false,
+          },
+          audioCaptureDefaults: {
+            deviceId: choice.micId || undefined,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          videoCaptureDefaults: {
+            deviceId: choice.camId || undefined,
+            resolution: VideoPresets.h720.resolution,
+          },
+        }}
+        onError={(e) => setMediaFail(describeMediaError(e).what)}
+        onMediaDeviceFailure={(f) => setMediaFail(describeMediaError({ name: String(f) }).what)}
         className="qmr-lk"
       >
         <RoomHeader room={room} title={meetingName} />
+        {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
         <div className="qmr-conf">
           <VideoConference />
         </div>
@@ -282,6 +439,8 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
   // ── Host controls ────────────────────────────────────────────────────────
   const [isHost, setIsHost] = useState(false);
   const [locked, setLocked] = useState(false);
+  const [waitingRoom, setWaitingRoom] = useState(false);
+  const [waiting, setWaiting] = useState<Array<{ id: string; display_name: string }>>([]);
   const [panel, setPanel] = useState(false);
   const [acting, setActing] = useState("");
 
@@ -306,8 +465,35 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
       .then(({ data }) => setSignedIn(data.session?.user?.id ?? null));
   }, []);
 
+  // The host is not going to remember to check. A person standing outside is
+  // only a feature if somebody inside finds out about them without looking.
+  useEffect(() => {
+    if (!isHost || !waitingRoom) { setWaiting([]); return; }
+    let alive = true;
+    let timer: any;
+    const beat = async () => {
+      if (!alive) return;
+      try {
+        const { data: sess } = await db().auth.getSession();
+        const r = await fetch("/api/host/control", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+          },
+          body: JSON.stringify({ room, action: "waiting" }),
+        });
+        const d = await r.json();
+        if (alive && Array.isArray(d?.waiting)) setWaiting(d.waiting);
+      } catch { /* the meeting carries on */ }
+      if (alive) timer = setTimeout(beat, 4000);
+    };
+    beat();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [isHost, waitingRoom, room]);
+
   const control = useCallback(
-    async (action: string, identity?: string) => {
+    async (action: string, identity?: string, knockId?: string) => {
       const { data: sess } = await db().auth.getSession();
       const r = await fetch("/api/host/control", {
         method: "POST",
@@ -315,7 +501,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
         },
-        body: JSON.stringify({ room, action, identity }),
+        body: JSON.stringify({ room, action, identity, knockId }),
       });
       return r.json().catch(() => ({}));
     },
@@ -331,6 +517,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
         if (!alive) return;
         setIsHost(Boolean(s?.host));
         setLocked(Boolean(s?.locked));
+        setWaitingRoom(Boolean(s?.waitingRoom));
       })
       .catch(() => {});
     return () => {
@@ -719,6 +906,9 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
         >
           {toggleLabel(cc.engine === "none" && !cc.on ? "browser" : cc.engine, cc.on)}
         </button>
+        {/* The watchdog lives in the header because that is where somebody
+            looks when they suspect they cannot be heard. */}
+        <MediaGuard />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -759,6 +949,85 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
               {locked ? "Locked — unlock" : "Lock the meeting"}
             </button>
           </div>
+
+          <div className="qmr-panel-head qmr-wr">
+            <span className="qmr-fine" style={{ margin: 0 }}>
+              {waitingRoom
+                ? "New people knock and wait for you to let them in."
+                : "Anyone with the link walks straight in."}
+            </span>
+            <button
+              className={`qmr-lock${waitingRoom ? " qmr-on" : ""}`}
+              disabled={acting === "wr"}
+              onClick={async () => {
+                setActing("wr");
+                const out = await control(waitingRoom ? "waiting_off" : "waiting_on");
+                if (out?.error) setStatus({ kind: "err", text: out.error });
+                else setWaitingRoom(Boolean(out.waitingRoom));
+                setActing("");
+              }}
+            >
+              {waitingRoom ? "Waiting room on" : "Turn on waiting room"}
+            </button>
+          </div>
+
+          {waiting.length ? (
+            <div className="qmr-waitlist">
+              <div className="qmr-panel-head">
+                <strong>
+                  {waiting.length === 1
+                    ? `${waiting[0].display_name || "Someone"} is waiting`
+                    : `${waiting.length} people waiting`}
+                </strong>
+                <button
+                  className="qmr-lock qmr-on"
+                  disabled={acting === "all"}
+                  onClick={async () => {
+                    setActing("all");
+                    const out = await control("admit_all");
+                    if (out?.error) setStatus({ kind: "err", text: out.error });
+                    else setWaiting(out.waiting || []);
+                    setActing("");
+                  }}
+                >
+                  Let everyone in
+                </button>
+              </div>
+              <ul className="qmr-plist">
+                {waiting.map((k) => (
+                  <li key={k.id}>
+                    <span className="qmr-pname">{k.display_name || "Guest"}</span>
+                    <button
+                      className="qmr-ghost qmr-admit"
+                      disabled={acting === k.id}
+                      onClick={async () => {
+                        setActing(k.id);
+                        const out = await control("admit", undefined, k.id);
+                        if (out?.error) setStatus({ kind: "err", text: out.error });
+                        else setWaiting(out.waiting || []);
+                        setActing("");
+                      }}
+                    >
+                      Let in
+                    </button>
+                    <button
+                      className="qmr-ghost"
+                      disabled={acting === k.id}
+                      onClick={async () => {
+                        setActing(k.id);
+                        const out = await control("deny", undefined, k.id);
+                        if (out?.error) setStatus({ kind: "err", text: out.error });
+                        else setWaiting(out.waiting || []);
+                        setActing("");
+                      }}
+                    >
+                      Not now
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {hostables.length === 0 ? (
             <p className="qmr-muted">Nobody else is here yet.</p>
@@ -1351,7 +1620,7 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 }
 
 
-const CSS = `
+const CSS = DEVICE_CSS + GUARD_CSS + `
 .qmr-prejoin { min-height: 100vh; display: grid; place-items: center; padding: 20px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }
@@ -1369,6 +1638,22 @@ const CSS = `
   border-radius: 10px; padding: 10px 16px; width: auto; white-space: nowrap; }
 .qmr-prejoin button:disabled, .qmr-bar button:disabled { opacity: .55; cursor: default; }
 .qmr-primary { background: #00a99d; color: #06110f; border: 0; font-weight: 600; }
+.qmr-mediafail { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:39;
+  max-width:min(560px, calc(100% - 24px)); background:#2a1618; border:1px solid #5a2a2f;
+  color:#ffd0d0; border-radius:12px; padding:11px 14px; font-size:13.5px; line-height:1.5; }
+.qmr-wr { margin-top:12px; padding-top:12px; border-top:1px solid #262b36; gap:10px; }
+.qmr-waitlist { margin-top:12px; padding:10px 12px; background:#0d3d39; border:1px solid #00a99d;
+  border-radius:11px; }
+.qmr-waitlist .qmr-panel-head strong { color:#c8f2ec; }
+.qmr-admit { border-color:#00a99d !important; color:#7fe0d6 !important; }
+.qmr-knock { display:flex; gap:11px; align-items:flex-start; background:#0d3d39;
+  border:1px solid #00a99d; border-radius:12px; padding:14px 16px; margin:0 0 14px;
+  color:#c8f2ec; font-size:14.5px; line-height:1.6; }
+.qmr-knock p { margin:0; }
+.qmr-knockno { background:#2a1618; border-color:#5a2a2f; color:#ffd0d0; }
+.qmr-knockdot { width:9px; height:9px; border-radius:50%; background:#7fe0d6; flex:0 0 auto;
+  margin-top:7px; animation:qmr-pulse 1.6s ease-in-out infinite; }
+@keyframes qmr-pulse { 0%,100% { opacity:.35; transform:scale(.8) } 50% { opacity:1; transform:scale(1.15) } }
 .qmr-ghost { background: transparent; color: #cfd6e4; border: 1px solid #2b3240; }
 .qmr-ghost:hover { border-color: #3b4356; }
 .qmr-leave { background: #3a1f26; color: #ffc9c9; border: 1px solid #5c2b35; }
