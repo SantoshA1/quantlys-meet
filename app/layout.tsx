@@ -1,7 +1,7 @@
 import "@livekit/components-styles";
 import "./globals.css";
 import Image from "next/image";
-import { THEME_BOOT, QSKIN } from "@/lib/theme";
+import { THEME_BOOT } from "@/lib/theme";
 import ThemeToggle from "./ThemeToggle";
 
 export const metadata = { title: "Quantlys Meeting" };
@@ -25,12 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             black flash on every page load, which reads as a bug rather than a
             preference being honoured. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
-        {/* One stylesheet, once. A <style> with dangerouslySetInnerHTML inside
-            <head> gets re-inserted on hydration and the page ends up carrying
-            two identical copies of the whole design system — 35KB of HTML for
-            nothing. `id` makes it a stable node React reuses instead of
-            recreating. */}
-        <style id="q-skin" dangerouslySetInnerHTML={{ __html: QSKIN }} />
+
       </head>
       <body>
         <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
