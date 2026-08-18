@@ -85,12 +85,30 @@ export async function POST(req: Request) {
     for (const r of recs || []) {
       const prefix = String((r as any).storage_prefix || "");
       if (!prefix) continue;
-      const { data: listed } = await sb.storage.from("recordings").list(prefix, { limit: 200 });
-      const paths = (listed || []).map((f: any) => `${prefix}/${f.name}`);
+      // FIELD 2026-08-18 (Conclave round 39): this asked for 200 files and
+      // then behaved as though 200 were all of them. A meeting with more —
+      // long sessions write video, audio and a sidecar per recording — would
+      // report "deleted" while leaving files in storage with no row pointing
+      // at them. Nobody would ever find those again. Page until a page comes
+      // back short; that is the only answer that means "all of them".
+      const paths: string[] = [];
+      for (let offset = 0; offset < 5000; offset += 200) {
+        const { data: listed } = await sb.storage
+          .from("recordings")
+          .list(prefix, { limit: 200, offset });
+        const page = listed || [];
+        paths.push(...page.map((f: any) => `${prefix}/${f.name}`));
+        if (page.length < 200) break;
+      }
       if (!paths.length) continue;
-      const { error } = await sb.storage.from("recordings").remove(paths);
-      if (error) orphaned.push(prefix);
-      else filesRemoved += paths.length;
+      // remove() itself takes a bounded list, so the deletion is paged too.
+      let failed = false;
+      for (let i = 0; i < paths.length; i += 100) {
+        const { error } = await sb.storage.from("recordings").remove(paths.slice(i, i + 100));
+        if (error) { failed = true; break; }
+        filesRemoved += Math.min(100, paths.length - i);
+      }
+      if (failed) orphaned.push(prefix);
     }
     report.recordings = (recs || []).length;
   } catch (e: any) {
