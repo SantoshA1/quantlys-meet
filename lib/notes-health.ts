@@ -13,6 +13,8 @@
 // about it — in the same words whether you ask BEFORE a meeting ("check my
 // setup") or read it AFTER one.
 
+import { chooseModel } from "@/lib/model";
+
 export type Step = {
   key: "transcribe" | "notes" | "email" | "storage" | "items";
   label: string;
@@ -68,13 +70,34 @@ export async function checkNotes(): Promise<Step> {
         return { ...base, detail: "OpenRouter rejected this key — the notes would fall back to pattern-matching. Replace OPENROUTER_API_KEY." };
       }
       if (!r.ok) return { ...base, detail: `OpenRouter answered ${r.status}; notes would fall back to pattern-matching.` };
-      return { ...base, ok: true, detail: "OpenRouter accepted your key — a model will write the notes." };
+      // FIELD 2026-08-18: this used to stop here, at "your key works", and go
+      // green — while every model-backed feature returned
+      // `No endpoints found for anthropic/claude-3.5-sonnet`. "Can I reach the
+      // provider" and "does the thing I am about to ask for exist" are
+      // different questions, and a check that only asks the first is a green
+      // tick over a dead feature. Name the model that would actually be used,
+      // resolved exactly the way the routes resolve it.
+      const pick = await chooseModel({ openrouter: true, key: or, wanted: process.env.NOTES_MODEL });
+      return {
+        ...base,
+        ok: true,
+        detail: /^Chose |^Using /.test(pick.why)
+          ? `OpenRouter accepted your key. Notes will be written by ${pick.id}.`
+          : `OpenRouter accepted your key. ${pick.why}`,
+      };
     }
     const r = await fetch("https://api.openai.com/v1/models", {
       headers: { Authorization: `Bearer ${oa}` },
     });
     if (!r.ok) return { ...base, detail: `OpenAI answered ${r.status}; notes would fall back to pattern-matching.` };
-    return { ...base, ok: true, detail: "OpenAI accepted your key — a model will write the notes." };
+    const pick = await chooseModel({ openrouter: false, key: oa!, wanted: process.env.NOTES_MODEL });
+    return {
+      ...base,
+      ok: true,
+      detail: /^Chose |^Using /.test(pick.why)
+        ? `OpenAI accepted your key. Notes will be written by ${pick.id}.`
+        : `OpenAI accepted your key. ${pick.why}`,
+    };
   } catch {
     return { ...base, detail: "Couldn't reach the notes model; notes would fall back to pattern-matching." };
   }
