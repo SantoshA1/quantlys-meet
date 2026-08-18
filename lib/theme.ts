@@ -80,9 +80,14 @@ export const QSKIN = `
 @keyframes qbar   { 0%,100% { transform:scaleY(.2) } 50% { transform:scaleY(1) } }
 @keyframes qscan  { 0% { top:0; opacity:0 } 12% { opacity:.9 } 88% { opacity:.9 } 100% { top:100%; opacity:0 } }
 
-html, body { background:var(--bg); color:var(--text); }
-body { font-family:"Space Grotesk", system-ui, sans-serif;
+/* The canvas colour is set ONCE, on the root. Setting it on both html and
+   body gives two answers to the same question, and the loser is whichever the
+   browser happens to paint — which is how you get a theme switch that changes
+   everything except the one strip of page below the fold. */
+html { background:var(--bg); color:var(--text);
   transition:background .35s ease, color .35s ease; }
+body { background:transparent; color:inherit;
+  font-family:"Space Grotesk", system-ui, sans-serif; }
 
 /* ── shared parts ─────────────────────────────────────────────────────── */
 .q-mono { font-family:"IBM Plex Mono", ui-monospace, monospace; }
