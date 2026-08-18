@@ -16,6 +16,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { askPrompt, parseAnswer, timedTranscript } from "@/lib/notes";
+import { chooseModel } from "@/lib/model";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -102,9 +103,12 @@ export async function POST(req: Request) {
   const endpoint = openrouter
     ? "https://openrouter.ai/api/v1/chat/completions"
     : "https://api.openai.com/v1/chat/completions";
-  const model = openrouter
-    ? process.env.NOTES_MODEL || "anthropic/claude-3.5-sonnet"
-    : process.env.NOTES_MODEL || "gpt-4o-mini";
+  // FIELD 2026-08-18: this used to hardcode "anthropic/claude-3.5-sonnet".
+  // The vendor retired it, the key stayed valid, the setup check stayed
+  // green, and every model-backed feature returned a 404 nobody could read.
+  // Ask the provider what it actually has, then take the best of ours.
+  const chosen = await chooseModel({ openrouter, key, wanted: process.env.NOTES_MODEL });
+  const model = chosen.id;
 
   try {
     const r = await fetch(endpoint, {
