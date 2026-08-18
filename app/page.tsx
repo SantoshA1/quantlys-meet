@@ -69,7 +69,7 @@ export default function Home() {
 
   return (
     <main className="qmh-wrap">
-      <style>{CSS}</style>
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
 
       <header className="qmh-bar">
         <span className="qmh-logo">Quantlys Meeting</span>
