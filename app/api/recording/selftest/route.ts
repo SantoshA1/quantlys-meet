@@ -8,6 +8,7 @@
 // arrives hours later, silently, to the one person who can't debug it.
 
 import { checkTranscribe, checkNotes, checkEmail, checkStorage, headline } from "@/lib/notes-health";
+import { checkMeeting, checkRecording, dataLeaving, privacyHeadline, hostingKind, realtimeUrl } from "@/lib/hosting";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,11 +31,27 @@ export async function POST(req: Request) {
     }
   }
 
-  const [transcribe, notes, mail] = await Promise.all([
+  const [meeting, recording, transcribe, notes, mail] = await Promise.all([
+    checkMeeting(),
+    checkRecording(),
     checkTranscribe(),
     checkNotes(),
     checkEmail(),
   ]);
-  const steps = [checkStorage(), transcribe, notes, mail];
-  return Response.json({ ok: steps.every((s) => s.ok), headline: headline(steps), steps });
+  // Meeting first: if nobody can join, nothing downstream matters.
+  const steps = [meeting, recording, checkStorage(), transcribe, notes, mail];
+
+  // PHASE 0, 2026-08-18. Self-hosting the media server stops the video leaving
+  // the building. It does not stop the words. Anyone who went to the trouble
+  // deserves the list rather than the impression.
+  const leaving = dataLeaving();
+  const hosting = hostingKind(realtimeUrl());
+
+  return Response.json({
+    ok: steps.every((s) => s.ok),
+    headline: headline(steps),
+    steps,
+    hosting,
+    privacy: { headline: privacyHeadline(leaving, hosting), leaving },
+  });
 }
