@@ -11,7 +11,28 @@ export const dynamic = "force-dynamic";
 // people who should be here are here, the host closes the door and the link
 // stops working for anyone else. No queue to watch, nothing to approve, and
 // nobody standing outside wondering whether they were seen.
-async function isLocked(room: string): Promise<boolean> {
+async function doorState(room: string): Promise<{ locked: boolean; waitingRoom: boolean }> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const open = { locked: false, waitingRoom: false };
+  if (!url || !key) return open;          // no database to ask → never lock anyone out
+  try {
+    const sb = createClient(url, key, { auth: { persistSession: false } });
+    const { data } = await sb
+      .from("meetings")
+      .select("locked, waiting_room")
+      .eq("room_name", room)
+      .maybeSingle();
+    return {
+      locked: Boolean((data as any)?.locked),
+      waitingRoom: Boolean((data as any)?.waiting_room),
+    };
+  } catch {
+    return open;                          // the door fails OPEN, never shut
+  }
+}
+
+async function isLockedLegacy(room: string): Promise<boolean> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return false;      // no database to ask → never lock anyone out
@@ -61,11 +82,17 @@ export async function POST(req: Request) {
     );
   }
 
-  if (await isLocked(room)) {
+  const door = await doorState(room);
+  if (door.locked) {
     return Response.json(
       { error: "This meeting is locked — the host has closed it to new people. Ask them to unlock it." },
       { status: 423 }
     );
+  }
+
+  // A waiting room does not refuse anybody. It hands them to a human.
+  if (door.waitingRoom) {
+    return Response.json({ waiting: true, room, name }, { status: 202 });
   }
 
   const identity = `${name}-${Math.random().toString(36).slice(2, 8)}`;
