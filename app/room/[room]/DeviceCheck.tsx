@@ -56,6 +56,7 @@ export default function DeviceCheck({
   const [camErr, setCamErr] = useState<Explained | null>(null);
   const [switched, setSwitched] = useState("");
   const [testing, setTesting] = useState(false);
+  const [res, setRes] = useState("");
 
   const video = useRef<HTMLVideoElement | null>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -91,6 +92,11 @@ export default function DeviceCheck({
     try {
       const v = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(wantCam) });
       v.getVideoTracks().forEach((t) => out.addTrack(t));
+      // Report the resolution the camera ACTUALLY gave us, not the one we
+      // asked for. Every laptop webcam claims 1080p and a good many hand back
+      // 640×480 when the light is bad or the driver is tired.
+      const st = v.getVideoTracks()[0]?.getSettings?.();
+      setRes(st?.height ? `${st.height}p` : "");
       setCamErr(null);
     } catch (e) {
       setCamErr(describeMediaError(e, "videoinput"));
@@ -215,6 +221,21 @@ export default function DeviceCheck({
             {!camOn ? <div className="qmd-off"><b>Camera off</b><span>People will see your name.</span></div> : null}
           </>
         )}
+        {/* The design puts the verdict ON the picture. It is the right place:
+            you are already looking there, and "MIC OK" beside your own face is
+            read in a way a line of text under a form never is. */}
+        <span className="q-corner tl" />
+        <span className="q-corner br" />
+        <span className="qmd-chips">
+          <span className={`q-chip${heard ? " q-live" : ""}`}>
+            {micErr ? "MIC BLOCKED" : heard ? "MIC OK" : "SAY SOMETHING"}
+            {!micErr ? <span className="q-bars"><i /><i /><i /></span> : null}
+          </span>
+          <span className="q-chip">
+            {camErr ? "CAMERA BLOCKED" : camOn ? `CAMERA OK${res ? ` · ${res}` : ""}` : "CAMERA OFF"}
+          </span>
+          {mics.length ? <span className="q-chip">{deviceLabel(mics.find((d) => d.deviceId === micId), 0, "audioinput").slice(0, 22).toUpperCase()}</span> : null}
+        </span>
         <div className="qmd-toggles">
           <button
             className={`qmd-t${micOn && !micErr ? " qmd-ton" : ""}`}
@@ -337,6 +358,10 @@ export const DEVICE_CSS = `
 .qmd-off span { max-width:46ch; }
 .qmd-toggles { position:absolute; left:0; right:0; bottom:10px; display:flex;
   gap:8px; justify-content:center; }
+.qmd-chips { position:absolute; left:12px; top:12px; right:12px; display:flex;
+  gap:7px; flex-wrap:wrap; pointer-events:none; }
+.qmd-chips .q-chip { background:color-mix(in srgb, var(--bg) 74%, transparent);
+  backdrop-filter:blur(6px); }
 .qmd-t { font:inherit; font-size:13px; cursor:pointer; padding:7px 14px; border-radius:999px;
   background:rgba(10,13,20,.82); color:#9aa3b4; border:1px solid #333b4a; backdrop-filter:blur(6px); }
 .qmd-ton { background:rgba(0,169,157,.16); color:#7fe0d6; border-color:#00a99d; }

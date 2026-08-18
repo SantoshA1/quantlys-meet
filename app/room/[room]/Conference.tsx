@@ -18,7 +18,7 @@ import "@livekit/components-styles";
 import { Track, AudioPresets, VideoPresets } from "livekit-client";
 import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
-import { describeMediaError } from "@/lib/media";
+import { describeMediaError, connectionAdvice } from "@/lib/media";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
@@ -551,6 +551,45 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
   const meId = ctx?.localParticipant?.identity || "me";
   const meName = ctx?.localParticipant?.name || meId.split("-")[0] || "You";
   const cc = useCaptions(room, meId, meName);
+
+  // Round-trip time straight off the WebRTC stats, and the quality LiveKit
+  // already computes. Reported together because they answer different halves
+  // of "is it me or is it them": the word is the verdict, the number is the
+  // evidence.
+  const [link, setLink] = useState<{ word: string; ms: number; bars: number; detail: string }>(
+    { word: "CHECKING", ms: 0, bars: 2, detail: "Measuring your connection…" }
+  );
+  useEffect(() => {
+    let alive = true;
+    const beat = async () => {
+      if (!alive) return;
+      const q = String(ctx?.localParticipant?.connectionQuality || "unknown").toLowerCase();
+      const word = q === "excellent" ? "EXCELLENT" : q === "good" ? "GOOD"
+        : q === "poor" ? "POOR" : q === "lost" ? "LOST" : "CHECKING";
+      const bars = q === "excellent" ? 4 : q === "good" ? 3 : q === "poor" ? 1 : 2;
+      let ms = 0;
+      try {
+        const pc: any = (ctx as any)?.engine?.pcManager?.publisher?.pc
+          || (ctx as any)?.engine?.publisher?.pc;
+        const stats: any = pc ? await pc.getStats() : null;
+        stats?.forEach?.((r: any) => {
+          if (r.type === "candidate-pair" && r.state === "succeeded" && r.currentRoundTripTime != null) {
+            ms = Math.round(r.currentRoundTripTime * 1000);
+          }
+        });
+      } catch { /* the word alone is still worth showing */ }
+      if (alive) {
+        setLink({
+          word, ms, bars,
+          detail: connectionAdvice(q) ||
+            (ms ? `Round trip to the meeting server is ${ms}ms.` : "Connection looks healthy."),
+        });
+      }
+      if (alive) setTimeout(beat, 5000);
+    };
+    beat();
+    return () => { alive = false; };
+  }, [ctx]);
   const [ccOpen, setCcOpen] = useState(false);
 
   async function copyInvite() {
@@ -863,17 +902,30 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
       ) : null}
 
       <span className="qmr-people" title={names.join(", ")}>
-        {participants.length} in the meeting
+        <b>{participants.length} IN THE MEETING</b>
         {names.length ? (
           <em className="qmr-names">
-            {" · "}
-            {names.slice(0, 4).join(", ")}
+            {" │ "}
+            {names.slice(0, 4).join(", ").toUpperCase()}
             {names.length > 4 ? ` +${names.length - 4}` : ""}
           </em>
         ) : null}
       </span>
 
       <span className="qmr-actions">
+        {/* The design puts the link quality in the header, in milliseconds.
+            It earns its place: "your connection is bad" is the single most
+            argued-about claim in any meeting, and a number nobody can argue
+            with ends the argument. */}
+        <span className="q-chip" title={link.detail}>
+          <span className="q-bars" style={{ opacity: link.bars / 4 }}>
+            <i style={{ animation: "none", height: "40%" }} />
+            <i style={{ animation: "none", height: link.bars >= 2 ? "65%" : "18%" }} />
+            <i style={{ animation: "none", height: link.bars >= 3 ? "100%" : "18%" }} />
+          </span>
+          LINK {link.word}
+          {link.ms ? ` · ${link.ms} MS` : ""}
+        </span>
         {signedIn ? (
           recording ? (
             <button className="qmr-rec" onClick={stopRecording}>
