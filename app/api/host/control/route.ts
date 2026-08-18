@@ -182,6 +182,22 @@ export async function POST(req: Request) {
   if (!identity) return Response.json({ error: "Which person?" }, { status: 400 });
 
   try {
+    if (action === "end") {
+      // The whole meeting, ended for everyone — the LiveKit room is deleted
+      // (which disconnects every participant) and the row is marked ended so
+      // the link stops handing out tokens as an ACTIVE meeting. The host does
+      // this from inside the room; LEAVE was never the same thing.
+      await sb
+        .from("meetings")
+        .update({ active: false, ended_at: new Date().toISOString() })
+        .eq("id", meeting!.id);
+      try {
+        await svc.deleteRoom(room);
+      } catch {
+        // The room may already be empty/gone — the row update is the record.
+      }
+      return Response.json({ ok: true, action: "end" });
+    }
     if (action === "remove") {
       await svc.removeParticipant(room, identity);
       return Response.json({ ok: true, action: "remove", identity });
