@@ -296,8 +296,9 @@ export default function Conference({ room }: { room: string }) {
               he was inaudible from his team, mid-call. */}
           <DeviceCheck
             name={name.trim()}
-            busy={busy || !agreed}
-            joinLabel={!agreed ? "Tick the box below to join" : undefined}
+            busy={busy}
+            blocked={!agreed}
+            blockedLabel="Tick the recording box below to join"
             onJoin={(c) => { setChoice(c); join(c); }}
           />
 

@@ -32,12 +32,15 @@ function recall(key: string): string {
 export type Choice = { micId: string; camId: string; spkId: string; camOn: boolean; micOn: boolean };
 
 export default function DeviceCheck({
-  name, onJoin, busy, joinLabel,
+  name, onJoin, busy, blocked, blockedLabel,
 }: {
   name: string;
   onJoin: (c: Choice) => void;
+  /** genuinely mid-join */
   busy?: boolean;
-  joinLabel?: string;
+  /** cannot join YET, for a reason the person can fix */
+  blocked?: boolean;
+  blockedLabel?: string;
 }) {
   const [mics, setMics] = useState<Device[]>([]);
   const [cams, setCams] = useState<Device[]>([]);
@@ -304,8 +307,18 @@ export default function DeviceCheck({
       </div>
       {!spkWorks ? <p className="qmd-note">{speakerNote(false)}</p> : null}
 
-      <button className="qmr-primary qmd-join" onClick={go} disabled={busy}>
-        {busy ? "Joining…" : joinLabel || (name ? `Join as ${name}` : "Join meeting")}
+      {/* FIELD 2026-08-18, read off a live screenshot: this said "Joining…"
+          while it was simply waiting for the consent box to be ticked. A
+          button reporting an action nobody started is worse than one saying
+          nothing — the person waits for something that is not happening. */}
+      <button className="qmr-primary qmd-join" onClick={go} disabled={busy || blocked}>
+        {busy
+          ? "Joining…"
+          : blocked
+            ? blockedLabel || "Not ready yet"
+            : name
+              ? `Join as ${name}`
+              : "Join meeting"}
       </button>
     </div>
   );
