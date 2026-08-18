@@ -142,6 +142,11 @@ export default function HostConsole() {
   const [copied, setCopied] = useState("");
   const [startAt, setStartAt] = useState("");
   const [health, setHealth] = useState<{ headline: string; steps: Step[] } | null>(null);
+  // Short names for the status strip. "Turn speech into text" is the right
+  // label in a checklist and the wrong one in a chip.
+  const CHIP: Record<string, string> = {
+    storage: "STORAGE", transcribe: "TRANSCRIBE", notes: "INTELLIGENCE", email: "MAIL", items: "ACTIONS",
+  };
   const [checking, setChecking] = useState(false);
   const [project, setProject] = useState("");
   const [items, setItems] = useState<ActionItem[]>([]);
@@ -476,6 +481,26 @@ export default function HostConsole() {
     setChecking(false);
   }
 
+  // The setup check was behind a button. A key that is missing is missing
+  // whether or not anybody thought to look, and the cost lands hours later on
+  // the one person who cannot debug it — so ask on arrival, quietly.
+  useEffect(() => {
+    if (!user || health) return;
+    let alive = true;
+    (async () => {
+      try {
+        const { data: sess } = await db().auth.getSession();
+        const r = await fetch("/api/recording/selftest", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${sess.session?.access_token ?? ""}` },
+        });
+        const j = await r.json();
+        if (alive && j?.steps) setHealth({ headline: j.headline, steps: j.steps });
+      } catch { /* the strip simply stays on CHECKING… */ }
+    })();
+    return () => { alive = false; };
+  }, [user, health]);
+
   async function copyInvite(room: string) {
     try {
       await navigator.clipboard.writeText(inviteLink(room));
@@ -536,16 +561,40 @@ export default function HostConsole() {
     setNote("");
   }
 
+  const allGood = Boolean(health && health.steps.every((x) => x.ok));
+  const brokenCount = (health?.steps || []).filter((x) => !x.ok).length;
+
   return (
     <main className="qm-wrap">
       <style>{CSS}</style>
 
       <header className="qm-bar">
-        <span className="qm-logo">Quantlys Meeting</span>
+        <span className="qm-logo">Console</span>
         {user ? (
-          <button className="qm-ghost" onClick={signOut}>
-            Sign out
-          </button>
+          <>
+            {/* The design asks for a status strip. It is not decoration: every
+                one of these is a key that, when missing, produces a meeting
+                that records fine and then silently never emails anybody. The
+                check already existed behind a button nobody presses — this
+                runs it on arrival and puts the answer where you cannot miss
+                it. */}
+            <span className="qm-chips">
+              <span className={`q-chip${allGood ? " q-live" : ""}`} title={health?.headline || "Checking your setup…"}>
+                <span className={`q-dot${allGood ? " q-beat" : ""}`}
+                      style={{ background: health ? (allGood ? "var(--accent2)" : "var(--danger)") : "var(--dim)" }} />
+                {health ? (allGood ? "ALL SYSTEMS NOMINAL" : `${brokenCount} NEED ATTENTION`) : "CHECKING…"}
+              </span>
+              {(health?.steps || []).map((st) => (
+                <span key={st.key} className="q-chip" title={st.detail}
+                      style={{ color: st.ok ? "var(--muted)" : "var(--danger)",
+                               borderColor: st.ok ? "var(--fieldline)" : "var(--dangerLine)" }}>
+                  {CHIP[st.key] || st.key.toUpperCase()} {st.ok ? "READY" : "OFF"}
+                </span>
+              ))}
+              <span className="q-chip" title={user.email || ""}>{user.email}</span>
+            </span>
+            <button className="qm-ghost" onClick={signOut}>Sign out</button>
+          </>
         ) : null}
       </header>
 
@@ -941,7 +990,7 @@ export default function HostConsole() {
 }
 
 const CSS = `
-.qm-wrap { max-width: 760px; margin: 0 auto; padding: 24px 20px 72px;
+.qm-wrap { max-width: 1180px; margin: 0 auto; padding: 26px 24px 80px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }
 .qm-bar { display: flex; justify-content: space-between; align-items: center;
