@@ -15,7 +15,10 @@ export default function Standup() {
     await supabase.from("meetings")
       .upsert({ room_name: room, title: `Standup ${today}`, created_by: user.id, active: true },
                { onConflict: "room_name" });
-    router.replace(`/meeting/${room}?title=${encodeURIComponent("Daily Standup")}`);
+    // One room. /meeting/ was a second, older implementation of the same
+    // screen and joining a standup through it silently lost the device
+    // check, the microphone watchdog, captions and recording.
+    router.replace(`/room/${room}`);
   })(); }, []);
   return <div className="wrap"><div className="card">Opening today's standup…</div></div>;
 }
