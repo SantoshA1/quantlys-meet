@@ -267,15 +267,34 @@ export default function Conference({ room }: { room: string }) {
       <main className="qmr-prejoin">
         <style>{CSS}</style>
         <div className="qmr-card">
+          {/* The design's lobby is two columns: what you look like on the
+              left, what you are about to join on the right. They are the two
+              questions a person actually has standing outside a meeting, and
+              stacking them buries the second one under a webcam. */}
+          <div className="qmr-lobby">
+          <div className="qmr-lobbyside">
+          <p className="qmr-eyebrow">{starts ? "You've been invited to" : "No account · one click"}</p>
           <h1>{meetingName || "Join meeting"}</h1>
+          <div className="qmr-meta">
+            {starts && new Date(starts).getTime() - Date.now() > 90_000 ? (
+              <>
+                <b>
+                  STARTS{" "}
+                  {new Date(starts).toLocaleString([], {
+                    weekday: "short", day: "numeric", month: "short",
+                    hour: "2-digit", minute: "2-digit",
+                  }).toUpperCase()}
+                </b>
+                <span className="qmr-sep">│</span>
+              </>
+            ) : null}
+            <span>{room.toUpperCase()}</span>
+            <span className="qmr-sep">│</span>
+            <span>LINK WORKS UNTIL THE HOST ENDS IT</span>
+          </div>
           {starts && new Date(starts).getTime() - Date.now() > 90_000 ? (
             <p className="qmr-when">
-              Starts{" "}
-              {new Date(starts).toLocaleString([], {
-                weekday: "long", day: "numeric", month: "short",
-                hour: "2-digit", minute: "2-digit",
-              })}
-              . You're early — you can wait here, or come back then. This link keeps working.
+              You&apos;re early — you can wait here, or come back then. This link keeps working.
             </p>
           ) : null}
           <p className="qmr-muted">No account needed — just a name so people know who joined.</p>
@@ -288,6 +307,7 @@ export default function Conference({ room }: { room: string }) {
               onKeyDown={(e) => e.key === "Enter" && agreed && join(choice)}
               autoFocus
             />
+          </div>
           </div>
 
           {/* FIELD 2026-08-18: there used to be nothing between typing your
@@ -319,6 +339,7 @@ export default function Conference({ room }: { room: string }) {
           </div>
 
           {error ? <p className="qmr-error">{error}</p> : null}
+          </div>
         </div>
       </main>
     );
