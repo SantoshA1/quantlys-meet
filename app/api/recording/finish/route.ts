@@ -4,6 +4,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import type { Step } from "@/lib/notes-health";
+import { COMMIT, DECIDE, NOISE } from "@/lib/live";
 import { checkTranscribe, checkNotes, checkEmail, headline } from "@/lib/notes-health";
 import { pickActionItems } from "@/lib/digest";
 import type { Notes } from "@/lib/notes";
@@ -56,22 +57,7 @@ async function listen(url: string): Promise<any | null> {
 // ways. This is not clever, and it does not need to be: it is far better than
 // a host reading a 30-minute transcript, and it costs nothing to run.
 
-const COMMIT = new RegExp(
-  "\\b(i'?ll|i will|we'?ll|we will|i'?m going to|we'?re going to|" +
-    "we need to|we should|you should|let'?s|can you|could you|please|" +
-    "make sure|follow ?up|action item|take (?:this|that|it) on|i'?ll own|" +
-    "send (?:me|us|over)|share (?:the|a)|set up|schedule|by (?:eod|cob|" +
-    "today|tomorrow|monday|tuesday|wednesday|thursday|friday|next week|" +
-    "end of (?:day|week)))\\b",
-  "i"
-);
-const DECIDE = new RegExp(
-  "\\b(we (?:decided|agreed|settled on)|let'?s go with|we'?re going with|" +
-    "the decision is|final answer|agreed[,.]|sign(?:ed)? off|approved)\\b",
-  "i"
-);
-const NOISE = /^(?:yeah|yes|no|ok|okay|right|sure|thanks|thank you|hello|hi|mm+|uh+|um+)[\s.,!?]*$/i;
-
+// One set of rules for live rail and recording alike — lib/live.ts owns them.
 function speakerName(n: number | undefined) {
   return typeof n === "number" ? `Speaker ${n + 1}` : "Someone";
 }
