@@ -12,6 +12,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { RoomServiceClient, TrackSource, TrackType } from "livekit-server-sdk";
+import { dedupeKnocks, hostSummary, isStale, type Knock } from "@/lib/waiting";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -68,7 +69,7 @@ export async function POST(req: Request) {
 
   const { data: meeting } = await sb
     .from("meetings")
-    .select("id, created_by, locked")
+    .select("id, created_by, locked, waiting_room")
     .eq("room_name", room)
     .maybeSingle();
 
@@ -77,7 +78,12 @@ export async function POST(req: Request) {
 
   // Anyone may ask about themselves. Only the host is ever told "yes".
   if (action === "status") {
-    return Response.json({ host: isHost, locked, tracked: Boolean(meeting) });
+    return Response.json({
+      host: isHost,
+      locked,
+      waitingRoom: Boolean((meeting as any)?.waiting_room),
+      tracked: Boolean(meeting),
+    });
   }
 
   if (!isHost) {
@@ -100,6 +106,73 @@ export async function POST(req: Request) {
       );
     }
     return Response.json({ host: true, locked: next });
+  }
+
+  // ── the waiting room ───────────────────────────────────────────────────
+  //
+  // The lock above turns the link off. This one keeps a door and puts a person
+  // behind it. Both exist because they answer different questions: "no more
+  // people" and "only the right people".
+  if (action === "waiting_on" || action === "waiting_off") {
+    const next = action === "waiting_on";
+    const { error } = await sb
+      .from("meetings")
+      .update({ waiting_room: next })
+      .eq("id", meeting!.id);
+    if (error) {
+      return Response.json(
+        { error: "Couldn't change the waiting room — has the `waiting_room` column been added? Run the schema step in Supabase." },
+        { status: 500 }
+      );
+    }
+    return Response.json({ host: true, waitingRoom: next });
+  }
+
+  if (action === "waiting" || action === "admit" || action === "deny" || action === "admit_all") {
+    const knockId = String(body.knockId || "").trim();
+
+    if (action === "admit" || action === "deny") {
+      if (!knockId) return Response.json({ error: "Which person?" }, { status: 400 });
+      // Scoped to THIS room. A knock id from another meeting must not be
+      // admittable by this host just because they hold the id.
+      const { error } = await sb
+        .from("pending_admissions")
+        .update({ status: action === "admit" ? "admitted" : "denied", decided_at: new Date().toISOString() })
+        .eq("id", knockId)
+        .eq("room_name", room);
+      if (error) return Response.json({ error: "Couldn't record that." }, { status: 500 });
+    }
+
+    if (action === "admit_all") {
+      const { error } = await sb
+        .from("pending_admissions")
+        .update({ status: "admitted", decided_at: new Date().toISOString() })
+        .eq("room_name", room)
+        .eq("status", "pending");
+      if (error) return Response.json({ error: "Couldn't let everyone in." }, { status: 500 });
+    }
+
+    // Conclave round 39: bounded, and the bound is reported. A host shown 200
+    // of 260 people would leave sixty of them standing outside for ever and
+    // never know there was anybody there.
+    const { data: rows, count: total } = await sb
+      .from("pending_admissions")
+      .select("id, room_name, display_name, requested_at, status", { count: "exact" })
+      .eq("room_name", room)
+      .eq("status", "pending")
+      .order("requested_at", { ascending: true })
+      .limit(200);
+
+    const now = Date.now();
+    const live = ((rows as Knock[]) || []).filter((k) => !isStale(k, now));
+    const waiting = dedupeKnocks(live);
+    return Response.json({
+      host: true,
+      waitingRoom: Boolean((meeting as any)?.waiting_room),
+      waiting,
+      total: total ?? waiting.length,
+      summary: hostSummary(waiting),
+    });
   }
 
   const svc = rooms();
