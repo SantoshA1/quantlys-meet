@@ -103,6 +103,41 @@ export function linkLabel(quality: string, rttMs?: number | null): string {
   return Number.isFinite(ms) && ms > 0 ? `LINK ${word} · ${Math.round(ms)} MS` : `LINK ${word}`;
 }
 
+/** What clock a flag gets stamped with — or -1 when there is nothing durable
+ *  to anchor it to. The rules, in order of trust:
+ *    1. the last caption final's own clock (the transcript's clock);
+ *    2. time since captions switched on, when they're on but nothing has
+ *       been said yet — the transcript will start from that same origin;
+ *    3. the recording clock, when recording without captions;
+ *    4. nothing → -1, and the button should be disabled, because a flag
+ *       nobody can find afterwards is worse than no flag.
+ *  FIELD 2026-08-18: captions ON with no finals yet fell through to -1 and
+ *  the button silently did nothing — "unable to Flag any moment". */
+export function flagAt(input: {
+  ccOn: boolean;
+  lastFinalAt?: number | null;   // ms, the newest final's stamp
+  ccElapsedMs?: number | null;   // ms since captions switched on
+  recording: boolean;
+  recElapsedSec?: number | null; // the recording counter, seconds
+}): number {
+  // Number(null) is 0 — an absent clock must never read as clock-zero, so
+  // null/undefined are rejected BEFORE coercion. The guard that caught this
+  // is the "nothing said yet" one.
+  const num = (v: number | null | undefined) =>
+    v === null || v === undefined ? NaN : Number(v);
+  if (input.ccOn) {
+    const last = num(input.lastFinalAt);
+    if (Number.isFinite(last) && last >= 0) return Math.round(last);
+    const cc = num(input.ccElapsedMs);
+    if (Number.isFinite(cc) && cc >= 0) return Math.round(cc);
+  }
+  if (input.recording) {
+    const rec = num(input.recElapsedSec);
+    if (Number.isFinite(rec) && rec >= 0) return Math.round(rec * 1000);
+  }
+  return -1;
+}
+
 /** The clock label on a caught card — captions stamp in ms. */
 export function atLabel(ms: number): string {
   const t = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
