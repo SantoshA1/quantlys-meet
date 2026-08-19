@@ -18,7 +18,8 @@ import "@livekit/components-styles";
 import { Track, AudioPresets, VideoPresets } from "livekit-client";
 import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
-import { describeMediaError, connectionAdvice } from "@/lib/media";
+import { connectionAdvice } from "@/lib/media";
+import { joinErrorText, deviceFailText } from "@/lib/camera";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
@@ -28,14 +29,17 @@ import {
   toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
 } from "@/lib/captions";
 
+// SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
+// throw from inside a mount effect when it was absent — which crashed the
+// whole room UI on a self-hosted deployment that never configured accounts.
+// A meeting app must MEET without its optional cloud. Null here means the
+// signed-in extras (host console, saved recordings) quietly don't exist.
 let _db: SupabaseClient | null = null;
-function db(): SupabaseClient {
-  if (!_db) {
-    _db = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-  }
+function db(): SupabaseClient | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
+  if (!_db) _db = createClient(url, key);
   return _db;
 }
 
@@ -141,7 +145,8 @@ export default function Conference({ room }: { room: string }) {
     let alive = true;
     (async () => {
       try {
-        const { data } = await db().rpc("meeting_by_code", { code: room });
+        const res = await db()?.rpc("meeting_by_code", { code: room });
+        const data = res?.data;
         if (!alive || !data) return;
         const m = Array.isArray(data) ? data[0] : data;
         if (!m) return;
@@ -386,7 +391,12 @@ export default function Conference({ room }: { room: string }) {
           device memory, no error handler, and nothing watching whether the
           track it is publishing is still alive. That last one is what let a
           Bluetooth headset go dead mid-sentence while everybody in the room
-          still saw him un-muted. */}
+          still saw him un-muted.
+          The error handlers below use joinErrorText/deviceFailText, which
+          only name a device when the error IS a device error — the old
+          handlers described websocket failures and camera failures alike as
+          microphone problems, which sent a Windows user whose camera was
+          held by Teams off to debug his mic. */}
       <LiveKitRoom
         token={token}
         serverUrl={url}
@@ -430,11 +440,11 @@ export default function Conference({ room }: { room: string }) {
             resolution: VideoPresets.h720.resolution,
           },
         }}
-        onError={(e) => setMediaFail(describeMediaError(e).what)}
-        onMediaDeviceFailure={(f) => setMediaFail(describeMediaError({ name: String(f) }).what)}
+        onError={(e) => setMediaFail(joinErrorText((e as any)?.name, (e as any)?.message))}
+        onMediaDeviceFailure={(f) => setMediaFail(deviceFailText(f ? String(f) : ""))}
         className="qmr-lk"
       >
-        <RoomHeader room={room} title={meetingName} />
+        <RoomHeader room={room} title={meetingName} camWanted={choice.camOn} micWanted={choice.micOn} />
         {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
         <div className="qmr-conf">
           <VideoConference />
@@ -450,7 +460,9 @@ export default function Conference({ room }: { room: string }) {
 // silently lose that person's voice, so the sources are kept and reused.
 const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
-function RoomHeader({ room, title }: { room: string; title?: string }) {
+function RoomHeader({ room, title, camWanted, micWanted }: {
+  room: string; title?: string; camWanted?: boolean; micWanted?: boolean;
+}) {
   const participants = useParticipants();
   const ctx = useRoomContext();
   const [copied, setCopied] = useState(false);
@@ -515,7 +527,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
 
   useEffect(() => {
     db()
-      .auth.getSession()
+      ?.auth.getSession()
       .then(({ data }) => setSignedIn(data.session?.user?.id ?? null));
   }, []);
 
@@ -528,12 +540,12 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
     const beat = async () => {
       if (!alive) return;
       try {
-        const { data: sess } = await db().auth.getSession();
+        const sess = (await db()?.auth.getSession())?.data;
         const r = await fetch("/api/host/control", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+            Authorization: `Bearer ${sess?.session?.access_token ?? ""}`,
           },
           body: JSON.stringify({ room, action: "waiting" }),
         });
@@ -548,12 +560,12 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
 
   const control = useCallback(
     async (action: string, identity?: string, knockId?: string) => {
-      const { data: sess } = await db().auth.getSession();
+      const sess = (await db()?.auth.getSession())?.data;
       const r = await fetch("/api/host/control", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+          Authorization: `Bearer ${sess?.session?.access_token ?? ""}`,
         },
         body: JSON.stringify({ room, action, identity, knockId }),
       });
@@ -897,7 +909,8 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
   }, [announce]);
 
   async function save() {
-    if (!signedIn) return;
+    const client = db();
+    if (!signedIn || !client) return;
     const video = new Blob(vChunks.current, { type: `video/${vExt.current}` });
     const audio = aChunks.current.length
       ? new Blob(aChunks.current, { type: `audio/${aExt.current}` })
@@ -915,7 +928,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
     const base = `${signedIn}/${room}/${stamp}`;
     const videoPath = `${base}.${vExt.current}`;
 
-    const up = await db()
+    const up = await client
       .storage.from("recordings")
       .upload(videoPath, video, { contentType: video.type, upsert: false });
     if (up.error) {
@@ -926,7 +939,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
     let audioPath: string | null = null;
     if (audio && audio.size > 1024) {
       audioPath = `${base}.${aExt.current === "m4a" ? "m4a" : "audio.webm"}`;
-      const ua = await db()
+      const ua = await client
         .storage.from("recordings")
         .upload(audioPath, audio, { contentType: audio.type, upsert: false });
       if (ua.error) audioPath = null; // the video is saved; the extra is optional
@@ -934,7 +947,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
 
     setStatus({ kind: "busy", text: `Saved ${mb} MB. Writing the summary…` });
     try {
-      const { data: sess } = await db().auth.getSession();
+      const { data: sess } = await client.auth.getSession();
       const r = await fetch("/api/recording/finish", {
         method: "POST",
         headers: {
@@ -1074,7 +1087,7 @@ function RoomHeader({ room, title }: { room: string; title?: string }) {
         </button>
         {/* The watchdog lives in the header because that is where somebody
             looks when they suspect they cannot be heard. */}
-        <MediaGuard />
+        <MediaGuard camWanted={camWanted} micWanted={micWanted} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
