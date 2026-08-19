@@ -89,11 +89,15 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const micTrack: any = pub?.track;
   const mst: MediaStreamTrack | undefined = micTrack?.mediaStreamTrack;
   const micLabel = mst?.label || "";
+  // The banner speaks the device's NAME, not its USB id — the same cleanup
+  // the pickers use, so "Logitech BRIO (046d:085e)" never reaches a person.
+  const micSay = micLabel ? deviceLabel({ label: micLabel, deviceId: "", kind: "audioinput" }) : "";
 
   const camPub = cameraTrack;
   const camLkTrack: any = camPub?.track;
   const cmst: MediaStreamTrack | undefined = camLkTrack?.mediaStreamTrack;
   const camLabel = cmst?.label || "";
+  const camSay = camLabel ? deviceLabel({ label: camLabel, deviceId: "", kind: "videoinput" }) : "";
   if (cmst) everCam.current = true;
 
   const refreshDevices = useCallback(async () => {
@@ -210,7 +214,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         peak: peak.current,
         publishing: Boolean(pub && micTrack),
         attempts: attempts.current,
-        label: micLabel,
+        label: micSay,
       });
       setVerdict(v);
       if (v.action === "recover" && !recovering.current) recover();
@@ -229,7 +233,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       micTrack?.off?.(TrackEvent.Ended, onEnded);
       wired.current = null;
     };
-  }, [mst, pub, micTrack, micLabel, recover]);
+  }, [mst, pub, micTrack, micSay, recover]);
 
   // ── apply, remove, restore background effects ──────────────────────────
   const applyEffect = useCallback(async (effect: Effect, silent = false) => {
@@ -353,7 +357,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         luma,
         darkMs: camDarkSince.current ? now - camDarkSince.current : 0,
         attempts: camAttempts.current,
-        label: camLabel,
+        label: camSay,
       });
       setCamV(v);
       if (v.action === "recover" && !camRecovering.current) recoverCam();
@@ -370,7 +374,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       cmst?.removeEventListener("ended", onEnded);
       camLkTrack?.off?.(TrackEvent.Ended, onEnded);
     };
-  }, [cmst, camPub, camLkTrack, camLabel, camWanted, recoverCam, applyEffect]);
+  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam, applyEffect]);
 
   // ── the room's own alarms, which were being thrown away ────────────────
   useEffect(() => {
