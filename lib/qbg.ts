@@ -1,0 +1,279 @@
+"use client";
+
+// The Quantlys background processor: the browser half of lib/effects.ts.
+//
+// It exists because the stock @livekit/track-processors transformer strobes
+// (it enqueues a stale canvas whenever the mask is late) and because its
+// edge is a hard, jittering, per-frame decision boundary that reads as a
+// cut-out. See lib/effects.ts for the full post-mortem — every judgement
+// call in this file is imported from there so it can be tested without a
+// camera.
+//
+// What this one does differently, in order of how much it matters:
+//   1. EVERY frame is painted. If the mask is late, the whole picture is
+//      blurred and published live. Never a repeat of the last frame.
+//   2. The mask is smoothed across frames (EMA) so the edge has memory —
+//      this is what removes the crawling shimmer around hair and shoulders.
+//   3. The mask is feathered proportionally to the output, not by a fixed
+//      3px that is a hard line at 720p.
+//   4. Segmentation runs at 20Hz under 30fps of video, with buffers reused
+//      and zero per-frame allocation of ImageBitmaps.
+//   5. Frames that arrive while one is in flight are dropped, not queued —
+//      a queue on live video is latency that compounds.
+//   6. Model and WASM are served from our own origin when present, so the
+//      first blur does not wait on a CDN and a desktop build works offline.
+//
+// This file only runs in a browser with MediaStreamTrackGenerator; every
+// caller checks effectSupport() first.
+
+import { ProcessorWrapper, VideoTransformer } from "@livekit/track-processors";
+import type { ImageSegmenter } from "@mediapipe/tasks-vision";
+import {
+  BLUR_PX, IMAGE_UNDERBLUR_PX, featherPx, shouldSegment, blendMask,
+  warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
+} from "./effects";
+
+export type QbgOptions = {
+  kind: "blur" | "image";
+  /** data: URL for image backgrounds */
+  imagePath?: string;
+  blurRadius?: number;
+};
+
+class QuantlysBackground extends VideoTransformer<QbgOptions> {
+  private opts: QbgOptions;
+  private seg?: ImageSegmenter;
+  private bg: ImageBitmap | null = null;
+  private busy = false;
+
+  /** the smoothed mask, alpha channel only, at segmentation resolution */
+  private smooth: Uint8ClampedArray | null = null;
+  private maskCanvas?: OffscreenCanvas;
+  private maskCtx?: OffscreenCanvasRenderingContext2D | null;
+  private maskImage?: ImageData;
+  /** the downscaled copy handed to the segmenter */
+  private smallCanvas?: OffscreenCanvas;
+  private smallCtx?: OffscreenCanvasRenderingContext2D | null;
+  private lastSegAt = 0;
+  private haveMask = false;
+
+  constructor(opts: QbgOptions) {
+    super();
+    this.opts = opts;
+  }
+
+  async init(o: any): Promise<void> {
+    await super.init(o);
+    const vision = await import("@mediapipe/tasks-vision");
+    // Local assets when this deployment ships them; the CDN otherwise. The
+    // vendored copy is an optimisation, never a dependency — a missing file
+    // must degrade to "slower first blur", not to "no blur".
+    const local = assetPaths({ wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"), model: await head("/mediapipe/selfie_segmenter.tflite") });
+    const fileSet = await vision.FilesetResolver.forVisionTasks(
+      local?.tasksVisionFileSet ||
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
+    );
+    this.seg = await vision.ImageSegmenter.createFromOptions(fileSet, {
+      baseOptions: {
+        modelAssetPath: local?.modelAssetPath ||
+          "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO",
+      outputCategoryMask: true,
+      outputConfidenceMasks: false,
+    });
+    if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
+  }
+
+  async destroy(): Promise<void> {
+    await super.destroy();
+    try { await this.seg?.close(); } catch { /* closing twice is not an error worth surfacing */ }
+    this.seg = undefined;
+    this.bg = null;
+    this.smooth = null;
+    this.haveMask = false;
+  }
+
+  async update(opts: QbgOptions): Promise<void> {
+    const wasImage = this.opts.imagePath;
+    this.opts = opts;
+    if (opts.imagePath && opts.imagePath !== wasImage) await this.loadBackground(opts.imagePath);
+    if (!opts.imagePath) this.bg = null;
+  }
+
+  private async loadBackground(path: string) {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error("background image failed to load"));
+      img.src = path;
+    });
+    this.bg = await createImageBitmap(img);
+  }
+
+  // ── the per-frame work ──────────────────────────────────────────────────
+  async transform(frame: VideoFrame, controller: TransformStreamDefaultController<VideoFrame>) {
+    // A frame arriving mid-flight is dropped whole: the NEWEST frame is the
+    // true one, and a queue here becomes permanent lip-sync drift.
+    if (shouldDropFrame(this.busy)) { frame.close(); return; }
+    this.busy = true;
+    try {
+      if (this.isDisabled || !this.canvas || !this.ctx) {
+        controller.enqueue(frame);
+        return;
+      }
+      const W = this.canvas.width, H = this.canvas.height;
+
+      if (this.inputVideo) this.segment(this.inputVideo, W, H);
+
+      const paint = warmupPaint({ wantsEffect: true, hasMask: this.haveMask });
+      if (paint === "masked") this.paintMasked(frame, W, H);
+      else this.paintBlurAll(frame, W, H);
+
+      // ALWAYS enqueue what we just painted this frame. The stock transformer
+      // skipped this on a late mask and published the previous canvas — that
+      // is the flashing, and it is one line of discipline to never do it.
+      controller.enqueue(new VideoFrame(this.canvas as any, {
+        timestamp: frame.timestamp ?? 0,
+        alpha: "discard",
+      }));
+    } catch {
+      // A failed frame must not become a frozen picture: send the camera's
+      // own frame through untouched rather than nothing at all.
+      try { controller.enqueue(new VideoFrame(frame as any, { timestamp: frame.timestamp ?? 0 })); } catch { /* the next frame gets another go */ }
+    } finally {
+      frame.close();
+      this.busy = false;
+    }
+  }
+
+  /** Run the model at SEGMENT_HZ on a downscaled copy, then mix the result
+   *  into the smoothed mask. Synchronous by design — segmentForVideo's
+   *  callback fires inline, and awaiting anything here is how the stock
+   *  version ended up with a mask that belonged to a frame already gone. */
+  private segment(video: HTMLVideoElement, W: number, H: number) {
+    const now = performance.now();
+    if (!this.seg || !shouldSegment(now, this.lastSegAt)) return;
+    const vw = video.videoWidth || W, vh = video.videoHeight || H;
+    if (!vw || !vh) return;
+    const s = segmentSize(vw, vh);
+
+    if (!this.smallCanvas || this.smallCanvas.width !== s.w || this.smallCanvas.height !== s.h) {
+      this.smallCanvas = new OffscreenCanvas(s.w, s.h);
+      this.smallCtx = this.smallCanvas.getContext("2d", { willReadFrequently: true });
+      this.smooth = null;            // resolution changed — start the memory over
+      this.maskImage = undefined;
+    }
+    if (!this.smallCtx) return;
+    this.smallCtx.drawImage(video, 0, 0, s.w, s.h);
+
+    this.lastSegAt = now;
+    try {
+      this.seg.segmentForVideo(this.smallCanvas as any, now, (res) => {
+        const cat = res?.categoryMask;
+        if (!cat) return;
+        const raw = cat.getAsUint8Array();
+        const mw = cat.width, mh = cat.height;
+        this.smooth = blendMask(this.smooth, raw as any) as Uint8ClampedArray;
+
+        if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
+          this.maskCanvas = new OffscreenCanvas(mw, mh);
+          this.maskCtx = this.maskCanvas.getContext("2d", { willReadFrequently: false });
+          this.maskImage = new ImageData(mw, mh);
+        }
+        // The mask goes into the canvas as pure alpha — the colour channels
+        // are irrelevant to every composite below, so writing only alpha is
+        // a quarter of the memory traffic of the stock RGBA copy.
+        const px = this.maskImage!.data;
+        const sm = this.smooth!;
+        for (let i = 0, j = 3; i < sm.length; i++, j += 4) px[j] = sm[i];
+        this.maskCtx!.putImageData(this.maskImage!, 0, 0);
+        this.haveMask = true;
+        try { cat.close(); } catch { /* some builds auto-close */ }
+      });
+    } catch {
+      // A segmenter that throws mid-call must not take the video with it —
+      // haveMask stays as it was and the next frame paints blur-all.
+    }
+  }
+
+  /** The good path: person sharp, background replaced, edge feathered and
+   *  remembered. Composite order matters and is the reason this reads as a
+   *  lens rather than a sticker. */
+  private paintMasked(frame: VideoFrame, W: number, H: number) {
+    const ctx = this.ctx!;
+    const feather = featherPx(H);
+    ctx.save();
+
+    // 1. the smoothed mask, feathered — this is the person's silhouette
+    ctx.globalCompositeOperation = "copy";
+    ctx.filter = `blur(${feather}px)`;
+    ctx.drawImage(this.maskCanvas as any, 0, 0, W, H);
+    ctx.filter = "none";
+
+    // 2. the person, punched out of the live frame by that silhouette
+    ctx.globalCompositeOperation = "source-in";
+    ctx.drawImage(frame as any, 0, 0, W, H);
+
+    // 3. the background, painted behind them
+    ctx.globalCompositeOperation = "destination-over";
+    if (this.opts.kind === "image" && this.bg) {
+      // The real room goes down first, blurred — so a sliver the mask missed
+      // leaks an out-of-focus smear, never a readable window.
+      ctx.filter = `blur(${IMAGE_UNDERBLUR_PX}px)`;
+      ctx.drawImage(frame as any, 0, 0, W, H);
+      ctx.filter = "none";
+      ctx.globalCompositeOperation = "destination-over";
+      drawCover(ctx, this.bg, W, H);
+    } else {
+      ctx.filter = `blur(${this.opts.blurRadius || BLUR_PX}px)`;
+      ctx.drawImage(frame as any, 0, 0, W, H);
+      ctx.filter = "none";
+    }
+    ctx.restore();
+  }
+
+  /** No mask yet — blur EVERYTHING. The person stays live and moving; their
+   *  room is not readable for even one frame. The alternative the stock
+   *  library chose, republishing the last good frame, is the strobe. */
+  private paintBlurAll(frame: VideoFrame, W: number, H: number) {
+    const ctx = this.ctx!;
+    ctx.save();
+    ctx.globalCompositeOperation = "copy";
+    ctx.filter = `blur(${Math.max(BLUR_PX, this.opts.blurRadius || 0)}px)`;
+    ctx.drawImage(frame as any, 0, 0, W, H);
+    ctx.filter = "none";
+    ctx.restore();
+  }
+}
+
+/** Cover, not stretch: a 16:9 backdrop behind a 4:3 camera must be cropped,
+ *  not squashed. A squashed horizon is another thing an eye reads as fake. */
+function drawCover(
+  ctx: OffscreenCanvasRenderingContext2D,
+  img: ImageBitmap, W: number, H: number,
+) {
+  const ar = img.width / img.height, target = W / H;
+  let sw = img.width, sh = img.height, sx = 0, sy = 0;
+  if (ar > target) { sw = img.height * target; sx = (img.width - sw) / 2; }
+  else { sh = img.width / target; sy = (img.height - sh) / 2; }
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+}
+
+/** Is a same-origin asset actually there? Cheap HEAD, and any failure means
+ *  "no" — the CDN path is always a working answer. */
+async function head(url: string): Promise<boolean> {
+  try {
+    const r = await fetch(url, { method: "HEAD", cache: "force-cache" });
+    return r.ok;
+  } catch { return false; }
+}
+
+/** Build a processor for an effect. The NAME carries the effect id, which is
+ *  how a live track can be asked what it is already wearing — the question
+ *  that stops the re-apply loop that caused the flashing. */
+export function quantlysBackground(effectId: string, opts: QbgOptions) {
+  return new ProcessorWrapper(new QuantlysBackground(opts) as any, procName(effectId));
+}

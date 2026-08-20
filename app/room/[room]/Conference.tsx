@@ -6,6 +6,7 @@
 // MEETING rather than asking which window to capture.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   LiveKitRoom,
   VideoConference,
@@ -13,6 +14,7 @@ import {
   useLocalParticipant,
   useParticipants,
   useRoomContext,
+  useTracks,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { Track, AudioPresets, VideoPresets } from "livekit-client";
@@ -24,6 +26,9 @@ import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
 import { catchLive, caughtCounts, talked, atLabel, flagAt } from "@/lib/live";
+import { BAR, dockAnchor } from "@/lib/dock";
+import { surfaceFor, penLabel } from "@/lib/draw";
+import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
   toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
@@ -448,6 +453,7 @@ export default function Conference({ room }: { room: string }) {
         {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
         <div className="qmr-conf">
           <VideoConference />
+          <Drawing />
         </div>
         <Reactions />
       </LiveKitRoom>
@@ -1619,7 +1625,13 @@ function Reactions() {
         ))}
       </div>
 
-      <div className="qmr-reactdock">
+      {/* FIELD 2026-08-20: these three used to float in a pill across the
+          middle of the video — over the speaker's chest, on every screen,
+          all meeting, whether anybody pressed them or not. Controls belong
+          in the control bar with the other controls; only STATE (a hand
+          actually up, a reaction actually flying) earns space over the
+          picture, and only while it is true. */}
+      <ControlDock>
         {open ? (
           <div className="qmr-reactmenu" role="menu">
             {QUICK.map((q) => (
@@ -1635,35 +1647,114 @@ function Reactions() {
             ))}
           </div>
         ) : null}
-        <div className="qmr-reactrow">
-          <button
-            className={`qmr-hold${mine.hand ? " qmr-holdon" : ""}`}
-            onClick={() => toggle("hand")}
-            aria-pressed={mine.hand}
-            title={mine.hand ? "Put your hand down" : "Raise your hand"}
-          >
-            ✋ <span>{mine.hand ? "Hand up" : "Raise hand"}</span>
-          </button>
-          <button
-            className={`qmr-hold${mine.brb ? " qmr-holdon" : ""}`}
-            onClick={() => toggle("brb")}
-            aria-pressed={mine.brb}
-            title={mine.brb ? "You're back" : "Step away for a moment"}
-          >
-            ☕ <span>{mine.brb ? "Away" : "Be right back"}</span>
-          </button>
-          <button
-            className={`qmr-hold${open ? " qmr-holdon" : ""}`}
-            onClick={() => setOpen((o) => !o)}
-            aria-expanded={open}
-            title="React"
-          >
-            🙂 <span>React</span>
-          </button>
-        </div>
-      </div>
+        <button
+          className={`qmr-dockbtn${mine.hand ? " qmr-dockon" : ""}`}
+          onClick={() => toggle("hand")}
+          aria-pressed={mine.hand}
+          title={mine.hand ? "Put your hand down" : "Raise your hand"}
+        >
+          <span aria-hidden>✋</span>
+          <span className="qmr-docklabel">{mine.hand ? "Hand up" : "Raise hand"}</span>
+        </button>
+        <button
+          className={`qmr-dockbtn${mine.brb ? " qmr-dockon" : ""}`}
+          onClick={() => toggle("brb")}
+          aria-pressed={mine.brb}
+          title={mine.brb ? "You're back" : "Step away for a moment"}
+        >
+          <span aria-hidden>☕</span>
+          <span className="qmr-docklabel">{mine.brb ? "Away" : "Be right back"}</span>
+        </button>
+        <button
+          className={`qmr-dockbtn${open ? " qmr-dockon" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          title="React"
+        >
+          <span aria-hidden>🙂</span>
+          <span className="qmr-docklabel">React</span>
+        </button>
+      </ControlDock>
     </>
   );
+}
+
+/* The pen, and the surface it draws on.
+   ANNOTATE when somebody is sharing a screen; WHITEBOARD when nobody is —
+   one button whose label says which, because offering "annotate" with
+   nothing to annotate is a button that does nothing, and offering only a
+   whiteboard mid-presentation hides the pen exactly when it is wanted. */
+function Drawing() {
+  const [on, setOn] = useState(false);
+  const shares = useTracks([Track.Source.ScreenShare], { onlySubscribed: false });
+  const sharing = shares.length > 0;
+  const surface = surfaceFor({ screenShareOn: sharing, boardOpen: on && !sharing });
+
+  // Somebody stopping their share mid-annotation must not leave marks
+  // floating over live faces: the surface underneath them is gone, so the
+  // pen falls back to a whiteboard rather than lying about what it is on.
+  return (
+    <>
+      <ControlDock>
+        <button
+          className={`qmr-dockbtn${on ? " qmr-dockon" : ""}`}
+          onClick={() => setOn((v) => !v)}
+          aria-pressed={on}
+          title={sharing ? "Draw over the shared screen" : "Open a shared whiteboard"}
+        >
+          <span aria-hidden>✎</span>
+          <span className="qmr-docklabel">{penLabel({ screenShareOn: sharing, on })}</span>
+        </button>
+      </ControlDock>
+      <Board
+        open={on && surface !== "none"}
+        surface={surface === "screen" ? "screen" : "board"}
+        onClose={() => setOn(false)}
+      />
+    </>
+  );
+}
+
+/* Puts its children INSIDE LiveKit's control bar, immediately after the
+   screen-share button — the place a person already looks for meeting
+   controls. A portal rather than a re-implementation of the whole bar,
+   because LiveKit owns mic/camera/share/leave and re-implementing them to
+   add three buttons is how a product inherits four bugs.
+
+   The bar is rendered by <VideoConference/> AFTER we mount, and it comes and
+   goes with the layout, so we watch for it instead of looking once. Until it
+   exists these controls render nowhere at all — which is correct: there is
+   no meeting to react to yet. */
+function ControlDock({ children }: { children: React.ReactNode }) {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    let node: HTMLElement | null = null;
+    const attach = () => {
+      const bar = document.querySelector(BAR) as HTMLElement | null;
+      if (!bar || (node && node.parentNode === bar)) return;
+      const { ok, before } = dockAnchor(bar);
+      if (!ok) return;
+      if (!node) {
+        node = document.createElement("div");
+        node.className = "qmr-dock";
+      }
+      bar.insertBefore(node, before);
+      setHost(node);
+    };
+    attach();
+    // The bar is re-rendered when someone shares a screen or the layout
+    // flips; an observer keeps us docked instead of silently vanishing.
+    const mo = new MutationObserver(attach);
+    mo.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      mo.disconnect();
+      node?.parentNode?.removeChild(node);
+    };
+  }, []);
+
+  if (!host) return null;
+  return createPortal(children as any, host);
 }
 
 
@@ -1954,7 +2045,7 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 }
 
 
-const CSS = DEVICE_CSS + GUARD_CSS + `
+const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + `
 .qmr-prejoin { min-height: 100vh; display: grid; place-items: center; padding: 20px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }
@@ -2083,22 +2174,24 @@ const CSS = DEVICE_CSS + GUARD_CSS + `
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qmr-plist button { padding: 5px 12px; font-size: 12.5px; }
 /* ── Reactions ─────────────────────────────────────────────────────────── */
-.qmr-reactdock { position: absolute; left: 50%; transform: translateX(-50%);
-  bottom: 78px; z-index: 25; display: flex; flex-direction: column;
-  align-items: center; gap: 8px; pointer-events: none; }
-.qmr-reactdock > * { pointer-events: auto; }
-.qmr-reactrow { display: flex; gap: 8px; background: rgba(16,19,26,.92);
-  border: 1px solid #2b3240; border-radius: 999px; padding: 6px;
-  backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.45); }
-.qmr-hold { display: inline-flex; align-items: center; gap: 7px; font: inherit;
-  font-size: 13.5px; cursor: pointer; background: transparent; color: #cfd6e4;
-  border: 1px solid transparent; border-radius: 999px; padding: 7px 14px;
-  white-space: nowrap; }
-.qmr-hold:hover { background: #1a1f2a; }
-.qmr-holdon { background: #0d3d39; color: #7fe0d6; border-color: #00a99d; }
-.qmr-reactmenu { display: flex; gap: 4px; background: rgba(16,19,26,.95);
-  border: 1px solid #2b3240; border-radius: 999px; padding: 6px;
-  backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+/* The presence controls, now INSIDE LiveKit's control bar rather than
+   floating over the speaker's chest (FIELD 2026-08-20). They borrow the
+   bar's own metrics so they read as part of it, not as a bolt-on. */
+.qmr-dock { display: flex; align-items: center; gap: 6px; position: relative; }
+.qmr-dockbtn { display: inline-flex; align-items: center; gap: 7px; font: inherit;
+  font-size: 14px; line-height: 1; cursor: pointer; background: #1a1f2a;
+  color: #cfd6e4; border: 1px solid #2b3240; border-radius: 8px;
+  padding: 0 12px; height: 42px; white-space: nowrap; }
+.qmr-dockbtn:hover { background: #222835; }
+.qmr-dockon { background: #0d3d39; color: #7fe0d6; border-color: #00a99d; }
+/* Below this the bar would wrap, and a wrapped control bar is how the Leave
+   button ended up off-screen once already. Glyphs alone, then. */
+@media (max-width: 760px) { .qmr-docklabel { display: none; } }
+.qmr-reactmenu { position: absolute; bottom: calc(100% + 10px); left: 50%;
+  transform: translateX(-50%); display: flex; gap: 4px;
+  background: rgba(16,19,26,.97); border: 1px solid #2b3240;
+  border-radius: 999px; padding: 6px; z-index: 40;
+  backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.55); }
 .qmr-reactbtn { font-size: 21px; line-height: 1; cursor: pointer;
   background: transparent; border: 0; border-radius: 50%; width: 40px;
   height: 40px; transition: transform .12s ease, background .12s ease; }
@@ -2135,9 +2228,7 @@ const CSS = DEVICE_CSS + GUARD_CSS + `
 .qmr-hand { background: #4a3a13; color: #ffe08a; border: 1px solid #7a611f; }
 .qmr-brb  { background: #1b2430; color: #a9c2dd; border: 1px solid #33455c; }
 @media (max-width: 720px) {
-  .qmr-hold span { display: none; }
-  .qmr-hold { padding: 9px 12px; font-size: 17px; }
-  .qmr-reactdock { bottom: 72px; }
+  .qmr-dockbtn { padding: 0 10px; font-size: 16px; }
 }
 
 /* ── Live captions ─────────────────────────────────────────────────────── */

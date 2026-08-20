@@ -40,6 +40,7 @@ import {
   EFFECTS, restoreEffect, effectSupport, processorFor, type Effect,
   camRetryDelay, camShouldKeepTrying, type CamVerdict,
 } from "@/lib/camera";
+import { shouldApplyEffect, effectIdOfProcessor, BLUR_PX } from "@/lib/effects";
 
 const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect" };
 const save = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch {} };
@@ -81,6 +82,10 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const camDarkSince = useRef(0);
   const everCam = useRef(false);
   const effectRef = useRef<Effect>(EFFECTS[0]);
+  // Mirrors of the two values the camera watcher needs but must not DEPEND
+  // on: a dependency on either rebuilt the watcher mid-apply (the flashing).
+  const fxBusyRef = useRef(false);
+  const applyEffectRef = useRef<((e: Effect, silent?: boolean) => void) | null>(null);
   const restored = useRef(false);
   const sampleVid = useRef<HTMLVideoElement | null>(null);
   const sampleCvs = useRef<HTMLCanvasElement | null>(null);
@@ -237,7 +242,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
 
   // ── apply, remove, restore background effects ──────────────────────────
   const applyEffect = useCallback(async (effect: Effect, silent = false) => {
-    if (fxBusy) return;
+    // The REF, not the state: setFxBusy lands next render, so two applies
+    // fired in one tick both saw `false` and both ran. That doubled every
+    // setProcessor — and doubled the flash.
+    if (fxBusyRef.current) return;
+    fxBusyRef.current = true;
     setFxBusy(true);
     if (!silent) setFxNote("");
     const track: any = localParticipant.getTrackPublication(Track.Source.Camera)?.track;
@@ -262,10 +271,19 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         if (!silent) setFxNote(sup.why);
         return;
       }
-      const mod = await import("@livekit/track-processors");
-      const proc = p.kind === "blur" ? mod.BackgroundBlur(p.blurRadius) : mod.VirtualBackground(p.imagePath);
-      // setProcessor replaces any active one; the segmentation model loads on
-      // first use and can take a couple of seconds on a modest machine.
+      const { quantlysBackground } = await import("@/lib/qbg");
+      const proc = quantlysBackground(
+        effect.id,
+        p.kind === "blur"
+          ? { kind: "blur", blurRadius: BLUR_PX }
+          : { kind: "image", imagePath: p.imagePath },
+      );
+      // setProcessor replaces any active one AND swaps the published
+      // MediaStreamTrack for a generated one. That swap is what used to
+      // re-trigger the watcher below and re-apply the effect for ever —
+      // one flash of raw camera per lap. The processor's NAME now carries
+      // the effect id, so the watcher can ask what the live track is
+      // already wearing instead of guessing from track identity.
       await track.setProcessor(proc);
       setFx(effect.id); effectRef.current = effect;
       save(SAVED.effect, effect.id); save(SAVED.blur, "");
@@ -282,9 +300,14 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         `It needs a recent Chrome or Edge and a moment of network to fetch its model. Your plain video is still being sent — everything else about the meeting is unaffected.`
       );
     } finally {
+      fxBusyRef.current = false;
       setFxBusy(false);
     }
-  }, [fxBusy, localParticipant]);
+  }, [localParticipant]);
+
+  // Keep the ref pointing at the newest closure without making anything
+  // depend on its identity.
+  useEffect(() => { applyEffectRef.current = applyEffect; }, [applyEffect]);
 
   // Remember-and-restore: the effect somebody chose last meeting comes back
   // on its own — qm.blur used to be saved and then never read again.
@@ -304,8 +327,25 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // and "choose a camera" hand LiveKit a fresh track, and a fresh track has
     // no processor on it. Without this, every reconnect silently strips the
     // background somebody chose.
-    if (cmst && camLkTrack && effectRef.current.kind !== "none" && !camLkTrack.processor) {
-      applyEffect(effectRef.current, true);
+    //
+    // FIELD 2026-08-20 ("the blur keeps flashing"): the old test here was
+    // `!camLkTrack.processor`, which is true for a beat DURING setProcessor —
+    // and setProcessor swaps the track, which re-runs this effect, which
+    // re-applies, for ever. Each lap published a frame of unblurred camera.
+    // The question is not "has this track a processor" but "is this track
+    // already wearing the effect I want", and the processor's name answers
+    // it. shouldApplyEffect is pure and guarded, because a loop that only
+    // reproduces on real hardware is a loop that ships.
+    if (
+      cmst && camLkTrack &&
+      shouldApplyEffect({
+        wantedId: effectRef.current.id,
+        liveId: effectIdOfProcessor(camLkTrack.processor?.name),
+        hasTrack: true,
+        busy: fxBusyRef.current,
+      })
+    ) {
+      applyEffectRef.current?.(effectRef.current, true);
     }
 
     // The pixel sampler: a tiny offscreen <video> playing the PUBLISHED
@@ -374,7 +414,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       cmst?.removeEventListener("ended", onEnded);
       camLkTrack?.off?.(TrackEvent.Ended, onEnded);
     };
-  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam, applyEffect]);
+    // applyEffect is deliberately NOT a dependency: it changes identity every
+    // time fxBusy flips, and fxBusy flips inside applyEffect — so listing it
+    // rebuilt this watcher in the middle of its own work. The ref carries the
+    // latest one without making the watcher re-run.
+  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam]);
 
   // ── the room's own alarms, which were being thrown away ────────────────
   useEffect(() => {
@@ -471,19 +515,20 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         className={`qmr-ghost qmg-btn${verdict.level === "dead" || camV.level === "dead" ? " qmg-btnbad" : ""}`}
         onClick={() => setOpen((v) => !v)}
         title="Microphone, camera, speaker, blur and backgrounds"
+        aria-label="Settings — microphone, camera, speaker and background"
       >
         <span className="qmg-mini" aria-hidden>
           {bars(level, 5).map((lit, i) => (
             <span key={i} className={`qmg-mbar${lit ? " qmg-mlit" : ""}`} />
           ))}
         </span>
-        Devices & effects
+        Settings
       </button>
 
       {open ? (
         <div className="qmg-panel">
           <div className="qmg-head">
-            <b>Your devices</b>
+            <b>Settings</b>
             <button className="qmg-ax" onClick={() => setOpen(false)} aria-label="Close">×</button>
           </div>
 
