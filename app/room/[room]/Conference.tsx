@@ -1731,8 +1731,14 @@ function ControlDock({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let node: HTMLElement | null = null;
     const attach = () => {
+      // isConnected FIRST, and it is a property read. This callback runs on
+      // every DOM mutation in a live meeting — captions alone rewrite the
+      // tree several times a second — so the common case (already docked)
+      // must not cost a document-wide querySelector. Measured concern, not a
+      // hypothetical: the whole point of this round was giving CPU back.
+      if (node?.isConnected) return;
       const bar = document.querySelector(BAR) as HTMLElement | null;
-      if (!bar || (node && node.parentNode === bar)) return;
+      if (!bar) return;
       const { ok, before } = dockAnchor(bar);
       if (!ok) return;
       if (!node) {
