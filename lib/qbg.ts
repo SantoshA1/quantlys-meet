@@ -29,9 +29,10 @@
 import { ProcessorWrapper, VideoTransformer } from "@livekit/track-processors";
 import type { ImageSegmenter } from "@mediapipe/tasks-vision";
 import {
-  BLUR_PX, IMAGE_UNDERBLUR_PX, featherPx, shouldSegment, blendMask,
+  BLUR_PX, shouldSegment, blendMask,
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
-  CENTER_BOX, maskPolarity, keepComposite, boxMean, edgeMean, type Polarity,
+  CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
+  maskBlurPx, ERODE_POWER, needsInvert,
 } from "./effects";
 
 export type QbgOptions = {
@@ -51,6 +52,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private smooth: Uint8ClampedArray | null = null;
   private maskCanvas?: OffscreenCanvas;
   private maskCtx?: OffscreenCanvasRenderingContext2D | null;
+  /** the mask after inversion, blur and erosion — always means THE PERSON */
+  private silCanvas?: OffscreenCanvas;
+  private silCtx?: OffscreenCanvasRenderingContext2D | null;
   private maskImage?: ImageData;
   /** the downscaled copy handed to the segmenter */
   private smallCanvas?: OffscreenCanvas;
@@ -214,36 +218,81 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     }
   }
 
-  /** The good path: person sharp, background replaced, edge feathered and
-   *  remembered. Composite order matters and is the reason this reads as a
+  /** The silhouette, prepared once per frame on its own canvas: normalised so
+   *  it always means THE PERSON, blurred, then eroded so it sits inside the
+   *  mask's own generous edge.
+   *
+   *  Erosion is why "blur is not effective around the edges of the people"
+   *  stopped being true: the selfie model keeps a rim of real room around a
+   *  person, and feathering that rim leaves it SHARP, drawn at full strength
+   *  exactly where the eye is looking. Pulling the silhouette in hands that
+   *  rim to the blur where it belongs. */
+  private silhouette(W: number, H: number): OffscreenCanvas | null {
+    if (!this.maskCanvas) return null;
+    if (!this.silCanvas || this.silCanvas.width !== W || this.silCanvas.height !== H) {
+      this.silCanvas = new OffscreenCanvas(W, H);
+      this.silCtx = this.silCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const s = this.silCtx;
+    if (!s) return null;
+
+    s.save();
+    s.globalCompositeOperation = "copy";
+    s.filter = "none";
+    s.drawImage(this.maskCanvas as any, 0, 0, W, H);
+
+    // Normalise polarity ONCE, here, instead of branching the composite in
+    // the paint path where getting it backwards blurs the person (which it
+    // did). `source-out` + a full fill is alpha inversion on a canvas.
+    if (needsInvert(this.polarity || "background")) {
+      s.globalCompositeOperation = "source-out";
+      s.fillStyle = "#000";
+      s.fillRect(0, 0, W, H);
+    }
+
+    // Soften enough to carry both jobs: the erosion needs a ramp to bite on,
+    // and what survives it is the feather.
+    s.globalCompositeOperation = "copy";
+    s.filter = `blur(${maskBlurPx(H)}px)`;
+    s.drawImage(this.silCanvas as any, 0, 0, W, H);
+    s.filter = "none";
+
+    // alpha -> alpha^ERODE_POWER, which walks the half-way line inward. Each
+    // self-composite with source-in multiplies the alpha by itself.
+    s.globalCompositeOperation = "source-in";
+    for (let i = 1; i < ERODE_POWER; i++) s.drawImage(this.silCanvas as any, 0, 0, W, H);
+
+    s.restore();
+    return this.silCanvas;
+  }
+
+  /** The good path: person sharp, background replaced, edge eroded and
+   *  feathered. Composite order matters and is the reason this reads as a
    *  lens rather than a sticker. */
   private paintMasked(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
-    const feather = featherPx(H);
+    const sil = this.silhouette(W, H);
+    if (!sil) { this.paintBlurAll(frame, W, H); return; }
     ctx.save();
 
-    // 1. the smoothed mask, feathered — this is the person's silhouette
+    // 1. the prepared silhouette — always the person, never the room
     ctx.globalCompositeOperation = "copy";
-    ctx.filter = `blur(${feather}px)`;
-    ctx.drawImage(this.maskCanvas as any, 0, 0, W, H);
     ctx.filter = "none";
+    ctx.drawImage(sil as any, 0, 0, W, H);
 
-    // 2. the person, punched out of the live frame by that silhouette.
-    //    WHICH composite depends on what the mask means, and the mask does
-    //    not say — so we use the measured answer. Hardcoding the wrong one
-    //    here is precisely what blurred a person and sharpened their room.
-    ctx.globalCompositeOperation = keepComposite(this.polarity || "background");
+    // 2. the person, punched out of the live frame by it
+    ctx.globalCompositeOperation = "source-in";
     ctx.drawImage(frame as any, 0, 0, W, H);
 
     // 3. the background, painted behind them
     ctx.globalCompositeOperation = "destination-over";
     if (this.opts.kind === "image" && this.bg) {
-      // The real room goes down first, blurred — so a sliver the mask missed
-      // leaks an out-of-focus smear, never a readable window.
-      ctx.filter = `blur(${IMAGE_UNDERBLUR_PX}px)`;
-      ctx.drawImage(frame as any, 0, 0, W, H);
-      ctx.filter = "none";
-      ctx.globalCompositeOperation = "destination-over";
+      // JUST the backdrop. The previous version painted the real room
+      // blurred FIRST as "defence in depth" — which filled every transparent
+      // pixel, so this drawImage had nothing left to paint and the chosen
+      // backdrop was silently discarded. That is why Office/Library/Loft/City
+      // all rendered as plain blur. A backdrop that covers the whole
+      // background IS the privacy measure.
       drawCover(ctx, this.bg, W, H);
     } else {
       ctx.filter = `blur(${this.opts.blurRadius || BLUR_PX}px)`;

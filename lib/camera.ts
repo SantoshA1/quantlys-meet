@@ -26,6 +26,8 @@
 // It is deliberately ZERO-IMPORT so it can travel into any Next.js project
 // on its own — it is built to be imported, not copied.
 
+import { SLOTS, CUSTOM_ID, CUSTOM_PLACEHOLDER } from "./backgrounds.ts";
+
 export type CamVerdict = {
   level: "ok" | "warn" | "dead";
   title: string;
@@ -153,74 +155,46 @@ export type Effect = {
   label: string;
   /** data: URL for image effects — self-contained, nothing to host or fetch */
   src?: string;
+  /** where a real photograph would live in this deployment, if it ships one */
+  photo?: string;
+  /** the person's own picture rather than one of ours */
+  custom?: boolean;
 };
 
-/** The built-in backdrops are inline SVGs. Small, sharp at any size, and a
- *  data: URL loads without a network — a background that needs a CDN is a
- *  background that sometimes isn't there. Each SVG declares width/height
- *  because createImageBitmap refuses an SVG with no intrinsic size. */
-function svgUrl(body: string): string {
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">${body}</svg>`;
-  return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
-}
-
-const GRID =
-  `<path d="M0 600 L1280 600 M0 640 L1280 640 M0 680 L1280 680 ` +
-  `M160 560 L80 720 M320 560 L280 720 M480 560 L470 720 M640 560 L640 720 ` +
-  `M800 560 L810 720 M960 560 L1000 720 M1120 560 L1200 720" ` +
-  `stroke="#00a99d" stroke-opacity="0.35" stroke-width="2" fill="none"/>`;
-
+/** The shelf. None and Blur first — plain video is the first-class choice —
+ *  then five rooms a person could plausibly be sitting in, then a slot for
+ *  their own picture.
+ *
+ *  FIELD 2026-08-20: the previous five were abstract gradients (Nebula,
+ *  Gridline, Dusk…). Pretty, and nobody wants to appear to be sitting inside
+ *  a purple haze. A meeting backdrop has exactly one job — look like a room
+ *  — so the shelf is rooms now. Each is a SLOT: a real photograph at
+ *  /backgrounds/<id>.jpg when a deployment ships one, and a drawn room until
+ *  it does. See lib/backgrounds.ts for why photographs are not checked in. */
 export const EFFECTS: Effect[] = [
   { id: "none", kind: "none", label: "None" },
   { id: "blur", kind: "blur", label: "Blur" },
-  {
-    id: "nebula", kind: "image", label: "Nebula",
-    src: svgUrl(
-      `<defs><radialGradient id="g" cx="30%" cy="25%" r="90%">` +
-      `<stop offset="0%" stop-color="#1b2a4a"/><stop offset="55%" stop-color="#101726"/>` +
-      `<stop offset="100%" stop-color="#05070c"/></radialGradient></defs>` +
-      `<rect width="1280" height="720" fill="url(#g)"/>` +
-      `<circle cx="980" cy="150" r="2.5" fill="#7fe0d6"/><circle cx="1120" cy="330" r="1.8" fill="#8fb7ff"/>` +
-      `<circle cx="220" cy="120" r="1.6" fill="#cfd6e4"/><circle cx="420" cy="80" r="2.2" fill="#8fb7ff"/>` +
-      `<circle cx="760" cy="60" r="1.5" fill="#cfd6e4"/><circle cx="120" cy="420" r="2" fill="#7fe0d6"/>` +
-      `<circle cx="1210" cy="520" r="1.7" fill="#cfd6e4"/><circle cx="640" cy="260" r="1.4" fill="#8fb7ff"/>`
-    ),
-  },
-  {
-    id: "gridline", kind: "image", label: "Gridline",
-    src: svgUrl(
-      `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
-      `<stop offset="0%" stop-color="#0c1220"/><stop offset="100%" stop-color="#04060a"/>` +
-      `</linearGradient></defs><rect width="1280" height="720" fill="url(#g)"/>` +
-      GRID +
-      `<circle cx="640" cy="580" r="180" fill="#00a99d" fill-opacity="0.06"/>`
-    ),
-  },
-  {
-    id: "dusk", kind: "image", label: "Dusk",
-    src: svgUrl(
-      `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
-      `<stop offset="0%" stop-color="#241b3a"/><stop offset="60%" stop-color="#3a1f33"/>` +
-      `<stop offset="100%" stop-color="#120a14"/></linearGradient></defs>` +
-      `<rect width="1280" height="720" fill="url(#g)"/>` +
-      `<circle cx="640" cy="470" r="130" fill="#f0b354" fill-opacity="0.5"/>` +
-      `<rect y="500" width="1280" height="220" fill="#0c0810"/>`
-    ),
-  },
-  {
-    id: "boardroom", kind: "image", label: "Boardroom",
-    src: svgUrl(
-      `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
-      `<stop offset="0%" stop-color="#1a1f28"/><stop offset="100%" stop-color="#0b0e14"/>` +
-      `</linearGradient></defs><rect width="1280" height="720" fill="url(#g)"/>` +
-      `<rect x="90" y="120" width="300" height="200" rx="6" fill="#232a36"/>` +
-      `<rect x="890" y="120" width="300" height="200" rx="6" fill="#232a36"/>` +
-      `<rect x="470" y="90" width="340" height="260" rx="6" fill="#141a24" stroke="#2c3342"/>` +
-      `<rect y="560" width="1280" height="160" fill="#080a0f"/>`
-    ),
-  },
+  ...SLOTS.map((s): Effect => ({ id: s.id, kind: "image", label: s.label, src: s.drawn, photo: s.photo })),
+  { id: CUSTOM_ID, kind: "image", label: "Your photo", src: CUSTOM_PLACEHOLDER, custom: true },
 ];
+
+/** The picture an effect should actually use. `custom` is whatever the person
+ *  added; everything else is its own. Pure, because "which image" turning out
+ *  to be the wrong one is exactly the class of bug that shipped four
+ *  identical backdrops. */
+export function effectSrc(effect: Effect, customDataUrl?: string): string {
+  if (!effect) return "";
+  if (effect.custom) return String(customDataUrl || "") || String(effect.src || "");
+  return String(effect.src || "");
+}
+
+/** Has this person actually put a picture in their own slot? An empty slot
+ *  must not be applied — it would replace their room with a picture of a
+ *  camera icon, which is worse than doing nothing. */
+export function customReady(effect: Effect, customDataUrl?: string): boolean {
+  if (!effect?.custom) return true;
+  return String(customDataUrl || "").startsWith("data:image/");
+}
 
 export function effectById(id: string): Effect {
   return EFFECTS.find((e) => e.id === String(id || "")) || EFFECTS[0];
@@ -256,12 +230,19 @@ export function effectSupport(env: {
 
 /** The parameters the component hands to the processor package. Pure mapping,
  *  so the choice of blur radius and the none/blur/image decision are guarded. */
-export function processorFor(effect: Effect):
+export function processorFor(effect: Effect, customDataUrl?: string):
   | { kind: "none" }
   | { kind: "blur"; blurRadius: number }
-  | { kind: "image"; imagePath: string } {
+  | { kind: "image"; imagePath: string; photo?: string } {
   if (effect.kind === "blur") return { kind: "blur", blurRadius: 12 };
-  if (effect.kind === "image" && effect.src) return { kind: "image", imagePath: effect.src };
+  if (effect.kind === "image") {
+    const src = effectSrc(effect, customDataUrl);
+    // An empty custom slot is NOT an image effect — applying it would put a
+    // picture of a camera icon behind somebody.
+    if (src && customReady(effect, customDataUrl)) {
+      return { kind: "image", imagePath: src, photo: effect.photo };
+    }
+  }
   return { kind: "none" };
 }
 

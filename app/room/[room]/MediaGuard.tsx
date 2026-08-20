@@ -37,12 +37,16 @@ import {
 } from "@/lib/media";
 import {
   camVerdict, lumaFrom, blameKind, joinErrorText, CAM_BLACK,
-  EFFECTS, restoreEffect, effectSupport, processorFor, type Effect,
+  EFFECTS, restoreEffect, effectSupport, processorFor, effectSrc, customReady, type Effect,
   camRetryDelay, camShouldKeepTrying, type CamVerdict,
 } from "@/lib/camera";
-import { shouldApplyEffect, effectIdOfProcessor, BLUR_PX } from "@/lib/effects";
+import {
+  shouldApplyEffect, effectIdOfProcessor, BLUR_PX,
+  DEFAULT_EFFECT_ID, effectCostNote, panelShouldClose,
+} from "@/lib/effects";
+import { acceptCustom, CUSTOM_ID } from "@/lib/backgrounds";
 
-const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect" };
+const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect", custom: "qm.bg.custom" };
 const save = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch {} };
 const load = (k: string) => { try { return window.localStorage.getItem(k) || ""; } catch { return ""; } };
 
@@ -66,6 +70,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const [fx, setFx] = useState("none");
   const [fxNote, setFxNote] = useState("");
   const [fxBusy, setFxBusy] = useState(false);
+  const [customBg, setCustomBg] = useState("");
   const [dismissed, setDismissed] = useState(0);
   const [camDismissed, setCamDismissed] = useState(0);
 
@@ -77,6 +82,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const wired = useRef<MediaStreamTrack | null>(null);
   const recovering = useRef(false);
 
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const poorSince = useRef(0);
   const camAttempts = useRef(0);
   const camRecovering = useRef(false);
   const camDarkSince = useRef(0);
@@ -255,7 +263,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         if (!silent) setFxNote("Turn your camera on first — effects apply to a live picture.");
         return;
       }
-      const p = processorFor(effect);
+      const p = processorFor(effect, customBg);
+      if (effect.custom && !customReady(effect, customBg)) {
+        if (!silent) setFxNote("Add a picture to this slot first — the ＋ button below picks one from your computer.");
+        return;
+      }
       if (p.kind === "none") {
         if (track.processor) await track.stopProcessor();
         setFx("none"); effectRef.current = EFFECTS[0];
@@ -303,7 +315,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       fxBusyRef.current = false;
       setFxBusy(false);
     }
-  }, [localParticipant]);
+  }, [localParticipant, customBg]);
 
   // Keep the ref pointing at the newest closure without making anything
   // depend on its identity.
@@ -314,7 +326,12 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   useEffect(() => {
     if (restored.current) return;
     restored.current = true;
-    const wantedFx = restoreEffect(load(SAVED.effect), load(SAVED.blur));
+    const saved = load(SAVED.custom);
+    if (saved.startsWith("data:image/")) setCustomBg(saved);
+    // DEFAULT_EFFECT_ID is what somebody who has never chosen gets; anyone
+    // who HAS chosen gets their choice back. See the constant for why the
+    // default is plain video and not blur.
+    const wantedFx = restoreEffect(load(SAVED.effect) || DEFAULT_EFFECT_ID, load(SAVED.blur));
     if (wantedFx.kind !== "none") { effectRef.current = wantedFx; setFx(wantedFx.id); }
   }, []);
 
@@ -420,6 +437,35 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // latest one without making the watcher re-run.
   }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam]);
 
+  // ── the settings panel behaves like a panel ────────────────────────────
+  // Escape and a click outside close it; choosing a backdrop does NOT, because
+  // choosing a backdrop is a comparison and a panel that shuts on every pick
+  // makes comparing impossible. The rule is in lib/effects.ts so all three
+  // handlers share one answer instead of holding three opinions.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && panelShouldClose({ reason: "escape" })) setOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      const n = e.target as Node;
+      if (panelRef.current && !panelRef.current.contains(n) && !(n as HTMLElement)?.closest?.(".qmg-btn")) {
+        if (panelShouldClose({ reason: "outside" })) setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onDown); };
+  }, [open]);
+
+  // How long the connection has been poor — an effect is the most expensive
+  // thing in the room, and one bad reading must not nag somebody mid-sentence.
+  useEffect(() => {
+    const poor = /poor|lost|unstable|struggl/i.test(quality || "");
+    if (poor && !poorSince.current) poorSince.current = Date.now();
+    if (!poor) poorSince.current = 0;
+  }, [quality]);
+
   // ── the room's own alarms, which were being thrown away ────────────────
   useEffect(() => {
     if (!room) return;
@@ -451,6 +497,26 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     };
   }, [room, localParticipant, refreshDevices, camWanted, micWanted]);
 
+  /** A picture from this person's own computer. Read to a data: URL because a
+   *  canvas that paints a remote image is a tainted canvas — and a background
+   *  is meant to be private, so it has no business fetching anything. */
+  function pickPicture(file: File | null | undefined) {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const url = String(r.result || "");
+      const v = acceptCustom(url);
+      if (!v.ok) { setFxNote(v.why); return; }
+      setCustomBg(url);
+      save(SAVED.custom, url);
+      setFxNote("");
+      const slot = EFFECTS.find((e) => e.id === CUSTOM_ID);
+      if (slot) { effectRef.current = slot; applyEffect(slot); }
+    };
+    r.onerror = () => setFxNote("That file couldn't be read. Try a JPEG or PNG.");
+    r.readAsDataURL(file);
+  }
+
   async function switchTo(kind: "audioinput" | "videoinput" | "audiooutput", id: string) {
     save(kind === "audioinput" ? SAVED.mic : kind === "videoinput" ? SAVED.cam : SAVED.spk, id);
     try {
@@ -465,6 +531,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     }
   }
 
+  const costNote = effectCostNote({
+    quality,
+    effectOn: fx !== "none",
+    poorForMs: poorSince.current ? Date.now() - poorSince.current : 0,
+  });
   const show = verdict.level !== "ok" && dismissed < Date.now() - 30000;
   const showCam = camV.level !== "ok" && camDismissed < Date.now() - 30000;
   const spkWorks = speakerPickerWorks();
@@ -526,7 +597,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       </button>
 
       {open ? (
-        <div className="qmg-panel">
+        <div className="qmg-panel" ref={panelRef}>
           <div className="qmg-head">
             <b>Settings</b>
             <button className="qmg-ax" onClick={() => setOpen(false)} aria-label="Close">×</button>
@@ -580,12 +651,22 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
               <button
                 key={e.id}
                 className={`qmg-swatch${fx === e.id ? " qmg-son" : ""}`}
-                onClick={() => applyEffect(e)}
+                onClick={() => (e.custom && !customReady(e, customBg)
+                  ? fileRef.current?.click()
+                  : applyEffect(e))}
                 disabled={fxBusy}
-                title={e.label}
+                title={e.custom && !customReady(e, customBg) ? "Add a picture of your own" : e.label}
+                aria-pressed={fx === e.id}
               >
                 {e.kind === "image" ? (
-                  <img src={e.src} alt="" />
+                  // A real photograph when this deployment ships one, the
+                  // drawn room otherwise — the swatch shows what you will
+                  // actually get, which is the point of a swatch.
+                  <img
+                    src={effectSrc(e, customBg)}
+                    alt=""
+                    onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = e.src || ""; }}
+                  />
                 ) : (
                   <span className={e.kind === "blur" ? "qmg-swblur" : "qmg-swnone"}>
                     {e.kind === "blur" ? "◐" : "∅"}
@@ -595,8 +676,37 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
               </button>
             ))}
           </div>
+
+          <div className="qmg-fxrow">
+            <button className="qmg-addbg" onClick={() => fileRef.current?.click()} disabled={fxBusy}>
+              ＋ Use my own picture
+            </button>
+            {customBg ? (
+              <button
+                className="qmg-addbg qmg-addbg2"
+                onClick={() => {
+                  setCustomBg(""); save(SAVED.custom, "");
+                  if (fx === CUSTOM_ID) applyEffect(EFFECTS[0]);
+                }}
+              >
+                Remove it
+              </button>
+            ) : null}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              hidden
+              onChange={(e) => { pickPicture(e.target.files?.[0]); e.currentTarget.value = ""; }}
+            />
+          </div>
+
           {fxBusy ? <p className="qmg-note">Starting the effect — the first time takes a moment while the model loads…</p> : null}
           {fxNote ? <p className="qmg-note">{fxNote}</p> : null}
+          {costNote ? <p className="qmg-note qmg-costnote">
+            {costNote}{" "}
+            <button className="qmg-inline" onClick={() => applyEffect(EFFECTS[0])}>Turn my background off</button>
+          </p> : null}
         </div>
       ) : null}
     </>
@@ -650,12 +760,28 @@ export const GUARD_CSS = `
   border:1px solid #2c3342; background:#0b0e14; padding:0; aspect-ratio:16/10;
   display:flex; align-items:center; justify-content:center; }
 .qmg-swatch img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+/* The label sits ON a photograph, and a photograph can be any brightness —
+   a Sunlit Loft is nearly white exactly where the name goes. So the scrim is
+   opaque enough to win on its own, and the text carries a shadow as well. */
 .qmg-swatch i { position:absolute; left:0; right:0; bottom:0; font-style:normal;
-  font-size:10px; letter-spacing:.06em; color:#cfd6e4; text-align:center; padding:2px 0 3px;
-  background:linear-gradient(transparent, rgba(4,6,10,.85)); }
+  font-size:10px; letter-spacing:.06em; color:#ffffff; text-align:center; padding:3px 0 4px;
+  text-shadow:0 1px 3px rgba(0,0,0,.95);
+  background:linear-gradient(rgba(4,6,10,0), rgba(4,6,10,.72) 45%, rgba(4,6,10,.94)); }
 .qmg-swatch:hover { border-color:#3b4356; }
 .qmg-swatch:disabled { opacity:.6; cursor:default; }
 .qmg-son { border-color:#00a99d; box-shadow:0 0 0 1px #00a99d inset; }
 .qmg-swnone, .qmg-swblur { font-size:17px; color:#8b93a5; }
 .qmg-swblur { filter:blur(1px); }
+/* Eight slots read better in four columns — a backdrop swatch has to show a
+   ROOM, and three-across at panel width makes each one a postage stamp. */
+.qmg-fx { grid-template-columns:repeat(4, 1fr); }
+.qmg-fxrow { display:flex; gap:8px; flex-wrap:wrap; margin-top:9px; }
+.qmg-addbg { font:inherit; font-size:12.5px; cursor:pointer; color:#cfd6e4;
+  background:#141922; border:1px dashed #39424f; border-radius:8px; padding:7px 12px; }
+.qmg-addbg:hover:not(:disabled) { background:#1b2129; border-color:#4a5666; }
+.qmg-addbg:disabled { opacity:.55; cursor:default; }
+.qmg-addbg2 { border-style:solid; }
+.qmg-costnote { color:#ffd9a0; }
+.qmg-inline { font:inherit; font-size:inherit; color:#7fe0d6; background:none;
+  border:0; padding:0; cursor:pointer; text-decoration:underline; }
 `;

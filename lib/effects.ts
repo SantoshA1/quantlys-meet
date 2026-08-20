@@ -40,11 +40,19 @@
  *  and it reads as a filter again. */
 export const BLUR_PX = 24;
 
-/** A virtual background still blurs the ORIGINAL room slightly before the
- *  image is painted over it, so a mask that misses a sliver of the real room
- *  leaks an out-of-focus smear instead of a readable window. Defence in
- *  depth for the same privacy promise. */
-export const IMAGE_UNDERBLUR_PX = 18;
+/** RETIRED 2026-08-20, and kept named so the mistake is not repeated.
+ *
+ *  This was "a virtual background blurs the ORIGINAL room slightly before the
+ *  image is painted over it, so a missed sliver leaks a smear rather than a
+ *  window." It sounded like defence in depth. What it actually did was fill
+ *  every transparent pixel with the blurred room, leaving the `destination-over`
+ *  that painted the chosen backdrop with nothing to paint — so the backdrop
+ *  was discarded and every image effect rendered as plain blur. Four
+ *  backdrops that "showed the same without any change".
+ *
+ *  A backdrop that covers the whole background IS the privacy measure. There
+ *  is nothing for a second layer to add, and it cost the feature. */
+export const IMAGE_UNDERBLUR_PX = 0;
 
 /** Blur applied to the MASK itself, which is what turns a decision boundary
  *  into an edge an eye accepts. Scaled to the output, because a fixed pixel
@@ -300,4 +308,138 @@ export function edgeMean(mask: ArrayLike<number>, w: number, h: number): number 
   ].map((b) => boxMean(mask, w, h, b, 16)).filter((v) => Number.isFinite(v));
   if (!strips.length) return NaN;
   return strips.reduce((a, b) => a + b, 0) / strips.length;
+}
+
+// ── the halo, and the backdrop that never arrived ─────────────────────────
+//
+// FIELD 2026-08-20, third report: "blur is not effective around the edges of
+// the people" and "Nebula, Gridline, Dusk, Boardroom are showing same without
+// any change." Two more faults, both mine, both proven in pixels before this
+// was written.
+//
+// THE BACKDROP THAT NEVER ARRIVED. The image path painted the real room
+// blurred FIRST ("defence in depth, so a sliver the mask misses leaks a
+// smear") and then drew the chosen backdrop with `destination-over`. But the
+// blurred room had already filled every transparent pixel — destination-over
+// had nothing left to paint. The backdrop was composited behind an opaque
+// layer, i.e. thrown away, and every image effect rendered as plain blur.
+// That is exactly "showing same without any change". The under-blur is
+// deleted: a backdrop that covers the whole background IS the privacy
+// measure, and a sliver the mask misses now shows the backdrop.
+//
+// THE HALO. MediaPipe's selfie mask is generous — it keeps a rim of real
+// room around the person, a few pixels of shoulder-shaped wallpaper. Feather
+// that rim and it is still SHARP background, drawn at full strength right
+// where the eye is looking. So the silhouette is pulled IN before it is
+// feathered: erode first, then soften. A person cropped a hair tight reads
+// as depth of field; a sharp outline of their room reads as a cut-out.
+
+/** How far to pull the silhouette inside the mask's own edge, in output
+ *  pixels at that height. ~0.8% — 6px at 720p — which is about the width of
+ *  the rim the selfie model habitually leaves. More than this starts eating
+ *  fingers and the tips of hair. */
+export function erodePx(outputHeight: number): number {
+  const h = Number(outputHeight) || 0;
+  if (h <= 0) return 3;
+  return Math.max(2, Math.min(12, Math.round(h * 0.008)));
+}
+
+/** The mask is blurred ONCE, by enough to carry both jobs: the erosion needs
+ *  a soft ramp to bite on, and the feather is what is left over after the
+ *  ramp's midpoint has been pushed inward. */
+export function maskBlurPx(outputHeight: number): number {
+  return featherPx(outputHeight) + erodePx(outputHeight);
+}
+
+/** Erosion is done by raising the blurred mask's alpha to a power: a soft
+ *  ramp raised to n has its half-way point moved toward the opaque side, and
+ *  a canvas can do it in n-1 self-composites with `source-in`. Guarded here
+ *  because "shrink the silhouette" is a claim about a curve, and a curve can
+ *  be checked without a camera. */
+export const ERODE_POWER = 3;
+
+export function alphaAfterGamma(alpha: number, power: number = ERODE_POWER): number {
+  const raw = Number(alpha);
+  // Math.min(1, NaN) is NaN and Math.max(0, NaN) is NaN — a clamp does NOT
+  // launder a NaN. A NaN alpha paints nothing and leaves no trace to debug,
+  // so it is turned into "fully transparent" here, explicitly.
+  const a = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;
+  const n = Math.max(1, Math.round(Number(power) || 1));
+  return Math.pow(a, n);
+}
+
+/** Where the silhouette's edge ends up: the alpha that USED to be the 50%
+ *  line is now somewhere lower, so the boundary sits further inside the
+ *  person. Returns the alpha that now reads as the edge — strictly greater
+ *  than 0.5 for any power above 1, which is the whole point. */
+export function edgeAlphaAfterErode(power: number = ERODE_POWER): number {
+  return Math.pow(0.5, 1 / Math.max(1, Math.round(Number(power) || 1)));
+}
+
+/** The composite pipeline, named once so both the renderer and the guards
+ *  agree on it. Normalising the mask to ALWAYS mean "the person" removes the
+ *  polarity branch from the paint path — it is decided once, when the mask
+ *  is built, instead of at every composite where it can be got wrong. */
+export function needsInvert(p: Polarity): boolean {
+  return p === "background";
+}
+
+// ── the three tweaks asked for alongside the backdrops ───────────────────
+
+/** THE DEFAULT BACKGROUND. Somebody who has never chosen gets plain video.
+ *
+ *  Not blur — and this is a deliberate refusal of the "privacy-safe default"
+ *  argument. Blur costs a segmentation model on every frame of every meeting
+ *  for every person, including the ones on a four-year-old laptop who would
+ *  experience it as "this app is slow" rather than as a feature; and a person
+ *  who has not asked to be hidden has not asked to be hidden. The choice is
+ *  one click away and it is REMEMBERED, which is the part that actually
+ *  matters. */
+export const DEFAULT_EFFECT_ID = "none";
+
+/** CONNECTION QUALITY. Effects are the most expensive thing in the room, and
+ *  a machine that is struggling shows it as dropped frames — which people
+ *  read as "the call is bad", never as "my background is costing me". So say
+ *  it, once, and offer the one-tap fix.
+ *
+ *  Only when an effect is actually ON: telling somebody on plain video that
+ *  their connection is poor is the connection banner's job, not this one.
+ *  And never for a blip — `poorFor` is how long it has been bad, so a single
+ *  bad reading cannot nag somebody mid-sentence. */
+export const QUALITY_NAG_MS = 12_000;
+
+export function effectCostNote(s: {
+  quality: string;
+  effectOn: boolean;
+  poorForMs: number;
+}): string {
+  const q = String(s.quality || "").toLowerCase();
+  if (!s.effectOn) return "";
+  if (!(q === "poor" || q === "lost")) return "";
+  if ((Number(s.poorForMs) || 0) < QUALITY_NAG_MS) return "";
+  return "Your picture is struggling. Backgrounds are the most expensive thing your computer is doing right now — turning yours off usually clears it up straight away.";
+}
+
+/** SETTINGS PANEL STATE. The panel is where somebody goes to fix a problem,
+ *  so it must (a) close on Escape like every other panel on the web, (b)
+ *  close when they click away, and (c) STAY OPEN while they try backgrounds,
+ *  because choosing a backdrop is a comparison and a panel that closes on
+ *  each pick makes comparing impossible.
+ *
+ *  Pure so the "does this click close it" question has one answer with one
+ *  guard, rather than three event handlers each with an opinion. */
+export function panelShouldClose(ev: {
+  reason: "escape" | "outside" | "pick" | "toggle" | "close-button";
+}): boolean {
+  switch (ev?.reason) {
+    case "escape":
+    case "outside":
+    case "toggle":
+    case "close-button":
+      return true;
+    case "pick":
+      return false;   // comparing backdrops is the whole point of the shelf
+    default:
+      return false;
+  }
 }
