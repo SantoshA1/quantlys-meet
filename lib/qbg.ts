@@ -31,6 +31,7 @@ import type { ImageSegmenter } from "@mediapipe/tasks-vision";
 import {
   BLUR_PX, IMAGE_UNDERBLUR_PX, featherPx, shouldSegment, blendMask,
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
+  CENTER_BOX, maskPolarity, keepComposite, boxMean, edgeMean, type Polarity,
 } from "./effects";
 
 export type QbgOptions = {
@@ -56,6 +57,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private smallCtx?: OffscreenCanvasRenderingContext2D | null;
   private lastSegAt = 0;
   private haveMask = false;
+  /** Which class the mask paints opaque. MEASURED, never assumed — see the
+   *  post-mortem above maskPolarity() in lib/effects.ts. */
+  private polarity: Polarity | null = null;
 
   constructor(opts: QbgOptions) {
     super();
@@ -191,6 +195,17 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         for (let i = 0, j = 3; i < sm.length; i++, j += 4) px[j] = sm[i];
         this.maskCtx!.putImageData(this.maskImage!, 0, 0);
         this.haveMask = true;
+
+        // Which half of this mask is the person? Measured off the mask
+        // itself every time one lands, with the standing answer kept when a
+        // frame is too ambiguous to overrule it. This is the fix for "the
+        // blur is applying on people instead of background": the convention
+        // is not written down anywhere, so we do not assume it.
+        this.polarity = maskPolarity({
+          centerMean: boxMean(sm, mw, mh, CENTER_BOX),
+          edgeMean: edgeMean(sm, mw, mh),
+          last: this.polarity,
+        });
         try { cat.close(); } catch { /* some builds auto-close */ }
       });
     } catch {
@@ -213,8 +228,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     ctx.drawImage(this.maskCanvas as any, 0, 0, W, H);
     ctx.filter = "none";
 
-    // 2. the person, punched out of the live frame by that silhouette
-    ctx.globalCompositeOperation = "source-in";
+    // 2. the person, punched out of the live frame by that silhouette.
+    //    WHICH composite depends on what the mask means, and the mask does
+    //    not say — so we use the measured answer. Hardcoding the wrong one
+    //    here is precisely what blurred a person and sharpened their room.
+    ctx.globalCompositeOperation = keepComposite(this.polarity || "background");
     ctx.drawImage(frame as any, 0, 0, W, H);
 
     // 3. the background, painted behind them

@@ -202,3 +202,102 @@ export function effectIdOfProcessor(name?: string | null): string {
   const n = String(name || "");
   return n.startsWith(PROC_PREFIX) ? n.slice(PROC_PREFIX.length) : "";
 }
+
+// ── which half of the mask is the person? ─────────────────────────────────
+//
+// FIELD 2026-08-20, second report, with a screenshot: "blur is applying on
+// people instead of background." Dead right — the person was smeared and the
+// living room behind them was pin sharp.
+//
+// The cause is one word. The segmentation mask marks one class opaque and
+// the other transparent, and NOTHING IN THE API SAYS WHICH. MediaPipe's
+// selfie segmenter marks the BACKGROUND; I composited with `source-in`
+// (keep the picture where the mask is opaque), which keeps the background
+// sharp and blurs the person. Exactly inverted.
+//
+// The fix is not to hardcode the other word. A convention that is not
+// written down anywhere is a convention that changes between model versions,
+// and the failure is silent, ugly, and lands in front of a customer. So the
+// pipeline MEASURES the polarity instead of assuming it: on a webcam, the
+// person is in the middle of the frame and the room is at the edges. Whichever
+// region the mask calls opaque tells us what the mask means.
+//
+// This is strictly better than knowing the right answer, because it is still
+// right when the answer changes.
+
+/** Where a person sits in a webcam frame. Deliberately generous vertically —
+ *  heads are high in frame — and narrow horizontally, because the sides are
+ *  the most reliably "room" part of any tile. */
+export const CENTER_BOX = { x: 0.32, y: 0.15, w: 0.36, h: 0.7 };
+
+/** How much brighter the centre must be than the edges before we believe it.
+ *  Below this the frame is ambiguous (an extreme close-up fills everything;
+ *  an empty chair fills nothing) and the last confident answer is kept. */
+export const POLARITY_MARGIN = 12;
+
+export type Polarity = "person" | "background";
+
+/** Which class the mask paints OPAQUE. `last` is the standing answer, kept
+ *  whenever this frame is not clear enough to overrule it — a polarity that
+ *  flickers frame to frame would strobe far worse than the bug it fixes. */
+export function maskPolarity(s: {
+  centerMean: number;
+  edgeMean: number;
+  last?: Polarity | null;
+}): Polarity {
+  const c = Number(s.centerMean), e = Number(s.edgeMean);
+  const fallback: Polarity = s.last || "background";   // MediaPipe's own convention, today
+  if (!Number.isFinite(c) || !Number.isFinite(e)) return fallback;
+  if (Math.abs(c - e) < POLARITY_MARGIN) return fallback;
+  return c > e ? "person" : "background";
+}
+
+/** The composite that KEEPS THE PERSON SHARP, given what the mask means.
+ *
+ *  · mask opaque on the person  → keep the picture where the mask IS
+ *  · mask opaque on the room    → keep the picture where the mask IS NOT
+ *
+ *  Getting this backwards blurs the person and sharpens their living room,
+ *  which is what shipped and what this pair of functions exists to prevent. */
+export function keepComposite(p: Polarity): "source-in" | "source-out" {
+  return p === "person" ? "source-in" : "source-out";
+}
+
+/** Mean mask value inside a box, sampled on a grid rather than per pixel —
+ *  this runs on every fresh mask and a full scan of 384×216 would undo the
+ *  cost savings the cadence just bought. 24×24 samples is ±2 on a real mask. */
+export function boxMean(
+  mask: ArrayLike<number>, w: number, h: number,
+  box: { x: number; y: number; w: number; h: number },
+  samples = 24,
+): number {
+  const W = Number(w) || 0, H = Number(h) || 0;
+  if (!mask || !W || !H) return NaN;
+  const x0 = Math.max(0, Math.floor(box.x * W)), y0 = Math.max(0, Math.floor(box.y * H));
+  const x1 = Math.min(W, Math.ceil((box.x + box.w) * W)), y1 = Math.min(H, Math.ceil((box.y + box.h) * H));
+  if (x1 <= x0 || y1 <= y0) return NaN;
+  let sum = 0, n = 0;
+  for (let i = 0; i < samples; i++) {
+    const y = y0 + Math.floor(((i + 0.5) / samples) * (y1 - y0));
+    for (let j = 0; j < samples; j++) {
+      const x = x0 + Math.floor(((j + 0.5) / samples) * (x1 - x0));
+      const v = mask[y * W + x];
+      if (v != null) { sum += v; n++; }
+    }
+  }
+  return n ? sum / n : NaN;
+}
+
+/** Mean of the four edge strips — the part of a webcam frame most reliably
+ *  NOT the person. Averaged as one number so a person leaning to one side
+ *  cannot swing the verdict. */
+export function edgeMean(mask: ArrayLike<number>, w: number, h: number): number {
+  const strips = [
+    { x: 0, y: 0, w: 1, h: 0.12 },        // top
+    { x: 0, y: 0.88, w: 1, h: 0.12 },     // bottom
+    { x: 0, y: 0, w: 0.1, h: 1 },         // left
+    { x: 0.9, y: 0, w: 0.1, h: 1 },       // right
+  ].map((b) => boxMean(mask, w, h, b, 16)).filter((v) => Number.isFinite(v));
+  if (!strips.length) return NaN;
+  return strips.reduce((a, b) => a + b, 0) / strips.length;
+}
