@@ -17,7 +17,7 @@ import {
   useTracks,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { Track, AudioPresets, VideoPresets } from "livekit-client";
+import { Track, AudioPresets, VideoPresets, RoomEvent } from "livekit-client";
 import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
 import { connectionAdvice } from "@/lib/media";
@@ -450,6 +450,7 @@ export default function Conference({ room }: { room: string }) {
         className="qmr-lk"
       >
         <RoomHeader room={room} title={meetingName} camWanted={choice.camOn} micWanted={choice.micOn} />
+        <PlaybackGate />
         {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
         <div className="qmr-conf">
           <VideoConference />
@@ -458,6 +459,71 @@ export default function Conference({ room }: { room: string }) {
         <Reactions />
       </LiveKitRoom>
     </div>
+  );
+}
+
+/** The other half of "nobody could hear me".
+ *
+ *  FIELD 2026-08-24. Everything else in this app watches what LEAVES the
+ *  machine. This watches whether anything is ARRIVING, because a browser is
+ *  allowed to refuse to play it.
+ *
+ *  Chrome and Edge block autoplay on a site the person has not built up a
+ *  media-engagement score with — a brand-new meeting domain is exactly that,
+ *  and a Windows work profile that has never been to quantlys-meeting.com
+ *  before is the textbook case. LiveKit knows: it sets `room.canPlaybackAudio`
+ *  to false and fires the event below. `<VideoConference/>` renders
+ *  RoomAudioRenderer but NOT `<StartAudio/>` (checked against
+ *  @livekit/components-react 2.6.2), so there was nothing on the page that
+ *  could unblock it. The person heard silence, assumed the speaker they
+ *  chose was wrong, and left and rejoined — and rejoining sometimes works,
+ *  because by then the click on "Join" counts as the gesture.
+ *
+ *  It is one click, and it must be impossible to miss. */
+function PlaybackGate() {
+  const room = useRoomContext();
+  const [blocked, setBlocked] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!room) return;
+    const read = () => setBlocked(room.canPlaybackAudio === false || room.canPlaybackVideo === false);
+    read();
+    room.on(RoomEvent.AudioPlaybackStatusChanged, read);
+    room.on(RoomEvent.VideoPlaybackStatusChanged, read);
+    // Some blocks only become visible once somebody else publishes, so ask
+    // again when the room changes shape rather than only at mount.
+    room.on(RoomEvent.TrackSubscribed, read);
+    room.on(RoomEvent.ParticipantConnected, read);
+    return () => {
+      room.off(RoomEvent.AudioPlaybackStatusChanged, read);
+      room.off(RoomEvent.VideoPlaybackStatusChanged, read);
+      room.off(RoomEvent.TrackSubscribed, read);
+      room.off(RoomEvent.ParticipantConnected, read);
+    };
+  }, [room]);
+
+  if (!blocked) return null;
+  return (
+    <button
+      className="qmr-playgate"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        // Both, always. A browser that blocked one has usually blocked the
+        // other, and a person who clicks once should not have to find out
+        // there was a second permission underneath.
+        try { await room.startAudio(); } catch { /* the button stays until it works */ }
+        try { await room.startVideo(); } catch { /* same */ }
+        setBusy(false);
+      }}
+    >
+      <b>Click to hear and see the meeting</b>
+      <span>
+        Your browser blocked the meeting&apos;s sound and picture until you click once.
+        Nobody is missing — this is Chrome and Edge asking permission, and one click fixes it for good.
+      </span>
+    </button>
   );
 }
 
@@ -2052,6 +2118,16 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 
 
 const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + `
+/* The playback gate. Impossible to miss on purpose: a person who cannot hear
+   the meeting is thirty seconds from leaving it. */
+.qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:80;
+  width:min(560px, calc(100% - 24px)); display:flex; flex-direction:column; gap:4px; text-align:left;
+  font:inherit; cursor:pointer; background:#0d2a2a; border:1px solid #00a99d; color:#c8f5f0;
+  border-radius:12px; padding:13px 15px; box-shadow:0 14px 36px rgba(0,0,0,.55); }
+.qmr-playgate b { font-size:14.5px; color:#7fe0d6; }
+.qmr-playgate span { font-size:12.5px; line-height:1.55; }
+.qmr-playgate:hover:not(:disabled) { background:#10393a; }
+.qmr-playgate:disabled { opacity:.6; cursor:default; }
 .qmr-prejoin { min-height: 100vh; display: grid; place-items: center; padding: 20px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }

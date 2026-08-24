@@ -49,6 +49,15 @@ export type CamState = {
   luma: number | null;
   /** how long the picture has been at or below CAM_BLACK, in ms */
   darkMs: number;
+  /** how long the picture has been BYTE-IDENTICAL, in ms — a frozen tile.
+   *  No API reports this either: the track says live, the publication says
+   *  live, and everyone else is looking at a photograph of you. */
+  frozenMs?: number;
+  /** how many times we have already restarted the camera because the picture
+   *  froze. Separate from `attempts` (which counts failures) for the same
+   *  reason the microphone keeps quietFixes: a restart that succeeds and
+   *  freezes again must not restart every twelve seconds all meeting. */
+  freezeFixes?: number;
   /** how many times we have already tried to bring it back */
   attempts: number;
   label?: string;
@@ -63,6 +72,33 @@ export const CAM_BLACK = 6;
  *  survive a light switched off for a moment; short enough that a closed
  *  shutter is named within one exchange of "can you see me?". */
 export const CAM_DARK_MS = 10_000;
+
+/** How long the picture must be byte-for-byte unchanged before we call it
+ *  frozen. A real camera's sensor noise changes SOMETHING in every frame —
+ *  even a person sitting perfectly still in front of a blank wall. Twelve
+ *  seconds of literally identical pixels is not stillness, it is a stopped
+ *  pipeline. Long enough that a paused screen-share or a still webcam pointed
+ *  at a wall in a well-lit room does not trip it inside one sentence. */
+export const CAM_FREEZE_MS = 12_000;
+
+/** A cheap, order-sensitive signature of a sampled frame. Compared against
+ *  the previous one, this is the only way to tell "camera running" from
+ *  "camera track frozen mid-frame" — which is what a stalled background
+ *  processor looks like on a Windows machine with a tired GPU, and what the
+ *  other people in the meeting describe as "his video isn't live". */
+export function frameSignature(rgba: Uint8ClampedArray | number[]): string {
+  const n = rgba?.length || 0;
+  if (n < 4) return "";
+  // Two rolling hashes with different multipliers: one collision in one hash
+  // is plausible, one in both at the same time is not.
+  let a = 2166136261, b = 5381;
+  for (let i = 0; i + 2 < n; i += 4) {
+    const v = (Number(rgba[i]) << 16) | (Number(rgba[i + 1]) << 8) | Number(rgba[i + 2]);
+    a = Math.imul(a ^ v, 16777619) >>> 0;
+    b = ((b * 33) ^ v) >>> 0;
+  }
+  return a.toString(36) + ":" + b.toString(36) + ":" + (n >> 2);
+}
 
 /** Mean brightness of an RGBA pixel buffer, 0..255. Pure, so the thing that
  *  decides "your camera is sending black" can be tested without a camera. */
@@ -116,6 +152,24 @@ export function camVerdict(s: CamState): CamVerdict {
         "Nine times out of ten that is the physical privacy shutter or a lens cover — check the little slider over the lens. " +
         "If there's no shutter, another app may have blanked it; reconnecting can help, or pick a different camera below.",
       action: s.attempts < 1 ? "recover" : "pick",
+    };
+  }
+  // FIELD 2026-08-24: "windows desktop missing live video". Not black, not
+  // ended, not muted — the track claimed live and the picture never moved
+  // again. Everyone else sees a photograph and assumes the person has stepped
+  // away. The commonest cause on Windows is the background-effect pipeline
+  // (MediaStreamTrackGenerator) stalling, which is why the recovery for this
+  // one takes the effect off before it takes the camera off and on.
+  if ((s.frozenMs || 0) >= CAM_FREEZE_MS) {
+    return {
+      level: "warn",
+      title: "Your picture has stopped moving",
+      detail:
+        `${s.label || "Your camera"} is still on, but the picture leaving it has not changed for ` +
+        `${Math.round((s.frozenMs || 0) / 1000)} seconds — everyone else is looking at a still frame of you. ` +
+        "This is usually the background effect stalling on Windows. Restarting the picture now; " +
+        "if it happens again, turn the background off or pick a different camera below.",
+      action: (s.freezeFixes || 0) < 1 ? "recover" : "pick",
     };
   }
   return { level: "ok", title: "Camera working", detail: "", action: "none" };

@@ -36,7 +36,7 @@ import {
   audioConstraints, type Device, type Verdict,
 } from "@/lib/media";
 import {
-  camVerdict, lumaFrom, blameKind, joinErrorText, CAM_BLACK,
+  camVerdict, lumaFrom, frameSignature, blameKind, joinErrorText, CAM_BLACK,
   EFFECTS, restoreEffect, effectSupport, processorFor, effectSrc, customReady, type Effect,
   camRetryDelay, camShouldKeepTrying, type CamVerdict,
 } from "@/lib/camera";
@@ -45,6 +45,9 @@ import {
   DEFAULT_EFFECT_ID, effectCostNote, panelShouldClose,
 } from "@/lib/effects";
 import { acceptCustom, CUSTOM_ID } from "@/lib/backgrounds";
+import {
+  dueForRetry, isStuck, shouldReattach, withTimeout, RECOVER_TIMEOUT_MS,
+} from "@/lib/recovery";
 
 const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect", custom: "qm.bg.custom" };
 const save = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch {} };
@@ -81,13 +84,32 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const raf = useRef<number | null>(null);
   const wired = useRef<MediaStreamTrack | null>(null);
   const recovering = useRef(false);
+  // When the current recovery STARTED. `recovering` alone could never be
+  // cleared if the call it guards never settled — which is exactly how one
+  // hung setMicrophoneEnabled silenced somebody for a whole meeting.
+  const recoverStart = useRef(0);
+  const lastTry = useRef(0);
+  /** silence-triggered restarts. Separate from `attempts` (failures) so a
+   *  restart that succeeds and is STILL silent stops instead of blipping the
+   *  microphone every twenty seconds for the rest of the call. */
+  const quietFixes = useRef(0);
+  const everMic = useRef(false);
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const poorSince = useRef(0);
   const camAttempts = useRef(0);
   const camRecovering = useRef(false);
+  const camRecoverStart = useRef(0);
+  const camLastTry = useRef(0);
   const camDarkSince = useRef(0);
+  const camSig = useRef("");
+  const camFrozenSince = useRef(0);
+  const freezeFixes = useRef(0);
+  /** the picture froze twice: the background effect is the suspect, and after
+   *  the second time we take it off and SAY we took it off, rather than
+   *  restarting the camera into the same stall for the rest of the meeting. */
+  const effectDisabled = useRef(false);
   const everCam = useRef(false);
   const effectRef = useRef<Effect>(EFFECTS[0]);
   // Mirrors of the two values the camera watcher needs but must not DEPEND
@@ -112,6 +134,13 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const camLabel = cmst?.label || "";
   const camSay = camLabel ? deviceLabel({ label: camLabel, deviceId: "", kind: "videoinput" }) : "";
   if (cmst) everCam.current = true;
+  if (mst) everMic.current = true;
+
+  // The supervisor below runs on a timer, not on renders, so it reads the
+  // live objects through a ref rather than through a stale closure. A watcher
+  // rebuilt on every render is a watcher that loses its own history.
+  const live = useRef({ pub, micTrack, mst, micSay, camPub, camLkTrack, cmst, camSay });
+  live.current = { pub, micTrack, mst, micSay, camPub, camLkTrack, cmst, camSay };
 
   const refreshDevices = useCallback(async () => {
     try {
@@ -127,64 +156,147 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   useEffect(() => { refreshDevices(); }, [refreshDevices]);
 
   // ── bring a dead microphone back ────────────────────────────────────────
+  //
+  // FIELD 2026-08-24. The old version of this function turned the microphone
+  // off and on again, which sounds like the right medicine and — for the
+  // commonest Bluetooth failure of all — does NOTHING. livekit-client's
+  // `setMicrophoneEnabled(false)` MUTES the publication; `(true)` unmutes it,
+  // and unmute only re-acquires the device when the track has actually ENDED
+  // (or when stopMicTrackOnMute is on, and we deliberately keep it off). A
+  // headset that switched to A2DP hands us a track that is still `live` and
+  // still `unmuted` and produces silence for ever — so off-and-on unmuted the
+  // same corpse and everybody carried on hearing nothing.
+  //
+  // `restartTrack` is the one that actually asks the operating system for a
+  // fresh microphone and swaps it into the sender. That is what a rejoin was
+  // doing for them, and it is what this does now, without the rejoin.
   const recover = useCallback(async () => {
-    if (recovering.current || !room) return;
+    if (recovering.current && !isStuck(recoverStart.current, Date.now())) return;
+    if (!room) return;
     recovering.current = true;
+    recoverStart.current = Date.now();
+    lastTry.current = Date.now();
     const n = attempts.current;
     try {
       const wanted = load(SAVED.mic);
-      // Turning it off and on again is not a joke here: it forces LiveKit to
-      // drop the dead MediaStreamTrack and ask the OS for a live one. Without
-      // it, the publication keeps its corpse and everyone keeps hearing
-      // nothing.
-      await localParticipant.setMicrophoneEnabled(false);
-      await new Promise((r) => setTimeout(r, 120));
-      await localParticipant.setMicrophoneEnabled(true, audioConstraints(wanted) as any);
+      const track: any = localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
+      let done: any = false;
+      if (track?.restartTrack) {
+        done = await withTimeout(track.restartTrack(audioConstraints(wanted) as any));
+        // A muted publication stays muted through a restart, which would
+        // leave somebody silent after a "fix" that reported success.
+        if (done !== false && localParticipant.getTrackPublication(Track.Source.Microphone)?.isMuted === false) {
+          /* already live */
+        }
+      }
+      if (done === false) {
+        // No track at all, or the restart timed out / was refused: fall back
+        // to the full publish. Every call has a deadline — a supervisor that
+        // can hang is not a supervisor.
+        await withTimeout(localParticipant.setMicrophoneEnabled(false) as any, RECOVER_TIMEOUT_MS);
+        await new Promise((r) => setTimeout(r, 120));
+        const back = await withTimeout(
+          localParticipant.setMicrophoneEnabled(true, audioConstraints(wanted) as any) as any,
+          RECOVER_TIMEOUT_MS
+        );
+        if (back === false) throw new Error("The microphone did not come back in time.");
+      }
       lastSound.current = Date.now();
       peak.current = 0;
       attempts.current = 0;
+      setMediaErr("");
     } catch (e) {
       attempts.current = n + 1;
       setMediaErr(describeMediaError(e, "audioinput").what);
-      const wait = retryDelay(attempts.current);
-      if (shouldKeepTrying(attempts.current)) setTimeout(() => { recovering.current = false; recover(); }, wait);
+      // No self-scheduled retry any more. The supervisor below owns the
+      // clock, and unlike this ladder it never runs out of patience —
+      // giving up after three tries is what made rejoining the only cure.
     } finally {
-      setTimeout(() => { recovering.current = false; }, 300);
+      recovering.current = false;
+      recoverStart.current = 0;
     }
   }, [room, localParticipant]);
 
   // ── bring a dead camera back — the same medicine, other organ ───────────
-  const recoverCam = useCallback(async () => {
-    if (camRecovering.current || !room) return;
+  //
+  // `frozen` says the picture stopped moving rather than stopped arriving.
+  // That one is nearly always the background-effect pipeline stalling on a
+  // Windows machine, so the effect comes OFF first — restarting the camera
+  // straight back into the same stalled processor is how a black tile becomes
+  // a black tile again four seconds later.
+  const recoverCam = useCallback(async (frozen = false) => {
+    if (camRecovering.current && !isStuck(camRecoverStart.current, Date.now())) return;
+    if (!room) return;
     camRecovering.current = true;
+    camRecoverStart.current = Date.now();
+    camLastTry.current = Date.now();
     const n = camAttempts.current;
     try {
       const wanted = load(SAVED.cam);
-      await localParticipant.setCameraEnabled(false);
-      await new Promise((r) => setTimeout(r, 150));
-      // `ideal`, never `exact`: if the remembered camera vanished, take the
-      // next one and stay visible rather than throwing OverconstrainedError.
-      await localParticipant.setCameraEnabled(
-        true,
-        wanted && wanted !== "default" ? ({ deviceId: { ideal: wanted } } as any) : undefined
-      );
+      const track: any = localParticipant.getTrackPublication(Track.Source.Camera)?.track;
+
+      if (frozen && track?.processor) {
+        // The effect is the prime suspect and this file already has a rule
+        // for suspects: being SEEN beats being seen in front of a nicer wall.
+        // So it comes off for the rest of the meeting, on the FIRST freeze,
+        // and the person is told — a silent degrade and a silent death look
+        // identical from the other side of the call. Restarting the camera
+        // back into the same stalled processor would just freeze it again in
+        // twelve seconds, and the verdict for a second freeze is "pick a
+        // camera", which never calls back in here.
+        try { await withTimeout(track.stopProcessor()); } catch { /* raw video is what we want anyway */ }
+        effectDisabled.current = true;
+        effectRef.current = EFFECTS[0];
+        setFx("none");
+        save(SAVED.effect, "");
+        setFxNote(
+          "Your background effect froze the picture on this computer, so it has been turned off for the " +
+          "rest of this meeting. Your plain video is being sent — everyone can see you moving again."
+        );
+      }
+
+      let done: any = false;
+      if (track?.restartTrack) {
+        done = await withTimeout(
+          track.restartTrack(
+            wanted && wanted !== "default" ? ({ deviceId: { ideal: wanted } } as any) : undefined
+          )
+        );
+      }
+      if (done === false) {
+        await withTimeout(localParticipant.setCameraEnabled(false) as any, RECOVER_TIMEOUT_MS);
+        await new Promise((r) => setTimeout(r, 150));
+        // `ideal`, never `exact`: if the remembered camera vanished, take the
+        // next one and stay visible rather than throwing OverconstrainedError.
+        const back = await withTimeout(
+          localParticipant.setCameraEnabled(
+            true,
+            wanted && wanted !== "default" ? ({ deviceId: { ideal: wanted } } as any) : undefined
+          ) as any,
+          RECOVER_TIMEOUT_MS
+        );
+        if (back === false) throw new Error("The camera did not come back in time.");
+      }
       camDarkSince.current = 0;
+      camFrozenSince.current = 0;
+      camSig.current = "";
       camAttempts.current = 0;
+      if (frozen) freezeFixes.current += 1;
+      setMediaErr("");
     } catch (e) {
       camAttempts.current = n + 1;
       setMediaErr(describeMediaError(e, "videoinput").what);
-      const wait = camRetryDelay(camAttempts.current);
-      if (camShouldKeepTrying(camAttempts.current)) {
-        setTimeout(() => { camRecovering.current = false; recoverCam(); }, wait);
-      }
+      // The supervisor owns the clock — see recover() above for why this no
+      // longer schedules its own last retry and then stops for ever.
     } finally {
-      setTimeout(() => { camRecovering.current = false; }, 400);
+      camRecovering.current = false;
+      camRecoverStart.current = 0;
     }
   }, [room, localParticipant]);
 
-  // ── measure the published mic track, continuously ───────────────────────
+  // ── the meter, which is the only part that needs a live track ──────────
   useEffect(() => {
-    if (!mst) return;
+    if (!mst) { setLevel(0); return; }
     if (wired.current === mst) return;
     wired.current = mst;
     lastSound.current = Date.now();
@@ -203,39 +315,29 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       analyser.fftSize = 1024;
       src.connect(analyser);
       buf = new Uint8Array(analyser.fftSize);
-    } catch { /* without a meter we still have the track events below */ }
+    } catch { /* without a meter we still have the track events and the supervisor */ }
 
     const tick = () => {
       if (dead) return;
-      let l = 0;
       if (analyser && buf) {
         analyser.getByteTimeDomainData(buf);
-        l = levelFrom(buf);
+        const l = levelFrom(buf);
         setLevel(l);
-        if (l > 0.015) { lastSound.current = Date.now(); peak.current = l; }
-        else peak.current = Math.max(0, peak.current * 0.97);
+        if (l > 0.015) {
+          lastSound.current = Date.now();
+          peak.current = l;
+          // Real sound is the only proof a restart worked. Until it arrives,
+          // the app has not earned another silence-triggered restart.
+          quietFixes.current = 0;
+        } else {
+          peak.current = Math.max(0, peak.current * 0.97);
+        }
       }
-      const v = micVerdict({
-        mutedByUser: Boolean(pub?.isMuted),
-        // readyState 'ended' is the device going away. `muted` on a
-        // MediaStreamTrack is NOT the user's mute button — it means the source
-        // stopped producing, which is precisely what a Bluetooth profile
-        // switch does.
-        ended: mst.readyState === "ended",
-        mutedBySystem: mst.muted === true,
-        quietMs: Date.now() - lastSound.current,
-        peak: peak.current,
-        publishing: Boolean(pub && micTrack),
-        attempts: attempts.current,
-        label: micSay,
-      });
-      setVerdict(v);
-      if (v.action === "recover" && !recovering.current) recover();
       raf.current = window.setTimeout(tick, 400) as unknown as number;
     };
     tick();
 
-    const onEnded = () => { attempts.current = 0; recover(); };
+    const onEnded = () => { attempts.current = 0; lastTry.current = 0; recover(); };
     mst.addEventListener("ended", onEnded);
     micTrack?.on?.(TrackEvent.Ended, onEnded);
 
@@ -246,7 +348,75 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       micTrack?.off?.(TrackEvent.Ended, onEnded);
       wired.current = null;
     };
-  }, [mst, pub, micTrack, micSay, recover]);
+  }, [mst, micTrack, recover]);
+
+  // ── the supervisor, which must run even when there is NO track ─────────
+  //
+  // FIELD 2026-08-24 — this is the one that made rejoining the only cure.
+  // The verdict used to live inside the effect above, and that effect began
+  // with `if (!mst) return`. So the single state the app could never notice
+  // was the state of having no microphone at all: the moment a recovery
+  // unpublished the track, or a Bluetooth headset took the device away
+  // outright, the watcher unmounted itself and nothing ever looked again.
+  // "No microphone is being sent" — the loudest verdict in lib/media.ts — was
+  // unreachable code. People sat there un-muted and inaudible until they left
+  // the meeting and came back, because coming back is what re-created the
+  // watcher.
+  //
+  // It runs on its own clock now, for as long as somebody is in the room, and
+  // it never runs out of patience: the fast ladder first because somebody is
+  // mid-sentence, then every fifteen seconds for the rest of the meeting.
+  useEffect(() => {
+    if (!room) return;
+    const tick = () => {
+      const L = live.current;
+      // Somebody who joined without a microphone is not broken, and must
+      // never have one switched on for them.
+      if (!micWanted && !everMic.current) return;
+
+      const m = L.mst;
+      const v = micVerdict({
+        mutedByUser: Boolean(L.pub?.isMuted),
+        // readyState 'ended' is the device going away. `muted` on a
+        // MediaStreamTrack is NOT the user's mute button — it means the source
+        // stopped producing, which is precisely what a Bluetooth profile
+        // switch does.
+        ended: m ? m.readyState === "ended" : false,
+        mutedBySystem: m ? m.muted === true : false,
+        quietMs: Date.now() - lastSound.current,
+        peak: peak.current,
+        publishing: Boolean(L.pub && L.micTrack && m),
+        attempts: attempts.current,
+        quietFixes: quietFixes.current,
+        label: L.micSay,
+      });
+      setVerdict(v);
+
+      // A `warn` is "we cannot hear anything" — worth one restart and then a
+      // question. A `dead` is "nothing is leaving this machine" — worth
+      // trying for ever, which is the difference between a blip and the rest
+      // of the meeting. The banner can say "choose a microphone" while the
+      // app quietly keeps trying; both of those are true at once.
+      const wantsFix = v.action === "recover" || v.level === "dead";
+      if (!wantsFix) return;
+      if (!dueForRetry({
+        wantOn: !L.pub?.isMuted,
+        inFlight: recovering.current && !isStuck(recoverStart.current, Date.now()),
+        attempts: attempts.current,
+        sinceMs: Date.now() - lastTry.current,
+        fast: retryDelay,
+      })) return;
+
+      // Count the silence-driven restarts separately, so one that succeeds
+      // and is still silent hands over to the person instead of blipping the
+      // microphone every twenty seconds until the meeting ends.
+      if (v.level === "warn") quietFixes.current += 1;
+      recover();
+    };
+    tick();
+    const iv = window.setInterval(tick, 500);
+    return () => window.clearInterval(iv);
+  }, [room, micWanted, recover]);
 
   // ── apply, remove, restore background effects ──────────────────────────
   const applyEffect = useCallback(async (effect: Effect, silent = false) => {
@@ -354,7 +524,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // it. shouldApplyEffect is pure and guarded, because a loop that only
     // reproduces on real hardware is a loop that ships.
     if (
-      cmst && camLkTrack &&
+      cmst && camLkTrack && !effectDisabled.current &&
       shouldApplyEffect({
         wantedId: effectRef.current.id,
         liveId: effectIdOfProcessor(camLkTrack.processor?.name),
@@ -386,24 +556,38 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       } catch { /* verdicts still work from track events */ }
     }
 
-    const readLuma = (): number | null => {
+    // One read, two questions: how bright is the picture (a closed shutter),
+    // and is it the SAME picture as last time (a stopped pipeline). A frozen
+    // tile is the thing the room describes as "his video isn\'t live", and no
+    // API anywhere reports it — only the pixels do.
+    const readFrame = (): { luma: number; sig: string } | null => {
       const v = sampleVid.current, c = sampleCvs.current;
       if (!cmst || !v || !c || v.readyState < 2) return null;
       try {
         const g = c.getContext("2d", { willReadFrequently: true });
         if (!g) return null;
         g.drawImage(v, 0, 0, c.width, c.height);
-        return lumaFrom(g.getImageData(0, 0, c.width, c.height).data);
+        const px = g.getImageData(0, 0, c.width, c.height).data;
+        return { luma: lumaFrom(px), sig: frameSignature(px) };
       } catch { return null; }
     };
 
     const tick = () => {
-      const luma = readLuma();
+      const frame = readFrame();
+      const luma = frame ? frame.luma : null;
       const now = Date.now();
       if (luma !== null && luma <= CAM_BLACK) {
         if (!camDarkSince.current) camDarkSince.current = now;
       } else if (luma !== null) {
         camDarkSince.current = 0;
+      }
+      if (frame) {
+        if (frame.sig && frame.sig === camSig.current) {
+          if (!camFrozenSince.current) camFrozenSince.current = now;
+        } else {
+          camFrozenSince.current = 0;
+          camSig.current = frame.sig;
+        }
       }
       const wanted = camWanted || everCam.current;
       const v = camVerdict({
@@ -413,16 +597,34 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         mutedBySystem: cmst?.muted === true,
         luma,
         darkMs: camDarkSince.current ? now - camDarkSince.current : 0,
+        frozenMs: camFrozenSince.current ? now - camFrozenSince.current : 0,
         attempts: camAttempts.current,
+        freezeFixes: freezeFixes.current,
         label: camSay,
       });
       setCamV(v);
-      if (v.action === "recover" && !camRecovering.current) recoverCam();
+
+      // Same rule as the microphone: a `warn` earns one fix, a `dead` earns
+      // an unlimited number of patient ones. The camera used to stop asking
+      // after three failures in seven seconds, which on a Windows machine
+      // that is still letting go of the device is barely an attempt at all.
+      const wantsFix = v.action === "recover" || v.level === "dead";
+      if (!wantsFix) return;
+      if (!dueForRetry({
+        wantOn: wanted && camPub?.isMuted !== true,
+        inFlight: camRecovering.current && !isStuck(camRecoverStart.current, Date.now()),
+        attempts: camAttempts.current,
+        sinceMs: Date.now() - camLastTry.current,
+        fast: camRetryDelay,
+      })) return;
+      // A `warn` while the picture has been identical for a while IS the
+      // freeze case — and that one takes the background effect off first.
+      recoverCam(v.level === "warn" && camFrozenSince.current > 0);
     };
     tick();
     const iv = window.setInterval(tick, 2000);
 
-    const onEnded = () => { camAttempts.current = 0; recoverCam(); };
+    const onEnded = () => { camAttempts.current = 0; camLastTry.current = 0; recoverCam(); };
     cmst?.addEventListener("ended", onEnded);
     camLkTrack?.on?.(TrackEvent.Ended, onEnded);
 
@@ -482,7 +684,31 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       });
       setMediaErr(kind ? describeMediaError(err, kind).what : joinErrorText(err?.name, err?.message));
     };
-    const onDevices = () => { refreshDevices(); };
+    // FIELD 2026-08-24. `ideal` constraints correctly fall back to the laptop
+    // microphone when a headset drops — that is what keeps somebody in the
+    // meeting. But when the headset RECONNECTS a few seconds later, nothing
+    // moved back to it, so the person carried on talking into a headset that
+    // was no longer the device being published. Rejoining fixed it because a
+    // rejoin re-reads the device list. This does that without the rejoin, and
+    // only ever moves BACK to the device they picked themselves.
+    const onDevices = async () => {
+      refreshDevices();
+      try {
+        const all = await navigator.mediaDevices.enumerateDevices();
+        const back = async (kind: "audioinput" | "videoinput", key: string, source: Track.Source) => {
+          const savedId = load(key);
+          const t: any = localParticipant?.getTrackPublication(source)?.track;
+          const activeId = t?.mediaStreamTrack?.getSettings?.().deviceId;
+          const present = all.filter((d) => d.kind === kind).map((d) => d.deviceId);
+          if (!shouldReattach({ savedId, activeId, present })) return;
+          await withTimeout(room.switchActiveDevice(kind, savedId) as any);
+          if (kind === "audioinput") { lastSound.current = Date.now(); quietFixes.current = 0; attempts.current = 0; }
+          else { camAttempts.current = 0; camFrozenSince.current = 0; camSig.current = ""; }
+        };
+        await back("audioinput", SAVED.mic, Track.Source.Microphone);
+        await back("videoinput", SAVED.cam, Track.Source.Camera);
+      } catch { /* the meeting is more important than the device list */ }
+    };
     const onQuality = (q: ConnectionQuality, p: any) => {
       if (p?.identity && p.identity !== localParticipant?.identity) return;
       setQuality(connectionAdvice(String(q)));

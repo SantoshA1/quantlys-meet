@@ -224,6 +224,12 @@ export type MicState = {
   publishing: boolean;
   /** how many times we have already tried to bring it back */
   attempts: number;
+  /** how many times we have already RESTARTED the microphone because it went
+   *  quiet — deliberately separate from `attempts`, which counts failures.
+   *  A restart that succeeds and still produces silence must not be tried
+   *  again every twenty seconds for the rest of the meeting; one attempt,
+   *  then we stop and ask. */
+  quietFixes?: number;
   label?: string;
 };
 
@@ -269,7 +275,16 @@ export function micVerdict(s: MicState): Verdict {
       detail: isBluetooth(s.label || "")
         ? `Nothing has come from ${s.label || "your microphone"} for ${Math.round(s.quietMs / 1000)} seconds. If you've been talking, nobody heard you. Bluetooth headsets often need picking again from the list below.`
         : `Nothing has come from ${s.label || "your microphone"} for ${Math.round(s.quietMs / 1000)} seconds. If you've been talking, nobody heard you — check it isn't muted in hardware, or pick a different one below.`,
-      action: "pick",
+      // FIELD 2026-08-24: this used to be "pick" and nothing else, so the
+      // commonest Bluetooth failure of all — the track survives the HFP
+      // switch but produces silence, so neither `ended` nor `muted` is ever
+      // true — ended with a banner and a person who rejoined the meeting.
+      // Rejoining worked because rejoining restarts the microphone. So do
+      // that FOR them, once, and only fall back to asking when the restart
+      // did not bring the voice back. The camera has done exactly this for
+      // its black-frame case since 2026-08-19; the microphone was the organ
+      // still waiting for the medicine.
+      action: (s.quietFixes || 0) < 1 ? "recover" : "pick",
     };
   }
   return { level: "ok", title: "Microphone working", detail: "", action: "none" };
