@@ -33,6 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   maskBlurPx, ERODE_POWER, needsInvert,
+  confidenceToAlpha, overscanRect, bokehPass,
 } from "./effects";
 
 export type QbgOptions = {
@@ -59,6 +60,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   /** the downscaled copy handed to the segmenter */
   private smallCanvas?: OffscreenCanvas;
   private smallCtx?: OffscreenCanvasRenderingContext2D | null;
+  /** reused Float32 -> alpha scratch, so a 110k-pixel mask is not a fresh
+   *  allocation twenty times a second */
+  private alphaBuf: Uint8ClampedArray | null = null;
+  private blurCanvas?: OffscreenCanvas;
+  private blurCtx?: OffscreenCanvasRenderingContext2D | null;
   private lastSegAt = 0;
   private haveMask = false;
   /** Which class the mask paints opaque. MEASURED, never assumed — see the
@@ -88,8 +94,13 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         delegate: "GPU",
       },
       runningMode: "VIDEO",
+      // BOTH. Confidence is what we want — a Float32 per pixel, which is the
+      // only thing that can draw a strand of hair — and the category mask is
+      // the fallback for a build or a model that does not return one. A
+      // fallback is behaviour, not a comment: paintMasked works either way,
+      // it just looks like 2026-08-20 on the old path.
       outputCategoryMask: true,
-      outputConfidenceMasks: false,
+      outputConfidenceMasks: true,
     });
     if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
   }
@@ -180,10 +191,28 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.lastSegAt = now;
     try {
       this.seg.segmentForVideo(this.smallCanvas as any, now, (res) => {
-        const cat = res?.categoryMask;
-        if (!cat) return;
-        const raw = cat.getAsUint8Array();
-        const mw = cat.width, mh = cat.height;
+        // Confidence first. `getAsFloat32Array` gives 0..1 per pixel, which
+        // goes through the S-curve in effects.ts and lands as alpha with a
+        // real gradient in it. The category mask, which is all this used to
+        // ask for, is 0 or 255 and nothing else — so hair was always either
+        // wholly person or wholly room, and the only way to make that look
+        // soft was a fourteen-pixel feather over the whole silhouette.
+        const conf: any = (res as any)?.confidenceMasks?.[0];
+        const cat: any = res?.categoryMask;
+        const src = conf || cat;
+        if (!src) return;
+        const mw = src.width, mh = src.height;
+
+        let raw: Uint8ClampedArray;
+        if (conf) {
+          const f = conf.getAsFloat32Array();
+          if (!this.alphaBuf || this.alphaBuf.length !== f.length) this.alphaBuf = new Uint8ClampedArray(f.length);
+          const a = this.alphaBuf;
+          for (let i = 0; i < f.length; i++) a[i] = confidenceToAlpha(f[i]);
+          raw = a;
+        } else {
+          raw = cat.getAsUint8Array() as any;
+        }
         this.smooth = blendMask(this.smooth, raw as any) as Uint8ClampedArray;
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
@@ -210,7 +239,8 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
           edgeMean: edgeMean(sm, mw, mh),
           last: this.polarity,
         });
-        try { cat.close(); } catch { /* some builds auto-close */ }
+        try { conf?.close?.(); } catch { /* some builds auto-close */ }
+        try { cat?.close?.(); } catch { /* same */ }
       });
     } catch {
       // A segmenter that throws mid-call must not take the video with it —
@@ -266,6 +296,42 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     return this.silCanvas;
   }
 
+  /** The background blur, drawn once into its own small canvas.
+   *
+   *  TWO FIXES IN ONE PLACE, both visible in the 2026-08-24 screenshot:
+   *
+   *  1. THE DARK FRAME. `filter = blur(24px)` then drawImage at exactly the
+   *     canvas bounds means the Gaussian reaches past the edge for a band as
+   *     wide as its radius and samples transparent black. Every side of the
+   *     picture came out darker — it read as a deliberate vignette and was in
+   *     fact an off-by-a-kernel. The frame is drawn OVERSCANNED now, so the
+   *     kernel always has real pixels under it.
+   *
+   *  2. IT DID NOT LOOK LIKE A LENS. One 24px Gaussian over 921,600 pixels
+   *     every frame is the most expensive thing in the room and smears
+   *     uniformly, where a real defocus pools light. Drawing small, blurring
+   *     there, and letting the bilinear upscale add its own wider falloff is
+   *     sixteen times cheaper AND closer to bokeh.
+   *
+   *  Returns the small canvas; the caller scales it up. */
+  private blurred(src: CanvasImageSource, W: number, H: number, radius: number): OffscreenCanvas | null {
+    const b = bokehPass(W, H, radius);
+    if (!this.blurCanvas || this.blurCanvas.width !== b.w || this.blurCanvas.height !== b.h) {
+      this.blurCanvas = new OffscreenCanvas(b.w, b.h);
+      this.blurCtx = this.blurCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const c = this.blurCtx;
+    if (!c) return null;
+    const r = overscanRect(b.w, b.h, b.radius);
+    c.save();
+    c.globalCompositeOperation = "copy";
+    c.filter = `blur(${b.radius}px)`;
+    c.drawImage(src as any, r.x, r.y, r.w, r.h);
+    c.filter = "none";
+    c.restore();
+    return this.blurCanvas;
+  }
+
   /** The good path: person sharp, background replaced, edge eroded and
    *  feathered. Composite order matters and is the reason this reads as a
    *  lens rather than a sticker. */
@@ -295,9 +361,15 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       // background IS the privacy measure.
       drawCover(ctx, this.bg, W, H);
     } else {
-      ctx.filter = `blur(${this.opts.blurRadius || BLUR_PX}px)`;
-      ctx.drawImage(frame as any, 0, 0, W, H);
-      ctx.filter = "none";
+      const soft = this.blurred(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
+      if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
+      else {
+        // The small canvas could not be made — blur in place rather than
+        // publish a sharp room behind somebody who asked for privacy.
+        ctx.filter = `blur(${this.opts.blurRadius || BLUR_PX}px)`;
+        ctx.drawImage(frame as any, 0, 0, W, H);
+        ctx.filter = "none";
+      }
     }
     ctx.restore();
   }
@@ -307,11 +379,16 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
    *  library chose, republishing the last good frame, is the strobe. */
   private paintBlurAll(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
+    const radius = Math.max(BLUR_PX, this.opts.blurRadius || 0);
     ctx.save();
     ctx.globalCompositeOperation = "copy";
-    ctx.filter = `blur(${Math.max(BLUR_PX, this.opts.blurRadius || 0)}px)`;
-    ctx.drawImage(frame as any, 0, 0, W, H);
-    ctx.filter = "none";
+    const soft = this.blurred(frame as any, W, H, radius);
+    if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
+    else {
+      ctx.filter = `blur(${radius}px)`;
+      ctx.drawImage(frame as any, 0, 0, W, H);
+      ctx.filter = "none";
+    }
     ctx.restore();
   }
 }

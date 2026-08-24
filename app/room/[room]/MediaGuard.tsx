@@ -38,8 +38,10 @@ import {
 import {
   camVerdict, lumaFrom, frameSignature, blameKind, joinErrorText, CAM_BLACK,
   EFFECTS, restoreEffect, effectSupport, processorFor, effectSrc, customReady, type Effect,
+  shelfEffects, effectUsable,
   camRetryDelay, camShouldKeepTrying, type CamVerdict,
 } from "@/lib/camera";
+import { SLOTS } from "@/lib/backgrounds";
 import {
   shouldApplyEffect, effectIdOfProcessor, BLUR_PX,
   DEFAULT_EFFECT_ID, effectCostNote, panelShouldClose,
@@ -74,6 +76,10 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const [fxNote, setFxNote] = useState("");
   const [fxBusy, setFxBusy] = useState(false);
   const [customBg, setCustomBg] = useState("");
+  /** which room backdrops this deployment actually ships a PHOTOGRAPH for.
+   *  Empty is the honest normal state until somebody adds the files — see
+   *  shelfEffects in lib/camera.ts for why a drawn room is not offered. */
+  const [photoIds, setPhotoIds] = useState<string[]>([]);
   const [dismissed, setDismissed] = useState(0);
   const [camDismissed, setCamDismissed] = useState(0);
 
@@ -95,6 +101,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const quietFixes = useRef(0);
   const everMic = useRef(false);
 
+  const photoIdsRef = useRef<string[]>([]);
+  photoIdsRef.current = photoIds;
   const fileRef = useRef<HTMLInputElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const poorSince = useRef(0);
@@ -433,7 +441,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         if (!silent) setFxNote("Turn your camera on first — effects apply to a live picture.");
         return;
       }
-      const p = processorFor(effect, customBg);
+      const p = processorFor(effect, customBg, photoIdsRef.current.includes(effect.id));
       if (effect.custom && !customReady(effect, customBg)) {
         if (!silent) setFxNote("Add a picture to this slot first — the ＋ button below picks one from your computer.");
         return;
@@ -496,13 +504,37 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   useEffect(() => {
     if (restored.current) return;
     restored.current = true;
-    const saved = load(SAVED.custom);
-    if (saved.startsWith("data:image/")) setCustomBg(saved);
-    // DEFAULT_EFFECT_ID is what somebody who has never chosen gets; anyone
-    // who HAS chosen gets their choice back. See the constant for why the
-    // default is plain video and not blur.
-    const wantedFx = restoreEffect(load(SAVED.effect) || DEFAULT_EFFECT_ID, load(SAVED.blur));
-    if (wantedFx.kind !== "none") { effectRef.current = wantedFx; setFx(wantedFx.id); }
+    let alive = true;
+    (async () => {
+      const saved = load(SAVED.custom);
+      if (saved.startsWith("data:image/")) setCustomBg(saved);
+
+      // Which rooms are real here? One cheap HEAD each, cached forever after.
+      // FIELD 2026-08-24: every backdrop on the shelf was a hand-drawn SVG,
+      // because the photographs the slots were designed for were never
+      // shipped — so everybody in every meeting sat in front of a cartoon.
+      // The shelf is built from what actually exists now; drop office.jpg
+      // into public/backgrounds/ and Office Cubicle comes back on its own.
+      const found: string[] = [];
+      await Promise.all(SLOTS.map(async (slot) => {
+        try {
+          const r = await fetch(slot.photo, { method: "HEAD", cache: "force-cache" });
+          // A dev server that answers every path with index.html would offer
+          // five backdrops made of HTML, so the content type is checked too.
+          if (r.ok && /^image\//i.test(r.headers.get("content-type") || "image/")) found.push(slot.id);
+        } catch { /* absent is the normal answer, not an error */ }
+      }));
+      if (!alive) return;
+      setPhotoIds(found);
+
+      // DEFAULT_EFFECT_ID is what somebody who has never chosen gets; anyone
+      // who HAS chosen gets their choice back — unless what they chose was a
+      // drawn room, in which case they get plain video rather than the
+      // cartoon they were actually looking at.
+      const wantedFx = restoreEffect(load(SAVED.effect) || DEFAULT_EFFECT_ID, load(SAVED.blur), found);
+      if (wantedFx.kind !== "none") { effectRef.current = wantedFx; setFx(wantedFx.id); }
+    })();
+    return () => { alive = false; };
   }, []);
 
   // ── watch the published camera track, continuously ─────────────────────
@@ -525,6 +557,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // reproduces on real hardware is a loop that ships.
     if (
       cmst && camLkTrack && !effectDisabled.current &&
+      effectUsable(effectRef.current, photoIdsRef.current) &&
       shouldApplyEffect({
         wantedId: effectRef.current.id,
         liveId: effectIdOfProcessor(camLkTrack.processor?.name),
@@ -762,6 +795,10 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     effectOn: fx !== "none",
     poorForMs: poorSince.current ? Date.now() - poorSince.current : 0,
   });
+  // None, Blur and their own picture always; a room only when its photograph
+  // is actually here. With none shipped, that is three honest choices instead
+  // of seven, five of which were cartoons.
+  const shelf = shelfEffects(photoIds);
   const show = verdict.level !== "ok" && dismissed < Date.now() - 30000;
   const showCam = camV.level !== "ok" && camDismissed < Date.now() - 30000;
   const spkWorks = speakerPickerWorks();
@@ -873,7 +910,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
 
           <div className="qmg-fxhead">Background</div>
           <div className="qmg-fx" role="group" aria-label="Background effect">
-            {EFFECTS.map((e) => (
+            {shelf.map((e) => (
               <button
                 key={e.id}
                 className={`qmg-swatch${fx === e.id ? " qmg-son" : ""}`}
@@ -885,11 +922,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
                 aria-pressed={fx === e.id}
               >
                 {e.kind === "image" ? (
-                  // A real photograph when this deployment ships one, the
-                  // drawn room otherwise — the swatch shows what you will
-                  // actually get, which is the point of a swatch.
+                  // The swatch shows what you will ACTUALLY get, which is the
+                  // point of a swatch — and since the shelf now only offers
+                  // rooms whose photograph exists, that is the photograph.
                   <img
-                    src={effectSrc(e, customBg)}
+                    src={effectSrc(e, customBg, photoIds.includes(e.id))}
                     alt=""
                     onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = e.src || ""; }}
                   />

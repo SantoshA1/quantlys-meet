@@ -60,8 +60,19 @@ export const IMAGE_UNDERBLUR_PX = 0;
  *  library. ~1.1% of height: 8px at 720p, 4px at 360p. */
 export function featherPx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
-  if (h <= 0) return 3;
-  return Math.max(2, Math.min(14, Math.round(h * 0.011)));
+  if (h <= 0) return 2;
+  // FIELD 2026-08-24, from two screenshots: "the backgrounds and the blur
+  // quality is really bad". The old value was 1.1% of height — 8px at 720p,
+  // and 14px once erosion was added on top. That much softness was never a
+  // choice about how an edge should look; it was camouflage for a BINARY
+  // mask at 384x216 upscaled 3.3x, whose staircase had to be hidden. A hat
+  // brim dissolving over thirty pixels is what camouflage costs.
+  //
+  // The mask is a confidence mask now (see confidenceToAlpha) — it arrives
+  // soft, with real values in the hair — so the feather goes back to being
+  // what it says it is: the last touch that stops a boundary reading as a
+  // cut line. ~0.4% of height: 3px at 720p, 2px at 360p.
+  return Math.max(1, Math.min(6, Math.round(h * 0.004)));
 }
 
 /** Segmentation is the expensive half; the video is not. Running the model
@@ -133,13 +144,138 @@ export function warmupPaint(s: {
  *  Segmenting a 384-wide copy is measurably cheaper and pixel-identical
  *  after feathering. Height follows the source aspect so a face is never
  *  squashed into a mask that fits somebody else. */
-export const SEGMENT_WIDTH = 384;
+export const SEGMENT_WIDTH = 512;
+// 2026-08-24: was 384. The claim above — "pixel-identical after feathering" —
+// was true only because the feather was 14px wide. With a 3px feather the
+// mask's own resolution is what you see, and 384 across a 1280 frame put a
+// three-pixel staircase on every shoulder. 512 costs about a third more in a
+// stage that runs at 20Hz, not 30, and is the difference between an edge and
+// a set of steps.
 
 export function segmentSize(w: number, h: number): { w: number; h: number } {
   const sw = Number(w) || 0, sh = Number(h) || 0;
   if (sw <= 0 || sh <= 0) return { w: SEGMENT_WIDTH, h: Math.round(SEGMENT_WIDTH * 9 / 16) };
   if (sw <= SEGMENT_WIDTH) return { w: sw, h: sh };
   return { w: SEGMENT_WIDTH, h: Math.max(1, Math.round((sh / sw) * SEGMENT_WIDTH)) };
+}
+
+// ── the mask itself: soft numbers instead of a yes/no ─────────────────────
+//
+// FIELD 2026-08-24. `outputCategoryMask: true` returns a per-pixel CLASS —
+// 0 or 255, no in-between — at the segmenter's own small resolution. Hair,
+// which is the one place an eye actually checks whether a background is
+// fake, has no gradient to be drawn with: every strand is either wholly
+// person or wholly room. @livekit/track-processors makes the same request,
+// so this was the ecosystem default rather than an invention, but it is the
+// wrong one for anything that has to look real.
+//
+// `outputConfidenceMasks` returns a Float32 per pixel, 0..1. That is the
+// gradient. Both are requested now and confidence is preferred, because a
+// fallback is behaviour: a model or a build that returns only a category
+// mask must still blur, just less beautifully.
+
+/** How hard to push the confidence values apart before they become alpha.
+ *
+ *  Raw confidence is mushy in the middle — a lot of pixels sit near 0.5 and
+ *  a linear map turns them into a wide grey band, which is the same smear
+ *  the old feather produced, just earlier in the pipeline. An S-curve leaves
+ *  the confident pixels alone and pulls the uncertain ones toward whichever
+ *  side they were already leaning. 6 is firm enough to give a clean edge and
+ *  soft enough to keep the strands of hair that are the whole point. */
+export const MASK_CONTRAST = 6;
+
+/** Float32 confidence (0..1) -> alpha byte (0..255), through the S-curve.
+ *  Pure, because "the edge is mushy" is a claim about a curve. */
+export function confidenceToAlpha(c: number, contrast: number = MASK_CONTRAST): number {
+  const raw = Number(c);
+  if (!Number.isFinite(raw)) return 0;
+  const x = Math.max(0, Math.min(1, raw));
+  const k = Math.max(1, Number(contrast) || 1);
+  // Logistic around 0.5, normalised so 0 -> 0 and 1 -> 1 exactly. Without the
+  // normalisation a "fully background" pixel keeps a few percent of alpha,
+  // and a few percent of alpha over a whole frame is a visible grey veil.
+  const f = (t: number) => 1 / (1 + Math.exp(-k * (t - 0.5)));
+  const lo = f(0), hi = f(1);
+  return Math.round(255 * Math.max(0, Math.min(1, (f(x) - lo) / (hi - lo))));
+}
+
+// ── the blur, and the dark frame nobody ordered ──────────────────────────
+//
+// FIELD 2026-08-24, visible in the corners of the Blur screenshot: the
+// picture is darker at every edge, in a band about as wide as the blur.
+// `ctx.filter = blur(24px)` followed by drawImage at exactly the canvas
+// bounds means the Gaussian kernel reaches PAST the canvas for most of that
+// band and samples transparent black. The result is a vignette that looks
+// like a deliberate filter and is in fact an off-by-a-kernel.
+
+/** How far past the canvas the frame must be drawn, as a multiple of the blur
+ *  radius. MEASURED, not reasoned: at the very corner of a uniform grey frame
+ *  blurred by 24px, the alpha that survives is 156 at one radius of margin,
+ *  223 at two, 246 at three and 254 at four. Four it is. (Three is very
+ *  nearly right and would have shipped a corner 4% transparent, which over a
+ *  dark meeting UI is a faint dark corner — the exact artefact this constant
+ *  exists to remove.) */
+export const OVERSCAN_K = 4;
+
+/** The rectangle to draw a frame into so a blur of `radius` never samples
+ *  outside it. Centred, so nothing shifts — the picture is very slightly
+ *  cropped, which is invisible, instead of very slightly transparent at every
+ *  edge, which is not.
+ *
+ *  WHAT THE BUG ACTUALLY WAS, because the first diagnosis was wrong and the
+ *  measurement corrected it: the blurred frame does not come out DARKER at
+ *  the edges — every channel stays exactly 128. It comes out TRANSPARENT
+ *  (alpha 70 in the corner against 255 in the middle), because the Gaussian
+ *  averages in the nothing outside the source rectangle. Colour is unchanged,
+ *  so a probe that measures luminance sees a clean frame and passes. It is
+ *  only when that canvas is composited over the meeting's dark UI that the
+ *  missing alpha becomes the dark border people photograph. */
+export function overscanRect(W: number, H: number, radius: number = BLUR_PX):
+  { x: number; y: number; w: number; h: number } {
+  const w = Number(W) || 0, h = Number(H) || 0;
+  if (w <= 0 || h <= 0) return { x: 0, y: 0, w: 0, h: 0 };
+  const r = Math.max(0, Number(radius) || 0);
+  // Per side, not in total — the earlier version halved this by growing the
+  // rectangle by one margin and splitting it across two edges, and shipped a
+  // corner at alpha 168.
+  const m = Math.max(w * 0.02, r * OVERSCAN_K);
+  const nw = w + 2 * m, nh = h + 2 * m * (h / w || 1);
+  return { x: (w - nw) / 2, y: (h - nh) / 2, w: nw, h: nh };
+}
+
+/** A single 24px Gaussian across 921,600 pixels, every frame, is the most
+ *  expensive thing in the room AND the least like a lens: it smears
+ *  uniformly where a real defocus pools light. Drawing the frame small,
+ *  blurring it there, and letting the upscale do the rest is both cheaper
+ *  and closer to bokeh, because the bilinear upscale adds a second, wider
+ *  falloff on top of the first.
+ *
+ *  Returns the working size and the radius to use at that size. */
+export function bokehPass(W: number, H: number, radius: number = BLUR_PX):
+  { w: number; h: number; radius: number } {
+  const w = Number(W) || 0, h = Number(H) || 0;
+  const r = Math.max(1, Number(radius) || 1);
+  if (w <= 0 || h <= 0) return { w: 1, h: 1, radius: r };
+  // MEASURED against a barcode-and-blocks test card, counting the horizontal
+  // detail that survives (lower is blurrier), with a full-size 24px pass as
+  // the baseline at 52 / 415 for high and low frequencies:
+  //
+  //   quarter scale, radius x1.0   248 / 446   ← WORSE. The downscale itself
+  //   quarter scale, radius x1.2    65 / 304     aliases fine detail back
+  //   half scale,    radius x1.0    25 / 388     into the picture.
+  //   half scale,    radius x1.2     6 / 298   ← blurrier than the baseline
+  //                                              on BOTH, at a quarter of
+  //                                              the cost.
+  //
+  // Half scale it is. A quarter would have been cheaper still and would have
+  // made the room MORE readable, which is the one thing the blur button
+  // promises not to do.
+  const scale = Math.max(0.5, Math.min(1, 160 / w));
+  const sw = Math.max(1, Math.round(w * scale));
+  const sh = Math.max(1, Math.round(h * scale));
+  // 1.2, not 1.0: the bilinear upscale does add softness of its own, but less
+  // than it takes away by resampling.
+  return { w: sw, h: sh, radius: Math.max(1, Math.round(r * scale * 1.2)) };
 }
 
 /** A frame that arrives while the previous one is still being processed must
@@ -340,8 +476,12 @@ export function edgeMean(mask: ArrayLike<number>, w: number, h: number): number 
  *  fingers and the tips of hair. */
 export function erodePx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
-  if (h <= 0) return 3;
-  return Math.max(2, Math.min(12, Math.round(h * 0.008)));
+  if (h <= 0) return 2;
+  // Same correction as the feather. Erosion still earns its place — the
+  // selfie model keeps a rim of real room around a person and that rim must
+  // be pulled into the blur — but it needs a ramp of two or three pixels to
+  // bite on, not six. ~0.3% of height.
+  return Math.max(1, Math.min(5, Math.round(h * 0.003)));
 }
 
 /** The mask is blurred ONCE, by enough to carry both jobs: the erosion needs
@@ -356,7 +496,7 @@ export function maskBlurPx(outputHeight: number): number {
  *  a canvas can do it in n-1 self-composites with `source-in`. Guarded here
  *  because "shrink the silhouette" is a claim about a curve, and a curve can
  *  be checked without a camera. */
-export const ERODE_POWER = 3;
+export const ERODE_POWER = 2;
 
 export function alphaAfterGamma(alpha: number, power: number = ERODE_POWER): number {
   const raw = Number(alpha);

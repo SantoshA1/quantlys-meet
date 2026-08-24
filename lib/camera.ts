@@ -235,11 +235,49 @@ export const EFFECTS: Effect[] = [
 /** The picture an effect should actually use. `custom` is whatever the person
  *  added; everything else is its own. Pure, because "which image" turning out
  *  to be the wrong one is exactly the class of bug that shipped four
- *  identical backdrops. */
-export function effectSrc(effect: Effect, customDataUrl?: string): string {
+ *  identical backdrops.
+ *
+ *  FIELD 2026-08-24 — the second half of "the backgrounds look really bad".
+ *  Every room on the shelf is a SLOT: a real photograph at /backgrounds/<id>.jpg
+ *  when a deployment ships one, and a drawn scene until it does. Nobody ever
+ *  shipped the photographs, so every person in every meeting was sitting in
+ *  front of a vector cartoon. And the `photo` field, which existed for
+ *  exactly this, was passed to the renderer and then never read: shipping the
+ *  JPEGs would have changed the little swatch in the panel and NOT the
+ *  background anybody actually saw. `photoOk` is that wire, finally
+ *  connected — see shelfEffects for who sets it. */
+export function effectSrc(effect: Effect, customDataUrl?: string, photoOk?: boolean): string {
   if (!effect) return "";
   if (effect.custom) return String(customDataUrl || "") || String(effect.src || "");
+  if (photoOk && effect.photo) return String(effect.photo);
   return String(effect.src || "");
+}
+
+/** Which effects belong on the shelf.
+ *
+ *  None, Blur and Your photo always. A room only when this deployment has an
+ *  actual photograph for it — because a drawn room is not a background
+ *  anybody wants to be seen in front of, and offering one is worse than
+ *  offering none. Drop office.jpg into public/backgrounds/ and Office Cubicle
+ *  reappears with no code change; that was always the promise of the slot and
+ *  it is now the whole mechanism rather than a comment.
+ *
+ *  Pure and separate from EFFECTS on purpose: EFFECTS stays the full
+ *  CATALOGUE so a saved "library" from a previous meeting still resolves to
+ *  something with a name, instead of silently becoming a different backdrop. */
+export function shelfEffects(availablePhotoIds?: string[] | null): Effect[] {
+  const have = new Set((availablePhotoIds || []).map((x) => String(x || "")));
+  return EFFECTS.filter((e) => e.kind !== "image" || e.custom || have.has(e.id));
+}
+
+/** Is this effect actually usable in this deployment? A room whose photograph
+ *  was never shipped is not — and must not be applied just because somebody
+ *  chose it back when the shelf still offered cartoons. */
+export function effectUsable(effect: Effect, availablePhotoIds?: string[] | null): boolean {
+  if (!effect) return false;
+  if (effect.kind !== "image") return true;
+  if (effect.custom) return true;
+  return (availablePhotoIds || []).some((x) => String(x || "") === effect.id);
 }
 
 /** Has this person actually put a picture in their own slot? An empty slot
@@ -257,9 +295,15 @@ export function effectById(id: string): Effect {
 /** What to restore on the next join. Reads the new key's value, and honours
  *  the legacy "qm.blur" flag ("1") from before backgrounds existed — an
  *  upgrade must not silently un-blur somebody who chose blur. */
-export function restoreEffect(saved: string, legacyBlur?: string): Effect {
+export function restoreEffect(saved: string, legacyBlur?: string, availablePhotoIds?: string[] | null): Effect {
   const s = String(saved || "").trim();
-  if (s) return effectById(s);
+  if (s) {
+    const e = effectById(s);
+    // A room somebody chose while the shelf was still offering drawn ones
+    // must not come back as a drawn one. Plain video is the honest
+    // substitute; blur would be a decision they never made.
+    return effectUsable(e, availablePhotoIds) ? e : EFFECTS[0];
+  }
   if (String(legacyBlur || "") === "1") return effectById("blur");
   return EFFECTS[0];
 }
@@ -284,13 +328,13 @@ export function effectSupport(env: {
 
 /** The parameters the component hands to the processor package. Pure mapping,
  *  so the choice of blur radius and the none/blur/image decision are guarded. */
-export function processorFor(effect: Effect, customDataUrl?: string):
+export function processorFor(effect: Effect, customDataUrl?: string, photoOk?: boolean):
   | { kind: "none" }
   | { kind: "blur"; blurRadius: number }
   | { kind: "image"; imagePath: string; photo?: string } {
   if (effect.kind === "blur") return { kind: "blur", blurRadius: 12 };
   if (effect.kind === "image") {
-    const src = effectSrc(effect, customDataUrl);
+    const src = effectSrc(effect, customDataUrl, photoOk);
     // An empty custom slot is NOT an image effect — applying it would put a
     // picture of a camera icon behind somebody.
     if (src && customReady(effect, customDataUrl)) {
