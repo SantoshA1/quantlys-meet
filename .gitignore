@@ -1,0 +1,47 @@
+# 2026-08-25. This repo had NO .gitignore at all.
+#
+# Nothing bad had been committed yet — `git ls-files` showed zero node_modules
+# entries — but that was luck plus the habit of adding paths by name. The
+# exposure it left open is the one that matters: `.env.local` holds
+# SUPABASE_SERVICE_ROLE_KEY, LIVEKIT_API_SECRET, OPENROUTER_API_KEY and the
+# Deepgram key, and a single `git add -A` would have committed all four to a
+# repo with a GitHub remote.
+
+# dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# next
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# secrets — the reason this file exists
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.production.local
+
+# test + tooling output
+/coverage/
+/playwright-report/
+/test-results/
+
+# vercel
+.vercel
+
+# os / editor
+.DS_Store
+*.pem
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.idea/
+.vscode/
+
+# this mount cannot delete files, so git's own lock files and scratch copies
+# get parked here instead of removed
+_to_delete/

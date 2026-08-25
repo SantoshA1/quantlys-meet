@@ -24,7 +24,8 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { chooseModel } from "@/lib/model";
-import { rubricFor, metaFor, detectMode, suggestionsFor, prdPath } from "@/lib/prd";
+import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath } from "@/lib/prd";
+import { readContext } from "../../project/route";
 import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, MAX_QUESTIONS } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
@@ -80,6 +81,15 @@ export async function POST(req: Request) {
     ? body.open.filter((d: any) => d?.key).map((d: any) => ({ key: String(d.key), label: String(d.label || d.key), status: String(d.status || "missing") }))
     : [];
 
+  // THE FIRST MEETING'S FIX. Without a brief the agent knows a project NAME
+  // and nothing else, so its opening questions are the generic ones for each
+  // dimension — which is a checklist, not an assistant. Two sentences the team
+  // wrote once change every question it asks from here on.
+  let brief = "";
+  if (user && process.env.SUPABASE_SERVICE_ROLE_KEY && project) {
+    try { brief = (await readContext(admin(), user.id, project)).brief; } catch { /* a project with no brief is the normal first state */ }
+  }
+
   if (!open.length && user && process.env.SUPABASE_SERVICE_ROLE_KEY && project) {
     try {
       const { data } = await admin().storage.from("recordings").download(prdPath(user.id, project));
@@ -93,7 +103,7 @@ export async function POST(req: Request) {
     } catch { /* no prior assessment is the normal state of a first meeting */ }
   }
 
-  if (!mode) mode = detectMode(`${project} ${recent.slice(0, 4000)}`);
+  if (!mode) mode = detectModeFor({ brief, project, transcript: recent });
   const dims = rubricFor(mode);
   const meta = metaFor(mode);
   if (!open.length) {
@@ -140,6 +150,7 @@ export async function POST(req: Request) {
     // in the conversation that is happening now.
     recent: recent.slice(-6000),
     alreadyAsked: asked,
+    brief,
   });
 
   try {

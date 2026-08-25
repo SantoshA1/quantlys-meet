@@ -305,9 +305,16 @@ export function agentQuestionPrompt(opts: {
   desc: string;
   recent: string;
   alreadyAsked: string[];
+  /** what the team wrote down that this project IS. Two or three sentences,
+   *  typed once. Without it a first meeting's question is the generic one for
+   *  the dimension; with it the question is about their actual product, which
+   *  is the difference between an assistant and a form. */
+  brief?: string;
 }): string {
+  const brief = String(opts.brief || "").trim();
   return [
     `You are sitting in a live meeting about ${String(opts.projectName || "this project").trim() || "this project"}.`,
+    brief ? `\nThe team describes the project this way, in their own words:\n\n  ${brief}\n` : "",
     `The team is building a ${opts.artifact}, and one part of it is still open:`,
     "",
     `  ${opts.key}: ${opts.label} — ${opts.desc}`,
@@ -330,6 +337,9 @@ export function agentQuestionPrompt(opts: {
     "- Build on what they were JUST saying where you can. A question that",
     "  follows from the last thing said gets answered; one that arrives from",
     "  nowhere gets ignored.",
+    brief
+      ? "- Ask about THEIR product, using their own nouns from the description above. A generic question about this dimension is one they could have got from a checklist."
+      : "",
     "- Offer 2 or 3 short answers they could pick, most likely first. Each one",
     "  is a complete answer, not a category.",
     "- Say in one plain sentence what this choice actually changes for them.",

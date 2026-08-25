@@ -33,8 +33,10 @@ type Prd = {
   open_questions: Array<{ key: string; label: string; question: string; options: string[]; why: string }>;
   meetings: Array<{ title: string; at: string; room: string }>;
   meetings_used: number; meetings_dropped: number;
+  brief?: string; decisions?: Decision[]; answered?: string[];
   assessment_error?: string; model?: string; model_note?: string; at?: string;
 };
+type Decision = { key: string; question: string; answer: string; at: string };
 
 export default function Prd({ projects }: { projects: string[] }) {
   const [project, setProject] = useState("");
@@ -43,6 +45,16 @@ export default function Prd({ projects }: { projects: string[] }) {
   const [note, setNote] = useState("");
   const [copied, setCopied] = useState(false);
   const [showDoc, setShowDoc] = useState(false);
+  // What the team says this project IS. Typed once; it decides which rubric
+  // applies and gives every question the agent asks something to be about.
+  const [brief, setBrief] = useState("");
+  const [briefSaved, setBriefSaved] = useState("");
+  const [briefBusy, setBriefBusy] = useState(false);
+  const [editBrief, setEditBrief] = useState(false);
+  // Questions answered here, between meetings.
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [answering, setAnswering] = useState("");
+  const [custom, setCustom] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!project && projects.length) setProject(projects[0]);
@@ -64,7 +76,59 @@ export default function Prd({ projects }: { projects: string[] }) {
     } catch { /* no saved assessment is the normal first state */ }
   }, []);
 
-  useEffect(() => { loadSaved(project); }, [project, loadSaved]);
+  const loadContext = useCallback(async (p: string) => {
+    if (!p) return;
+    setBrief(""); setBriefSaved(""); setDecisions([]); setEditBrief(false); setCustom({});
+    try {
+      const t = await token();
+      if (!t) return;
+      const r = await fetch(`/api/project?project=${encodeURIComponent(p)}`, { headers: { Authorization: `Bearer ${t}` } });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j && !j.error) {
+        setBrief(String(j.brief || ""));
+        setBriefSaved(String(j.brief || ""));
+        setDecisions(Array.isArray(j.decisions) ? j.decisions : []);
+      }
+    } catch { /* a project with no context is the normal first state */ }
+  }, []);
+
+  useEffect(() => { loadSaved(project); loadContext(project); }, [project, loadSaved, loadContext]);
+
+  async function saveBrief() {
+    if (!project || briefBusy) return;
+    setBriefBusy(true); setNote("");
+    try {
+      const t = await token();
+      const r = await fetch("/api/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project, action: "brief", brief }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!j || j.error) { setNote(j?.error || "Couldn't save that."); return; }
+      setBriefSaved(String(j.brief || ""));
+      setBrief(String(j.brief || ""));
+      setEditBrief(false);
+    } finally { setBriefBusy(false); }
+  }
+
+  async function answer(key: string, question: string, text: string) {
+    const a = String(text || "").trim();
+    if (!project || !a) return;
+    setAnswering(key); setNote("");
+    try {
+      const t = await token();
+      const r = await fetch("/api/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project, action: "decision", key, question, answer: a }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!j || j.error) { setNote(j?.error || "Couldn't save that answer."); return; }
+      setDecisions(Array.isArray(j.decisions) ? j.decisions : []);
+      setCustom((c) => ({ ...c, [key]: "" }));
+    } finally { setAnswering(""); }
+  }
 
   async function build() {
     if (!project || busy) return;
@@ -135,6 +199,47 @@ export default function Prd({ projects }: { projects: string[] }) {
 
       {note ? <p className="qp-note">{note}</p> : null}
 
+      {/* THE PROJECT'S OWN WORDS. Without this the app knows a project NAME
+          and nothing else, so the first meeting's questions are the generic
+          ones for each dimension — a checklist, not an assistant. */}
+      {project ? (
+        <div className="qp-brief">
+          {briefSaved && !editBrief ? (
+            <>
+              <div className="qp-briefhead">
+                <span className="qp-blabel">What we&apos;re building</span>
+                <button className="qp-inline" onClick={() => setEditBrief(true)}>Edit</button>
+              </div>
+              <p className="qp-brieftext">{briefSaved}</p>
+            </>
+          ) : (
+            <>
+              <div className="qp-briefhead">
+                <span className="qp-blabel">What we&apos;re building</span>
+                {briefSaved ? <button className="qp-inline" onClick={() => { setBrief(briefSaved); setEditBrief(false); }}>Cancel</button> : null}
+              </div>
+              <p className="qh-fine">
+                TWO OR THREE SENTENCES, WRITTEN ONCE. IT DECIDES WHICH RUBRIC THIS PROJECT IS SCORED ON AND GIVES
+                THE IN-MEETING AGENT SOMETHING TO ASK ABOUT FROM THE VERY FIRST MEETING.
+              </p>
+              <textarea
+                className="qp-briefbox"
+                rows={3}
+                value={brief}
+                onChange={(e) => setBrief(e.target.value)}
+                placeholder="A tool for the finance team that turns a photo of a receipt into a filed expense, so nobody keeps paper. Web first."
+              />
+              <div className="qp-briefrow">
+                <button className="qh-btn" onClick={saveBrief} disabled={briefBusy || brief.trim() === briefSaved.trim()}>
+                  {briefBusy ? "Saving…" : "Save"}
+                </button>
+                <span className="qh-fine">{brief.trim().length}/1200</span>
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
+
       {data ? (
         <>
           <div className="qp-score">
@@ -172,13 +277,58 @@ export default function Prd({ projects }: { projects: string[] }) {
               <p className="qh-fine">
                 THE PRD AGENT ASKS THESE LIVE — SWITCH IT ON IN THE ROOM AND IT WORKS THROUGH THEM IN THE PAUSES
               </p>
-              {data.open_questions.map((q) => (
-                <div key={q.key} className="qp-q">
-                  <b>{q.question}</b>
-                  <div className="qp-qopts">{q.options.map((o, i) => <span key={i}>{o}</span>)}</div>
-                  <em>{q.why}</em>
-                </div>
-              ))}
+              {data.open_questions.map((q) => {
+                const done = decisions.find((d) => d.key === q.key);
+                return (
+                  <div key={q.key} className={`qp-q${done ? " qp-qdone" : ""}`}>
+                    <b>{q.question}</b>
+                    {done ? (
+                      <>
+                        <p className="qp-answered"><span>Answered</span> {done.answer}</p>
+                        <button className="qp-inline" onClick={() => setDecisions((ds) => ds.filter((d) => d.key !== q.key))}>
+                          Answer it differently
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {/* Tappable, not decoration. Answering here means the
+                            PRD closes on the days nobody is in a room
+                            together — it does not have to wait for the next
+                            meeting to come round. */}
+                        <div className="qp-qopts">
+                          {q.options.map((o, i) => (
+                            <button key={i} className="qp-opt" disabled={answering === q.key}
+                              onClick={() => answer(q.key, q.question, o)}>
+                              {o}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="qp-qown">
+                          <input
+                            className="qh-input qp-owninput"
+                            placeholder="…or say it in your own words"
+                            value={custom[q.key] || ""}
+                            onChange={(e) => setCustom((c) => ({ ...c, [q.key]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && answer(q.key, q.question, custom[q.key] || "")}
+                          />
+                          <button className="qh-ghost" disabled={!((custom[q.key] || "").trim()) || answering === q.key}
+                            onClick={() => answer(q.key, q.question, custom[q.key] || "")}>
+                            {answering === q.key ? "Saving…" : "Answer"}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    <em>{q.why}</em>
+                  </div>
+                );
+              })}
+              {decisions.length ? (
+                <p className="qp-rebuild">
+                  {decisions.length} answered here since the last build.{" "}
+                  <button className="qp-inline" onClick={build} disabled={busy}>Rebuild the PRD</button>{" "}
+                  to fold them in — they count as the current position, ahead of anything said in a meeting.
+                </p>
+              ) : null}
             </div>
           ) : null}
 
@@ -261,6 +411,27 @@ export const PRD_CSS = `
 .qp-steps li { color:#8b93a5; font-size:12.5px; }
 .qp-steps b { display:block; color:#e9edf5; font-size:13px; margin-bottom:2px; }
 .qp-steps span { line-height:1.55; }
+.qp-brief { display:flex; flex-direction:column; gap:7px; background:#0e1219; border:1px solid #1c2430;
+  border-radius:10px; padding:12px 14px; }
+.qp-briefhead { display:flex; justify-content:space-between; align-items:center; }
+.qp-blabel { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#7fe0d6; }
+.qp-brieftext { margin:0; color:#e9edf5; font-size:14.5px; line-height:1.6; }
+.qp-briefbox { background:#0b0e14; color:#e9edf5; border:1px solid #2c3342; border-radius:8px;
+  padding:9px 11px; font:inherit; font-size:14px; line-height:1.55; resize:vertical; width:100%; }
+.qp-briefrow { display:flex; gap:10px; align-items:center; }
+.qp-opt { font:inherit; font-size:12px; cursor:pointer; text-align:left; color:#cfe9e6;
+  background:#123130; border:1px solid #1d4f4c; border-radius:7px; padding:5px 10px; line-height:1.4; }
+.qp-opt:hover:not(:disabled) { background:#17403e; border-color:#2a6f6a; }
+.qp-opt:disabled { opacity:.5; cursor:default; }
+.qp-qown { display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+.qp-owninput { flex:1 1 220px; font-size:12.5px; padding:6px 9px; }
+.qp-qdone { border-color:#1d4f4c; }
+.qp-answered { margin:0; color:#cfe9e6; font-size:13.5px; line-height:1.5; }
+.qp-answered span { color:#7fe0d6; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; margin-right:7px; }
+.qp-rebuild { margin:0; color:#f0d9a6; font-size:12.5px; line-height:1.6; }
+.qp-inline { font:inherit; font-size:12px; color:#7fe0d6; background:none; border:0; padding:0;
+  cursor:pointer; text-decoration:underline; }
+.qp-inline:disabled { opacity:.5; cursor:default; }
 .qp-doc { margin:0; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word;
   background:#0b0e14; border:1px solid #1c2430; border-radius:9px; padding:13px;
   color:#cfd6e4; font-size:12px; line-height:1.6; }

@@ -20,15 +20,35 @@ const FAKES = {
   "@supabase/supabase-js": new URL("./fake-cloud.mjs", import.meta.url).href,
 };
 
+const EXTS = ["", ".ts", ".tsx", "/index.ts"];
+
+function firstThatExists(base) {
+  for (const ext of EXTS) {
+    const u = new URL(base.href + ext);
+    if (existsSync(u)) return u.href;
+  }
+  return null;
+}
+
 export async function resolve(spec, ctx, next) {
   if (FAKES[spec]) return { url: FAKES[spec], shortCircuit: true };
+
+  // "@/lib/model" -> <repo>/lib/model.ts
   if (spec.startsWith("@/")) {
     const base = new URL(spec.slice(2), ROOT);
-    for (const ext of ["", ".ts", ".tsx", "/index.ts"]) {
-      const u = new URL(base.href + ext);
-      if (existsSync(u)) return next(u.href, ctx);
-    }
-    return next(base.href, ctx);
+    return next(firstThatExists(base) || base.href, ctx);
   }
+
+  // "../project/route" -> .../project/route.ts. Next resolves extensionless
+  // relative imports; node does not. One route importing a sibling route is
+  // ordinary in this app — /api/prd reads the project context through
+  // /api/project — so the harness has to follow it or the suite tests a
+  // codebase that does not exist.
+  if ((spec.startsWith("./") || spec.startsWith("../")) && !/\.[a-z]+$/i.test(spec) && ctx?.parentURL) {
+    const base = new URL(spec, ctx.parentURL);
+    const found = firstThatExists(base);
+    if (found) return next(found, ctx);
+  }
+
   return next(spec, ctx);
 }

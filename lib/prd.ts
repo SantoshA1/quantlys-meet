@@ -135,9 +135,22 @@ export function anyKeyword(text: string, words: string[]): boolean {
 }
 
 export function detectMode(text: string): string {
+  return detectModeWhy(text).mode;
+}
+
+/** The same detection, but saying whether it actually MATCHED anything.
+ *
+ *  CAUGHT BY lib/prd.test.mjs before it shipped: detectMode returns "build"
+ *  both when the text says "app" and when the text says nothing recognisable,
+ *  because build is also the default. Any caller that wants to ask "did this
+ *  source have an opinion?" — which is exactly what detectModeFor does when it
+ *  ranks the brief above the transcript — cannot tell those two apart from the
+ *  return value alone. A brief reading "an app for filing expenses" was being
+ *  treated as no evidence at all, and the transcript then overruled it. */
+export function detectModeWhy(text: string): { mode: string; matched: boolean } {
   const t = String(text || "");
-  for (const [mode, words] of MODE_KEYWORDS) if (anyKeyword(t, words)) return mode;
-  return DEFAULT_MODE;
+  for (const [mode, words] of MODE_KEYWORDS) if (anyKeyword(t, words)) return { mode, matched: true };
+  return { mode: DEFAULT_MODE, matched: false };
 }
 
 // ── QUANTLYS-0209: never a bare question ──────────────────────────────────
@@ -505,7 +518,163 @@ export function extractJson(text: string): any {
  *      current one.
  *   3. WHO SAID IT MATTERS, because the person answering the open questions
  *      afterwards is one of the people in the room. */
-export function prdPrompt(transcript: string, dims: Dim[], meta: { artifact: string; gate: string }): string {
+// ── the project's stated intent, and the answers given outside a meeting ──
+//
+// FIELD 2026-08-25: "How do users enter the project goals so readiness has a
+// context and asks the right follow-up questions?"
+//
+// They could not. The only thing anybody typed about a project was its NAME,
+// and everything else had to be inferred from what happened to get said. From
+// the second meeting that is fine — the saved assessment carries the project's
+// real state. The thin spot was the FIRST meeting, where the agent had a
+// string like "Apollo" and nothing else, so its opening questions were the
+// generic ones for each dimension rather than ones about the actual product.
+// detectMode("Apollo") is "build" by default, not by evidence.
+//
+// Two things fix that, and they are the same shape: text the team writes
+// down ON PURPOSE, which outranks anything inferred from conversation.
+//
+//   · the BRIEF — two or three sentences of "what are we building, and why",
+//     typed once per project;
+//   · DECISIONS — an open question answered in the host console between
+//     meetings, rather than waiting for the next one.
+//
+// Both are deliberate statements, so both are treated as the current position
+// and placed AFTER the transcripts, where "the later one wins" puts them.
+
+export type Decision = {
+  /** the rubric dimension it closes */
+  key: string;
+  question: string;
+  answer: string;
+  /** ISO — deliberately a string, so a stored decision never depends on a
+   *  clock this code cannot see */
+  at: string;
+};
+
+export type ProjectContext = { brief: string; decisions: Decision[] };
+
+export const BRIEF_MAX = 1200;
+export const DECISION_MAX = 400;
+export const DECISIONS_KEPT = 60;
+
+export const EMPTY_CONTEXT: ProjectContext = { brief: "", decisions: [] };
+
+/** A brief is short on purpose. Two or three sentences is a statement of
+ *  intent that a model can weigh against a transcript; two pages is a second
+ *  document competing with the one this is supposed to produce, and whichever
+ *  the model believes, the other one is now wrong. */
+export function acceptBrief(text: string): { ok: boolean; value: string; why: string } {
+  const v = String(text || "").replace(/\s+/g, " ").trim();
+  if (!v) return { ok: true, value: "", why: "" };
+  if (v.length > BRIEF_MAX) {
+    return {
+      ok: false, value: v.slice(0, BRIEF_MAX),
+      why: `That's longer than a brief — keep it to two or three sentences (${BRIEF_MAX} characters). The meetings carry the detail; this is just what the project IS.`,
+    };
+  }
+  return { ok: true, value: v, why: "" };
+}
+
+/** An answer given outside a meeting. `at` is passed in rather than read from
+ *  a clock, so this is pure and a suite can pin the ordering. */
+export function acceptDecision(input: {
+  key?: string; question?: string; answer?: string; at?: string;
+}): { ok: boolean; value: Decision | null; why: string } {
+  const key = String(input?.key || "").trim();
+  const question = String(input?.question || "").trim().slice(0, 300);
+  const answer = String(input?.answer || "").replace(/\s+/g, " ").trim();
+  if (!key) return { ok: false, value: null, why: "Which part of the PRD does this answer?" };
+  if (!answer) return { ok: false, value: null, why: "Pick one of the answers, or write your own." };
+  return {
+    ok: true,
+    value: {
+      key, question,
+      answer: answer.slice(0, DECISION_MAX),
+      at: String(input?.at || "").trim(),
+    },
+    why: "",
+  };
+}
+
+/** Newest wins, one per dimension kept at the front, and the list is bounded.
+ *  Somebody who changes their mind about the same question has changed their
+ *  mind — keeping both would put the model in the position of choosing. */
+export function mergeDecisions(existing: Decision[], next: Decision): Decision[] {
+  const out = (existing || []).filter((d) => d && d.key !== next.key);
+  out.push(next);
+  return out.slice(-DECISIONS_KEPT);
+}
+
+/** Which dimensions have been answered outside a meeting. The panel uses this
+ *  so a question you already answered stops looking unanswered. */
+export function answeredKeys(ctx: ProjectContext | null | undefined): string[] {
+  return ((ctx && ctx.decisions) || []).map((d) => String(d?.key || "")).filter(Boolean);
+}
+
+/** The block that carries the team's own words into the prompt. Empty when
+ *  there is nothing stated, so a project with no brief reads exactly as it
+ *  did before this existed. */
+export function contextBlock(ctx: ProjectContext | null | undefined): string {
+  const brief = String(ctx?.brief || "").trim();
+  const decisions = (ctx?.decisions || []).filter((d) => d && d.key && d.answer);
+  if (!brief && !decisions.length) return "";
+  const lines: string[] = [];
+  if (brief) {
+    lines.push("What the team says this project IS, in their own words. This is");
+    lines.push("their stated intent — weigh the transcripts against it, and when a");
+    lines.push("meeting wandered somewhere this does not cover, that is a wander,");
+    lines.push("not a change of direction:");
+    lines.push("");
+    lines.push(brief);
+    lines.push("");
+  }
+  if (decisions.length) {
+    lines.push("Decisions the team took DELIBERATELY, outside a meeting, by");
+    lines.push("answering these exact questions. Each one is the current position");
+    lines.push("and outranks anything said in a transcript about the same thing —");
+    lines.push("somebody sat down and chose:");
+    lines.push("");
+    for (const d of decisions) {
+      lines.push(`- [${d.key}] ${d.question ? `${d.question} → ` : ""}${d.answer}${d.at ? ` (${String(d.at).slice(0, 10)})` : ""}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+/** Mode from the strongest signal available. The brief is a sentence somebody
+ *  wrote about what they are building; a project NAME is a label. "Apollo"
+ *  tells you nothing and falls to the default; "a game where you dodge waves"
+ *  tells you everything. Ordered, so the best evidence decides. */
+export function detectModeFor(opts: { brief?: string; project?: string; transcript?: string }): string {
+  const brief = String(opts?.brief || "").trim();
+  if (brief) {
+    const m = detectModeWhy(brief);
+    if (m.matched) return m.mode;
+  }
+  const name = String(opts?.project || "").trim();
+  if (name) {
+    const m = detectModeWhy(name);
+    if (m.matched) return m.mode;
+  }
+  return detectMode(`${name} ${String(opts?.transcript || "").slice(0, 4000)}`);
+}
+
+/** Where a project's stated context lives. Deliberately NOT the same file as
+ *  the assessment: the assessment is regenerated every time somebody presses
+ *  Build, and a rebuild must never wipe the sentences the team wrote. */
+export function projectPath(userId: string, projectName: string): string {
+  const slug = String(projectName || "project").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
+  return `${String(userId || "")}/prd/${slug}.project.json`;
+}
+
+export function prdPrompt(
+  transcript: string,
+  dims: Dim[],
+  meta: { artifact: string; gate: string },
+  ctx?: ProjectContext | null
+): string {
   const lines = ["Required dimensions:"];
   for (const d of dims) lines.push(`- ${d.key}: ${d.label} — ${d.desc}`);
   lines.push("");
@@ -514,6 +683,13 @@ export function prdPrompt(transcript: string, dims: Dim[], meta: { artifact: str
   lines.push("is the current position.");
   lines.push("");
   lines.push(transcript.trim() || "(no transcripts yet)");
+  const ctxBlock = contextBlock(ctx);
+  if (ctxBlock) {
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+    lines.push(ctxBlock);
+  }
   return lines.join("\n");
 }
 

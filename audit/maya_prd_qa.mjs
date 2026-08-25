@@ -254,6 +254,63 @@ await check("PRD-18", "the handoff never claims a one-click send to Conclave", a
      "THE HONESTY GUARD: Conclave has no endpoint that accepts a PRD, so nothing here may imply it does");
 });
 
+// ── the project's stated context reaches the assessment ──────────────────
+const { POST: PROJECT } = await import("../app/api/project/route.ts");
+const say = (body) => PROJECT(new Request("http://localhost/api/project", {
+  method: "POST",
+  headers: { authorization: "Bearer good", "content-type": "application/json" },
+  body: JSON.stringify(body),
+}));
+
+await check("PRD-19", "what the team wrote about the project reaches the model", async () => {
+  seedProject();
+  await say({ project: "Quantlys Meet", action: "brief", brief: "A receipt filer for the finance team." });
+  CLOUD.chat = () => ({ status: 200, body: GOOD_REPLY });
+  const j = await (await post({ project: "Quantlys Meet" })).json();
+  const sent = JSON.stringify(CLOUD.calls[CLOUD.calls.length - 1]);
+  _a(sent.includes("A receipt filer for the finance team"), "the brief is in the prompt");
+  _a(/stated intent/i.test(sent), "…labelled as intent, so the model weighs the meetings against it");
+  _a(j.brief === "A receipt filer for the finance team.", "and it is echoed back so the panel can show it");
+});
+
+await check("PRD-20", "an answer given between meetings outranks what was said in one", async () => {
+  seedProject();
+  await say({ project: "Quantlys Meet", action: "decision", key: "scope",
+              question: "What has to be in the first version?", answer: "Photo upload only, nothing else" });
+  CLOUD.chat = () => ({ status: 200, body: GOOD_REPLY });
+  const j = await (await post({ project: "Quantlys Meet" })).json();
+  const sent = JSON.stringify(CLOUD.calls[CLOUD.calls.length - 1]);
+  _a(sent.includes("Photo upload only, nothing else"), "the answer is in the prompt");
+  _a(/outranks/i.test(sent), "…and marked as outranking a transcript. Somebody sat down and chose");
+  _a(j.answered.includes("scope"), "the panel is told which questions are already answered");
+});
+
+await check("PRD-21", "the brief decides which rubric the project is scored on", async () => {
+  seedProject("Apollo");
+  CLOUD.chat = () => ({ status: 200, body: content(JSON.stringify({
+    dimensions: [{ key: "core_loop", status: "present", evidence: "dodge and score" }], prd: "# Game design doc" })) });
+  const before = await (await post({ project: "Apollo" })).json();
+  _a(before.mode === "build",
+     `NEGATIVE CONTROL: with only a name, "Apollo" is scored as a web app by DEFAULT — got ${before.mode}`);
+  await say({ project: "Apollo", action: "brief", brief: "A game where you dodge waves and chase a high score." });
+  const after = await (await post({ project: "Apollo" })).json();
+  _a(after.mode === "game", `one sentence of brief and it is a game — got ${after.mode}`);
+  _a(after.artifact === "Game design doc", "…scored on its core loop rather than a data model it will never have");
+});
+
+await check("PRD-22", "REBUILDING THE PRD DOES NOT WIPE THE BRIEF", async () => {
+  seedProject();
+  await say({ project: "Quantlys Meet", action: "brief", brief: "A receipt filer." });
+  await say({ project: "Quantlys Meet", action: "decision", key: "users", answer: "The finance team" });
+  CLOUD.chat = () => ({ status: 200, body: GOOD_REPLY });
+  await post({ project: "Quantlys Meet" });
+  await post({ project: "Quantlys Meet" });
+  const j = await (await post({ project: "Quantlys Meet" })).json();
+  _a(j.brief === "A receipt filer.", "three rebuilds later the sentences a person wrote are still there");
+  _a(j.decisions.length === 1, "…and so are their answers");
+  _a(CLOUD.files["u1/prd/quantlys-meet.project.json"], "because the context lives in its OWN file, not in the one Build overwrites");
+});
+
 // ── report ───────────────────────────────────────────────────────────────
 console.log("=".repeat(78));
 console.log("  MAYA QA — PRD from recorded meetings, by project");

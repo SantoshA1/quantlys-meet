@@ -213,6 +213,30 @@ await check("AG-15", "a project's first meeting has everything open", async () =
   _a(j.ask === true && j.key, "with no saved assessment it still knows what to ask about");
 });
 
+await check("AG-17", "the brief reaches the question asked in the room", async () => {
+  reset();
+  CLOUD.files["u1/prd/expenses.project.json"] = JSON.stringify({
+    brief: "A receipt filer for the finance team so nobody keeps paper.", decisions: [],
+  });
+  CLOUD.chat = () => ({ status: 200, body: GOOD });
+  await post({ project: "Expenses", recent: ROOM_TALK });
+  const sent = JSON.stringify(CLOUD.calls[CLOUD.calls.length - 1]);
+  _a(sent.includes("A receipt filer for the finance team"),
+     "THE FIRST MEETING'S FIX: without this the agent knows a project NAME and asks the generic question for the dimension — a checklist, not an assistant");
+  _a(/THEIR product/i.test(sent), "and it is told to ask about their product, using their nouns");
+});
+
+await check("AG-18", "a game brief puts the agent on the game rubric from minute one", async () => {
+  reset();
+  CLOUD.files["u1/prd/apollo.project.json"] = JSON.stringify({
+    brief: "A game where you dodge waves and chase a high score.", decisions: [],
+  });
+  CLOUD.chat = () => ({ status: 200, body: GOOD });
+  const j = await (await post({ project: "Apollo", recent: "Kiran: so the first screen." })).json();
+  _a(["concept", "players", "core_loop", "mechanics", "tech", "content", "risks", "success"].includes(j.key),
+     `asked about "${j.key}" — with only the name "Apollo" this would have been a web-app dimension`);
+});
+
 console.log("=".repeat(78));
 console.log("  MAYA QA — the agent asking questions during the meeting");
 console.log("=".repeat(78));

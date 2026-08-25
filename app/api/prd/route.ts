@@ -18,10 +18,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { chooseModel } from "@/lib/model";
 import {
-  detectMode, rubricFor, metaFor, prdPrompt, prdSystemPrompt, extractJson,
+  detectModeFor, rubricFor, metaFor, prdPrompt, prdSystemPrompt, extractJson,
   normalizeReport, fallbackReport, stitchTranscripts, handoffPlan, prdMarkdown,
-  prdFilename, prdPath, type MeetingSource,
+  prdFilename, prdPath, answeredKeys, type MeetingSource,
 } from "@/lib/prd";
+import { readContext } from "../project/route";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -151,9 +152,19 @@ export async function POST(req: Request) {
   // told us what they are building has told us.
   const explicit = String(body?.mode || "").trim();
   const stitched = stitchTranscripts(newest, 120000);
+  // What the team wrote down about this project — the brief, and any question
+  // they answered in the console between meetings. Both are deliberate
+  // statements, so both outrank anything inferred from a transcript, and the
+  // brief in particular is a far better mode signal than a project NAME: a
+  // project called "Apollo" is a `build` by default rather than by evidence.
+  const ctx = await readContext(sb, user.id, project);
   const mode = explicit && rubricFor(explicit) !== rubricFor("__none__")
     ? explicit
-    : detectMode(`${project} ${newest.map((m) => m.title).join(" ")} ${stitched.text.slice(0, 4000)}`);
+    : detectModeFor({
+        brief: ctx.brief,
+        project,
+        transcript: `${newest.map((m) => m.title).join(" ")} ${stitched.text}`,
+      });
   const dims = rubricFor(mode);
   const meta = metaFor(mode);
 
@@ -174,7 +185,7 @@ export async function POST(req: Request) {
         max_tokens: 8000,         // a real PRD plus eight assessments
         messages: [
           { role: "system", content: prdSystemPrompt(meta.artifact, meta.gate) },
-          { role: "user", content: prdPrompt(stitched.text, dims, meta) },
+          { role: "user", content: prdPrompt(stitched.text, dims, meta, ctx) },
         ],
       }),
     });
@@ -197,6 +208,11 @@ export async function POST(req: Request) {
   const out = {
     ...report,
     project,
+    // Echoed back so the panel can show what the assessment was actually
+    // given, and mark the questions that have already been answered.
+    brief: ctx.brief,
+    decisions: ctx.decisions,
+    answered: answeredKeys(ctx),
     meetings: newest.map((m) => ({ title: m.title, at: m.at, room: m.room, path: m.path })),
     meetings_used: stitched.used,
     meetings_dropped: stitched.dropped + droppedForCount,
