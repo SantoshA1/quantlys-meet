@@ -10,6 +10,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Recordings from "./Recordings";
 import Search from "./Search";
 import Intelligence from "./Intelligence";
+import Prd, { PRD_CSS } from "./Prd";
 import { nextUp, inWords, stillOpen } from "@/lib/intelligence";
 
 type Meeting = {
@@ -567,6 +568,12 @@ export default function HostConsole() {
   const brokenCount = (health?.steps || []).filter((x) => !x.ok).length;
 
   const up = nextUp(mine);
+  // The projects this person actually has meetings on. Sorted, de-duplicated,
+  // and derived rather than stored — a project is a tag on a meeting, not a
+  // record somewhere that could disagree with the meetings.
+  const projectNames = Array.from(
+    new Set(mine.map((m) => String((m as any).project || "").trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
   const groups = stillOpen(items.map((i) => ({ ...i, project: i.project })));
 
   return (
@@ -695,6 +702,10 @@ export default function HostConsole() {
 
             {/* ── MEETING INTELLIGENCE ───────────────────────────────── */}
             <Intelligence userId={user.id} openItems={items} onTick={tick} />
+            {/* Every recorded meeting on a project, read together, scored on
+                the same rubric Quantlys Conclave scores a PRD on. See Prd.tsx
+                for why there is no one-click "send to Conclave" button. */}
+            <Prd projects={projectNames} />
 
             {/* ── YOUR MEETINGS ──────────────────────────────────────── */}
             <section className="qh-panel">
@@ -882,7 +893,7 @@ export default function HostConsole() {
   );
 }
 
-const CSS = `
+const CSS = PRD_CSS + `
 .qm-wrap { max-width: 1180px; margin: 0 auto; padding: 26px 24px 80px;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e9edf5; }

@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "for f in lib/*.test.mjs audit/maya_*.mjs; do echo \"\u2014 $f\"; node \"$f\" || exit 1; done",
+    "test:maya": "for f in audit/maya_*.mjs; do node \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@aws-sdk/s3-request-presigner": "3.637.0",

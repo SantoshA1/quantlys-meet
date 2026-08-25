@@ -22,21 +22,41 @@ export async function GET(req: Request) {
   const room = new URL(req.url).searchParams.get("room")?.trim() || "";
   if (!room) return Response.json({ error: "A room is required." }, { status: 400 });
 
-  const out: any = { room, title: null, scheduled_at: null, host: null, in: [], waiting: 0 };
+  // `project` joined this in 2026-08-24: the in-meeting PRD agent needs to
+  // know which project it is listening for before anybody has said a word,
+  // and the lobby is the only place that knows before the room exists.
+  const out: any = { room, title: null, scheduled_at: null, project: null, host: null, in: [], waiting: 0 };
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (url && key) {
     const sb = createClient(url, key, { auth: { persistSession: false } });
     try {
-      const { data: m } = await sb
+      // Paste-order insurance, the same shape the host page uses: `project`
+      // and `scheduled_at` arrive with a SQL step, and a select naming a
+      // column that does not exist errors the WHOLE row away — so the lobby
+      // would lose the host's name and the title too, over a column nobody
+      // had asked for. Ask for everything, fall back to what has always been
+      // there.
+      let m: any = null;
+      const full = await sb
         .from("meetings")
-        .select("title, scheduled_at, created_by")
+        .select("title, scheduled_at, project, created_by")
         .eq("room_name", room)
         .maybeSingle();
+      if (!full.error) m = full.data;
+      else {
+        const basic = await sb
+          .from("meetings")
+          .select("title, created_by")
+          .eq("room_name", room)
+          .maybeSingle();
+        m = basic.data;
+      }
       if (m) {
         out.title = m.title || null;
         out.scheduled_at = m.scheduled_at || null;
+        out.project = m.project || null;
         // The host's address, because "who invited me" is the first thing a
         // careful guest checks. The host sent this person the link; naming
         // the sender is not a leak, it is the thing that makes the link safe

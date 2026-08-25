@@ -317,8 +317,34 @@ export async function POST(req: Request) {
   }
 
   const summaryPath = videoPath.replace(/\.[a-z0-9]+$/i, "") + SUMMARY_SUFFIX;
+
+  // 2026-08-24 — the project tag rides WITH the summary now.
+  //
+  // It was already being read further down, for the action-item rows, and
+  // thrown away here. That was fine while a summary was only ever read one at
+  // a time. It stops being fine the moment something wants every meeting a
+  // project ever had — which is exactly what /api/prd does. Reading the tag
+  // off the meetings table at PRD time would work only for people who have
+  // run the SQL step that adds the column, and would silently produce an
+  // EMPTY PRD for everybody else rather than an error. A tag written into the
+  // file when the file is written cannot go missing later.
+  let meetingRow: any = null;
+  try {
+    const { data } = await sb
+      .from("meetings")
+      .select("id, title, project, started_at")
+      .eq("room_name", room)
+      .maybeSingle();
+    meetingRow = data || null;
+  } catch { /* the column may not exist yet; a summary without a tag is fine */ }
+
   const payload = {
     room,
+    // Which project's PRD this meeting belongs to. Null is a real answer —
+    // an untagged meeting is a meeting, it just isn't part of a project yet.
+    project: (meetingRow?.project ?? null) as string | null,
+    meetingTitle: (meetingRow?.title ?? null) as string | null,
+    at: (meetingRow?.started_at ?? null) as string | null,
     videoPath,
     audioPath: audioPath || null,
     // The host page shows this field, so it carries the whole set of notes.
@@ -357,11 +383,7 @@ export async function POST(req: Request) {
   // A sentence inside a summary file cannot be ticked off, cannot be counted,
   // and cannot come back next Monday still open. A row can.
   try {
-    const { data: meeting } = await sb
-      .from("meetings")
-      .select("id, title, project, started_at")
-      .eq("room_name", room)
-      .maybeSingle();
+    const meeting = meetingRow;   // looked up above, where the summary needed it
     // Prefer the model's cleaned-up actions when it produced them (they read
     // as tasks, not as speech) but keep the raw marks for the timestamps.
     // The model's items are the rows; the raw utterances only lend them their

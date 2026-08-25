@@ -20,6 +20,7 @@ import "@livekit/components-styles";
 import { Track, AudioPresets, VideoPresets, RoomEvent } from "livekit-client";
 import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
+import Agent, { AGENT_CSS } from "./Agent";
 import { connectionAdvice } from "@/lib/media";
 import { joinErrorText, deviceFailText } from "@/lib/camera";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
@@ -124,7 +125,7 @@ export default function Conference({ room }: { room: string }) {
   // Who is already inside, who invited you, whether others are waiting —
   // everything the link already grants, fetched fresh so the lobby cannot
   // disagree with the room.
-  const [info, setInfo] = useState<{ host: string | null; in: string[]; waiting: number } | null>(null);
+  const [info, setInfo] = useState<{ host: string | null; in: string[]; waiting: number; project: string } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -132,7 +133,7 @@ export default function Conference({ room }: { room: string }) {
       try {
         const r = await fetch(`/api/room/info?room=${encodeURIComponent(room)}`);
         const j = await r.json();
-        if (alive && j && !j.error) setInfo({ host: j.host || null, in: j.in || [], waiting: j.waiting || 0 });
+        if (alive && j && !j.error) setInfo({ host: j.host || null, in: j.in || [], waiting: j.waiting || 0, project: String(j.project || "") });
       } catch { /* the lobby renders what it has */ }
     })();
     return () => { alive = false; };
@@ -449,7 +450,7 @@ export default function Conference({ room }: { room: string }) {
         onMediaDeviceFailure={(f) => setMediaFail(deviceFailText(f ? String(f) : ""))}
         className="qmr-lk"
       >
-        <RoomHeader room={room} title={meetingName} camWanted={choice.camOn} micWanted={choice.micOn} />
+        <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} />
         <PlaybackGate />
         {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
         <div className="qmr-conf">
@@ -532,8 +533,8 @@ function PlaybackGate() {
 // silently lose that person's voice, so the sources are kept and reused.
 const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
-function RoomHeader({ room, title, camWanted, micWanted }: {
-  room: string; title?: string; camWanted?: boolean; micWanted?: boolean;
+function RoomHeader({ room, title, project, camWanted, micWanted }: {
+  room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean;
 }) {
   const participants = useParticipants();
   const ctx = useRoomContext();
@@ -1160,6 +1161,11 @@ function RoomHeader({ room, title, camWanted, micWanted }: {
         {/* The watchdog lives in the header because that is where somebody
             looks when they suspect they cannot be heard. */}
         <MediaGuard camWanted={camWanted} micWanted={micWanted} />
+        {/* One button, at the start of the meeting. Everything about whether
+            it speaks lives in lib/agent.ts, which refuses far more often than
+            it agrees — see the header of Agent.tsx for why that is the whole
+            design. */}
+        <Agent room={room} project={project || ""} log={cc.log} myName={meName} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -2117,7 +2123,7 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 }
 
 
-const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + `
+const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
 /* The playback gate. Impossible to miss on purpose: a person who cannot hear
    the meeting is thirty seconds from leaving it. */
 .qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:80;
