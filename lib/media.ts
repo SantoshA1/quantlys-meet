@@ -102,9 +102,21 @@ export function describeMediaError(err: any, kind: MediaKind = "audioinput"): Ex
       fix: "Press Retry. If it keeps happening, unpair and re-pair the device, or switch to a wired one for this call.",
     };
   }
+  // FIELD 2026-08-25: this rendered as "Your camera couldn't be started
+  // (Error)." — because the thrown thing's constructor is literally named
+  // Error. Naming a class "Error" tells a person nothing at all; it just looks
+  // like the app knows something it will not say. A generic name is dropped,
+  // and the MESSAGE is shown instead when there is one worth reading.
+  //
+  // AND THE SECOND HALF, which the first attempt at this fix walked straight
+  // into: `msg` falls back to String(err), and String(new Error("")) is the
+  // string "Error". So dropping the generic NAME and showing the message
+  // instead put the same useless word back. Both are filtered.
+  const isGeneric = (v: string) => /^(Error|TypeError|RangeError|DOMException|Object|String|Number|Boolean|Function|undefined|null|\[object \w*\]|)$/i.test(String(v || "").trim());
+  const detail = !isGeneric(name) ? name : (isGeneric(msg) ? "" : msg.trim().slice(0, 90));
   return {
     code: "unknown",
-    what: `Your ${thing} couldn't be started${name ? ` (${name})` : ""}.`,
+    what: `Your ${thing} couldn't be started${detail ? ` — ${detail}` : ""}.`,
     fix: "Press Retry, or pick a different device from the list.",
   };
 }

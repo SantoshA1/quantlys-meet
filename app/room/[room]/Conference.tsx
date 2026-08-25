@@ -22,6 +22,7 @@ import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
 import Agent, { AGENT_CSS } from "./Agent";
 import { connectionAdvice } from "@/lib/media";
+import { linkVerdict, chipLabel, type LinkVerdict } from "@/lib/link";
 import { joinErrorText, deviceFailText } from "@/lib/camera";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -419,13 +420,36 @@ export default function Conference({ room }: { room: string }) {
             : false
         }
         options={{
+          // FIELD 2026-08-25, "mic keeps getting disconnected, feels like
+          // latency, others do not have the problem". Neither of these was
+          // set, and both are about surviving exactly that.
+          //
+          // adaptiveStream: stop decoding video nobody is looking at — a tile
+          // scrolled out of view or sized to a thumbnail no longer costs a
+          // full-resolution decode. On a laptop already struggling, video
+          // decode is what starves the audio thread, and starved audio is what
+          // the room hears as "you keep cutting out".
+          adaptiveStream: true,
+          // dynacast: stop PUBLISHING layers nobody is subscribed to. The
+          // other half of the same saving, on the upload side, which is the
+          // side that is usually the narrow one.
+          dynacast: true,
           // Voice quality. The default preset is 32kbps; 64kbps mono Opus is
           // transparent for speech and costs nothing next to 1.7Mbps of video.
           // RED sends each packet twice over, which is what keeps a voice
           // intelligible on a lossy hotel connection rather than robotic.
           publishDefaults: {
             audioPreset: AudioPresets.musicHighQuality,
-            dtx: true,
+            // dtx OFF, and this is a deliberate reversal.
+            //
+            // Discontinuous transmission stops sending packets during silence
+            // and saves bandwidth that, at 64kbps mono, was never the problem.
+            // What it costs is the beginning of the next word: the encoder has
+            // to spin back up, and the first syllable after a pause is the one
+            // that gets clipped. In a meeting that is EVERY time somebody
+            // answers a question — which is exactly the shape of "sometimes
+            // people cannot hear me". Zoom does not do this either.
+            dtx: false,
             red: true,
             simulcast: true,
             // VP8 on purpose: every browser and every phone can decode it.
@@ -741,17 +765,30 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
   // already computes. Reported together because they answer different halves
   // of "is it me or is it them": the word is the verdict, the number is the
   // evidence.
-  const [link, setLink] = useState<{ word: string; ms: number; bars: number; detail: string }>(
-    { word: "CHECKING", ms: 0, bars: 2, detail: "Measuring your connection…" }
+  // FIELD 2026-08-25, from a screenshot with "Disconnected" and "LINK
+  // EXCELLENT" on screen at the same instant. `connectionQuality` KEEPS ITS
+  // LAST VALUE when the room goes away — the event that would update it only
+  // fires while connected — so the chip cheerfully reported an excellent link
+  // to a meeting the person had already dropped out of. The room's own state
+  // decides the word now; quality only refines it once connected.
+  const [link, setLink] = useState<{ v: LinkVerdict; ms: number }>(
+    { v: linkVerdict({ state: "connecting" }), ms: 0 }
   );
+  const stateSince = useRef(0);
+  const lastState = useRef("");
+  const connectedSince = useRef(0);
   useEffect(() => {
     let alive = true;
     const beat = async () => {
       if (!alive) return;
-      const q = String(ctx?.localParticipant?.connectionQuality || "unknown").toLowerCase();
-      const word = q === "excellent" ? "EXCELLENT" : q === "good" ? "GOOD"
-        : q === "poor" ? "POOR" : q === "lost" ? "LOST" : "CHECKING";
-      const bars = q === "excellent" ? 4 : q === "good" ? 3 : q === "poor" ? 1 : 2;
+      const state = String((ctx as any)?.state || "connecting");
+      const now = Date.now();
+      if (state !== lastState.current) {
+        lastState.current = state;
+        stateSince.current = now;
+        if (state === "connected" && !connectedSince.current) connectedSince.current = now;
+        if (state !== "connected") connectedSince.current = 0;
+      }
       let ms = 0;
       try {
         const pc: any = (ctx as any)?.engine?.pcManager?.publisher?.pc
@@ -765,12 +802,18 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
       } catch { /* the word alone is still worth showing */ }
       if (alive) {
         setLink({
-          word, ms, bars,
-          detail: connectionAdvice(q) ||
-            (ms ? `Round trip to the meeting server is ${ms}ms.` : "Connection looks healthy."),
+          ms,
+          v: linkVerdict({
+            state,
+            quality: String(ctx?.localParticipant?.connectionQuality || "unknown"),
+            rttMs: ms,
+            inStateMs: stateSince.current ? now - stateSince.current : 0,
+            sinceConnectedMs: connectedSince.current ? now - connectedSince.current : 0,
+          }),
         });
       }
-      if (alive) setTimeout(beat, 5000);
+      // A dropped meeting must not wait five seconds to say so.
+      if (alive) setTimeout(beat, state === "connected" ? 5000 : 1000);
     };
     beat();
     return () => { alive = false; };
@@ -1079,6 +1122,29 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
   const hostables = participants.filter((p) => p.identity !== ctx.localParticipant?.identity);
 
   return (
+    <>
+    {/* THE ONE HONEST THING ON SCREEN when the room is down.
+        FIELD 2026-08-25: a screenshot showed "Disconnected", "LINK EXCELLENT",
+        "No microphone is being sent" and "Your camera isn't being sent" all at
+        once. Three of those four were the app blaming devices for a network
+        drop, and the device banners are silenced in that state now (see
+        canJudgeDevices in MediaGuard.tsx). This is what replaces them: what
+        actually happened, what it means for the person, and — the part that
+        stops somebody unplugging a working headset mid-meeting — that their
+        equipment is not the problem. */}
+    {link.v.title ? (
+      <div className={`qmr-link${link.v.level === "dead" ? " qmr-linkdead" : ""}`} role="status">
+        <div className="qmr-linktext">
+          <b>{link.v.title}</b>
+          <span>{link.v.detail}</span>
+        </div>
+        {link.v.action === "rejoin" ? (
+          <button className="qmr-linkbtn" onClick={() => window.location.reload()}>Rejoin</button>
+        ) : (
+          <span className="qmr-linkspin" aria-hidden />
+        )}
+      </div>
+    ) : null}
     <header className="qmr-bar" ref={barRef}>
       <span className="qmr-logo">Quantlys Meeting</span>
 
@@ -1108,14 +1174,14 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
             It earns its place: "your connection is bad" is the single most
             argued-about claim in any meeting, and a number nobody can argue
             with ends the argument. */}
-        <span className="q-chip" title={link.detail}>
-          <span className="q-bars" style={{ opacity: link.bars / 4 }}>
-            <i style={{ animation: "none", height: "40%" }} />
-            <i style={{ animation: "none", height: link.bars >= 2 ? "65%" : "18%" }} />
-            <i style={{ animation: "none", height: link.bars >= 3 ? "100%" : "18%" }} />
+        <span className={`q-chip${link.v.level === "dead" ? " q-chipbad" : link.v.level === "warn" ? " q-chipwarn" : ""}`}
+              title={link.v.detail}>
+          <span className="q-bars" style={{ opacity: Math.max(0.25, link.v.bars / 4) }}>
+            <i style={{ animation: "none", height: link.v.bars >= 1 ? "40%" : "18%" }} />
+            <i style={{ animation: "none", height: link.v.bars >= 2 ? "65%" : "18%" }} />
+            <i style={{ animation: "none", height: link.v.bars >= 3 ? "100%" : "18%" }} />
           </span>
-          LINK {link.word}
-          {link.ms ? ` · ${link.ms} MS` : ""}
+          {chipLabel(link.v, link.ms)}
         </span>
         {signedIn ? (
           recording ? (
@@ -1400,6 +1466,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
         </span>
       ) : null}
     </header>
+    </>
   );
 }
 
@@ -2124,6 +2191,23 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 
 
 const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
+/* The connection banner. Full width and above everything, because when this
+   is up it is the only thing on screen that is true. */
+.qmr-link { display:flex; align-items:center; gap:14px; padding:11px 18px;
+  background:#2a2013; border-bottom:1px solid #5a4520; color:#f0d9a6; font-size:13.5px; line-height:1.5; }
+.qmr-linkdead { background:#2a1618; border-bottom-color:#5a2a2f; color:#ffd0d0; }
+.qmr-linktext { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.qmr-linktext b { font-size:14px; }
+.qmr-linkbtn { font:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap; margin-left:auto;
+  background:rgba(255,255,255,.09); color:inherit; border:1px solid rgba(255,255,255,.28);
+  border-radius:8px; padding:6px 14px; }
+.qmr-linkbtn:hover { background:rgba(255,255,255,.18); }
+.qmr-linkspin { margin-left:auto; width:13px; height:13px; flex:0 0 auto; border-radius:50%;
+  border:2px solid rgba(240,217,166,.3); border-top-color:#f0d9a6; animation:qmrspin 900ms linear infinite; }
+@keyframes qmrspin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce){ .qmr-linkspin{ animation:none; } }
+.q-chipwarn { border-color:#5a4520 !important; color:#f0d9a6 !important; }
+.q-chipbad { border-color:#5a2a2f !important; color:#ffb4b4 !important; }
 /* The playback gate. Impossible to miss on purpose: a person who cannot hear
    the meeting is thirty seconds from leaving it. */
 .qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:80;

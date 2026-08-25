@@ -50,6 +50,7 @@ import { acceptCustom, CUSTOM_ID } from "@/lib/backgrounds";
 import {
   dueForRetry, isStuck, shouldReattach, withTimeout, RECOVER_TIMEOUT_MS,
 } from "@/lib/recovery";
+import { isConnected, trustDevices, REJOIN_GRACE_MS } from "@/lib/link";
 
 const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect", custom: "qm.bg.custom" };
 const save = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch {} };
@@ -82,6 +83,14 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const [photoIds, setPhotoIds] = useState<string[]>([]);
   const [dismissed, setDismissed] = useState(0);
   const [camDismissed, setCamDismissed] = useState(0);
+
+  // FIELD 2026-08-25. The room's own state, which NOTHING in here consulted
+  // before — and that is the whole bug. When the connection drops, every local
+  // publication goes with it; a device supervisor that does not know the
+  // difference reads "no microphone publication" as "your microphone is
+  // broken", says so, and then tries to publish into a room it is not in.
+  const connectedSince = useRef(0);
+  const roomState = useRef<string>("connecting");
 
   const attempts = useRef(0);
   const lastSound = useRef(Date.now());
@@ -163,6 +172,18 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
 
   useEffect(() => { refreshDevices(); }, [refreshDevices]);
 
+  /** May the app judge — or touch — a device right now?
+   *
+   *  No, unless the room is connected AND has been for longer than the
+   *  republish window. Everything downstream of this asks it first: the two
+   *  supervisors before they set a verdict, and the two recoveries before they
+   *  call the device. The screenshot that produced this rule had four device
+   *  banners on screen under the word "Disconnected". */
+  const canJudgeDevices = useCallback(
+    () => trustDevices(roomState.current, connectedSince.current ? Date.now() - connectedSince.current : 0),
+    []
+  );
+
   // ── bring a dead microphone back ────────────────────────────────────────
   //
   // FIELD 2026-08-24. The old version of this function turned the microphone
@@ -181,6 +202,10 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const recover = useCallback(async () => {
     if (recovering.current && !isStuck(recoverStart.current, Date.now())) return;
     if (!room) return;
+    // You cannot publish into a room you are not connected to. Trying anyway
+    // throws, renders as a device error, and races the reconnect that was
+    // about to fix this by itself.
+    if (!isConnected(roomState.current)) return;
     recovering.current = true;
     recoverStart.current = Date.now();
     lastTry.current = Date.now();
@@ -235,6 +260,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const recoverCam = useCallback(async (frozen = false) => {
     if (camRecovering.current && !isStuck(camRecoverStart.current, Date.now())) return;
     if (!room) return;
+    if (!isConnected(roomState.current)) return;   // see recover(), same reason
     camRecovering.current = true;
     camRecoverStart.current = Date.now();
     camLastTry.current = Date.now();
@@ -378,6 +404,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     if (!room) return;
     const tick = () => {
       const L = live.current;
+      // THE GATE. While the room is not connected — or has only just come
+      // back and LiveKit is still republishing — nothing this function could
+      // say about a microphone would be true. The connection banner in
+      // Conference.tsx is the one honest thing on screen in that state.
+      if (!canJudgeDevices()) return;
       // Somebody who joined without a microphone is not broken, and must
       // never have one switched on for them.
       if (!micWanted && !everMic.current) return;
@@ -424,7 +455,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     tick();
     const iv = window.setInterval(tick, 500);
     return () => window.clearInterval(iv);
-  }, [room, micWanted, recover]);
+  }, [room, micWanted, recover, canJudgeDevices]);
 
   // ── apply, remove, restore background effects ──────────────────────────
   const applyEffect = useCallback(async (effect: Effect, silent = false) => {
@@ -606,6 +637,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     };
 
     const tick = () => {
+      if (!canJudgeDevices()) return;   // see the microphone supervisor above
       const frame = readFrame();
       const luma = frame ? frame.luma : null;
       const now = Date.now();
@@ -670,7 +702,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // time fxBusy flips, and fxBusy flips inside applyEffect — so listing it
     // rebuilt this watcher in the middle of its own work. The ref carries the
     // latest one without making the watcher re-run.
-  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam]);
+  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam, canJudgeDevices]);
 
   // ── the settings panel behaves like a panel ────────────────────────────
   // Escape and a click outside close it; choosing a backdrop does NOT, because
@@ -706,6 +738,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     if (!room) return;
     const onFail = (e: any) => {
       const err = e?.error || e;
+      // Same rule: a failure that arrives while the room is down is a
+      // connection failure wearing a device error's clothes.
+      if (!isConnected(roomState.current)) return;
       // Blame the device that is actually missing — a camera failure
       // described as a microphone problem sends the person debugging the
       // wrong device. When both or neither are missing, say so neutrally.
@@ -724,8 +759,28 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // was no longer the device being published. Rejoining fixed it because a
     // rejoin re-reads the device list. This does that without the rejoin, and
     // only ever moves BACK to the device they picked themselves.
+    const onConn = (st: any) => {
+      const v = String(st || room.state || "");
+      roomState.current = v;
+      if (isConnected(v)) {
+        // Back. Do NOT trust devices yet — LiveKit republishes tracks
+        // asynchronously, and a watchdog firing into that window blames the
+        // microphone for a gap the reconnect is already closing.
+        if (!connectedSince.current) connectedSince.current = Date.now();
+      } else {
+        connectedSince.current = 0;
+        // Nothing said about a device is true right now, so nothing is said.
+        setVerdict({ level: "ok", title: "", detail: "", action: "none" });
+        setCamV({ level: "ok", title: "", detail: "", action: "none" });
+        setMediaErr("");
+      }
+    };
+    onConn(room.state);
+    room.on(RoomEvent.ConnectionStateChanged, onConn);
+
     const onDevices = async () => {
       refreshDevices();
+      if (!isConnected(roomState.current)) return;   // switching devices on a dead room does nothing
       try {
         const all = await navigator.mediaDevices.enumerateDevices();
         const back = async (kind: "audioinput" | "videoinput", key: string, source: Track.Source) => {
@@ -750,6 +805,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     room.on(RoomEvent.MediaDevicesChanged, onDevices);
     room.on(RoomEvent.ConnectionQualityChanged, onQuality);
     return () => {
+      room.off(RoomEvent.ConnectionStateChanged, onConn);
       room.off(RoomEvent.MediaDevicesError, onFail);
       room.off(RoomEvent.MediaDevicesChanged, onDevices);
       room.off(RoomEvent.ConnectionQualityChanged, onQuality);
