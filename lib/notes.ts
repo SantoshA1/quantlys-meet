@@ -372,7 +372,7 @@ export function parseAnswer(raw: string): Answer {
 /** The transcript the model reads, with a second-marker on every line so a
  *  citation can point at a moment instead of a paragraph. */
 export function timedTranscript(
-  utterances: Array<{ start?: number; speaker?: number; transcript?: string }>,
+  utterances: Array<{ start?: number; speaker?: number; transcript?: string; who?: string }>,
   names?: string[]
 ): string {
   return (utterances || [])
@@ -380,8 +380,24 @@ export function timedTranscript(
       const said = String(u?.transcript || "").trim();
       const secs = Math.max(0, Math.round(Number(u?.start) || 0));
       const i = typeof u?.speaker === "number" ? u.speaker : -1;
+      // FIELD 2026-08-25. This used to read `names[i]` — the roster, INDEXED
+      // BY THE DIARISATION NUMBER. Deepgram's "speaker 0" is whichever voice
+      // it happened to cluster first; the roster is whoever joined first.
+      // Those are unrelated, so the line confidently attributed quotes to the
+      // wrong person — and this function feeds "ask this meeting a question",
+      // which answers with a named citation. Putting somebody's name on
+      // somebody else's words is the one failure that is worse than a number.
+      //
+      // `who` is the name matched from the captions by lib/speakers.ts, which
+      // only commits when it is sure. A roster is only usable directly when
+      // there is exactly one person it could possibly be.
+      const stamped = String(u?.who || "").trim();
+      const solo = (names || []).map((n) => String(n || "").trim()).filter(Boolean);
       const who =
-        i >= 0 && names && names[i] ? names[i] : i >= 0 ? `Speaker ${i + 1}` : "Someone";
+        stamped ? stamped
+        : solo.length === 1 ? solo[0]
+        : i >= 0 ? `Speaker ${i + 1}`
+        : "Someone";
       return { said, line: `[${secs}s] ${who}: ${said}` };
     })
     // Measure WHAT WAS SAID, not the formatted line. The first version tested

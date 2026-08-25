@@ -17,7 +17,10 @@ import { chooseModel } from "@/lib/model";
 import { whereToSetEnv } from "@/lib/hosting";
 
 export type Step = {
-  key: "transcribe" | "notes" | "email" | "storage" | "items" | "meeting" | "recording";
+  // "names" joined 2026-08-25: putting the real name on each voice is its own
+  // step, and its own thing to succeed or fail at, because "Speaker 2" has
+  // several possible causes and a person deserves to be told which one.
+  key: "transcribe" | "names" | "notes" | "email" | "storage" | "items" | "meeting" | "recording";
   label: string;
   ok: boolean;
   detail: string;

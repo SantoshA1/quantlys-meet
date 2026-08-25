@@ -9,6 +9,9 @@ import { checkTranscribe, checkNotes, checkEmail, headline } from "@/lib/notes-h
 import { pickActionItems } from "@/lib/digest";
 import type { Notes } from "@/lib/notes";
 import {
+  estimateOffset, nameSpeakers, speakerLabel, speakerList, namingNote, type SpeakerMap,
+} from "@/lib/speakers";
+import {
   EMPTY as EMPTY_NOTES, notesPrompt, parseNotes, notesHtml, notesText, notesSubject,
 } from "@/lib/notes";
 import { chooseModel } from "@/lib/model";
@@ -57,14 +60,21 @@ async function listen(url: string): Promise<any | null> {
 // ways. This is not clever, and it does not need to be: it is far better than
 // a host reading a 30-minute transcript, and it costs nothing to run.
 
-// One set of rules for live rail and recording alike — lib/live.ts owns them.
-function speakerName(n: number | undefined) {
-  return typeof n === "number" ? `Speaker ${n + 1}` : "Someone";
-}
+// FIELD 2026-08-25: "users names are missing, instead shows sometimes
+// Speaker." This function was the whole reason. A composite recording gives
+// Deepgram one mixed waveform, so it can only say "these stretches are the
+// same voice" — speaker 0, speaker 1 — and this turned that into the label a
+// person read. Meanwhile the captions, which carry the name everybody typed on
+// the way in, were used ONLY when Deepgram produced nothing: the better the
+// transcription worked, the more certainly the names were lost.
+//
+// lib/speakers.ts overlaps the two. The map is built once per recording and
+// passed down; a voice with no confident match stays a number, because a
+// confidently wrong name puts words in somebody's mouth.
 
 type Marked = { text: string; owner: string; at: number };
 
-function extract(dg: any): { actions: string[]; decisions: string[]; marks: Marked[] } {
+function extract(dg: any, map: SpeakerMap = {}, roster: string[] = []): { actions: string[]; decisions: string[]; marks: Marked[] } {
   const utts: any[] = dg?.results?.utterances || [];
   const actions: string[] = [];
   const decisions: string[] = [];
@@ -77,7 +87,7 @@ function extract(dg: any): { actions: string[]; decisions: string[]; marks: Mark
   for (const u of utts) {
     const text = String(u?.transcript || "").trim();
     if (text.length < 12 || NOISE.test(text)) continue;
-    const who = speakerName(u?.speaker);
+    const who = speakerLabel(u?.speaker, map, roster);
     const line = `${who} — ${text}`;
     const key = text.toLowerCase().slice(0, 80);
     if (seen.has(key)) continue;
@@ -196,7 +206,8 @@ export async function POST(req: Request) {
 
   let notes: Notes = { ...EMPTY_NOTES };
   let marks: Marked[] = [];
-  let timedLines: Array<{ start: number; speaker: number; transcript: string }> = [];
+  let timedLines: Array<{ start: number; speaker: number; transcript: string; who?: string }> = [];
+  let speakerMap: SpeakerMap = {};
   let heard = false;
   try {
     if (!signed.data?.signedUrl) {
@@ -227,17 +238,41 @@ export async function POST(req: Request) {
       // The timed lines, kept so a question can be answered with a moment
       // rather than a paragraph. Capped: a three-hour meeting is ~4k lines and
       // the sidecar has to stay a file somebody can download.
-      timedLines = (dg?.results?.utterances || []).slice(0, 4000).map((u: any) => ({
+      // ── PUT THE NAMES BACK ────────────────────────────────────────────
+      // The captions know who was speaking; Deepgram knows what was said.
+      // Overlap them and the recording gets both. The clocks do not share an
+      // origin — a caption's start is seconds since captions were switched
+      // ON, a Deepgram start is seconds since RECORDING began — so the offset
+      // is measured from the text rather than assumed. See lib/speakers.ts.
+      const utts: any[] = dg?.results?.utterances || [];
+      const capsForNames: any[] = Array.isArray(body.captions) ? body.captions : [];
+      const roster: string[] = Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [];
+      const offset = estimateOffset(utts, capsForNames);
+      speakerMap = nameSpeakers(utts, capsForNames, offset);
+
+      timedLines = utts.slice(0, 4000).map((u: any) => ({
         start: Math.round(Number(u?.start) || 0),
         speaker: typeof u?.speaker === "number" ? u.speaker : -1,
         transcript: String(u?.transcript || ""),
+        // The NAME travels with the line. Without this the sidecar a person
+        // downloads — and everything that reads it, including "ask this
+        // meeting a question" — is back to numbers however well the map did.
+        who: speakerLabel(u?.speaker, speakerMap, roster),
       }));
-      notes.speakers = Array.from(
-        new Set((dg?.results?.utterances || []).map((u: any) =>
-          typeof u?.speaker === "number" ? `Speaker ${u.speaker + 1}` : ""))
-      ).filter(Boolean) as string[];
+      notes.speakers = speakerList(utts, speakerMap, roster);
+      const voiceCount = new Set(utts.map((u: any) => u?.speaker).filter((x: any) => typeof x === "number")).size;
+      if (voiceCount) {
+        say("names", "Put names to the voices",
+            Object.keys(speakerMap).length >= voiceCount,
+            namingNote({
+              speakers: voiceCount,
+              named: Object.keys(speakerMap).length,
+              hadCaptions: capsForNames.length > 0,
+              aligned: offset !== null,
+            }));
+      }
       if (labels.length) notes.topics = [{ title: "Mentioned", points: labels }];
-      const found = extract(dg);
+      const found = extract(dg, speakerMap, roster);
       notes.actions = found.actions;
       notes.decisions = found.decisions;
       marks = found.marks;
@@ -279,11 +314,19 @@ export async function POST(req: Request) {
   const ccText = String(body.captionText || "");
   if (!heard && (ccText.trim() || ccLines.length)) {
     notes.transcript = ccText.trim() || ccLines.map((l) => l.transcript).join("\n");
+    // These lines already carry the real name — they were stamped with it as
+    // they went past on everyone's screen. Dropping `who` here is how the
+    // fallback path ALSO produced numbers, even though it had the names in
+    // its hand.
     timedLines = ccLines.map((l) => ({
       start: Math.max(0, Math.round(Number(l.start) || 0)),
       speaker: Number(l.speaker) >= 0 ? Number(l.speaker) : -1,
       transcript: String(l.transcript || ""),
+      who: String(l.who || "").trim() || undefined,
     }));
+    notes.speakers = Array.from(
+      new Set(ccLines.map((l) => String(l.who || "").trim()).filter(Boolean))
+    );
     marks = ccLines
       .filter((l) => COMMIT.test(String(l.transcript || "")))
       .map((l) => ({
