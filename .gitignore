@@ -25,6 +25,11 @@ next-env.d.ts
 .env.development.local
 .env.production.local
 
+# transfer archives used to move the tree to a build machine. This mount
+# cannot delete files, so they linger — and a 400KB tarball is exactly the
+# thing a careless `git add -A` sweeps into a commit.
+*.tgz
+
 # test + tooling output
 /coverage/
 /playwright-report/
