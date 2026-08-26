@@ -109,6 +109,14 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
    *  microphone every twenty seconds for the rest of the call. */
   const quietFixes = useRef(0);
   const everMic = useRef(false);
+  /** Is the level meter genuinely running? The analyser is built in a
+   *  try/catch that used to swallow its own failure, after which the
+   *  "quiet for N seconds" counter climbed for ever while the person talked —
+   *  the 838-second screenshot. No reading is not a reading of zero. */
+  const metering = useRef(false);
+  /** Has this microphone ever produced a sound? Once it has, going quiet is
+   *  somebody listening, which is what people do in meetings. */
+  const everHeard = useRef(false);
 
   const photoIdsRef = useRef<string[]>([]);
   photoIdsRef.current = photoIds;
@@ -340,8 +348,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     let dead = false;
     let analyser: AnalyserNode | null = null;
     let buf: Uint8Array | null = null;
+    let ac: AudioContext | null = null;
+    metering.current = false;
+    everHeard.current = false;
     try {
-      const ac = ctx.current || new AudioContext();
+      ac = ctx.current || new AudioContext();
       ctx.current = ac;
       if (ac.state === "suspended") ac.resume().catch(() => {});
       const src = ac.createMediaStreamSource(new MediaStream([mst]));
@@ -349,10 +360,23 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       analyser.fftSize = 1024;
       src.connect(analyser);
       buf = new Uint8Array(analyser.fftSize);
-    } catch { /* without a meter we still have the track events and the supervisor */ }
+      metering.current = true;
+    } catch {
+      // The supervisor is TOLD there is no meter, rather than being left to
+      // read the resulting flat line as silence.
+      metering.current = false;
+    }
 
     const tick = () => {
       if (dead) return;
+      // A suspended context measures nothing, and browsers suspend one for
+      // reasons that have nothing to do with the microphone — a backgrounded
+      // tab, a power event. Resuming it here rather than only at creation is
+      // what turns a permanently dead meter back into a working one.
+      if (ac && ac.state === "suspended") {
+        metering.current = false;
+        ac.resume().then(() => { metering.current = Boolean(analyser && buf); }).catch(() => {});
+      }
       if (analyser && buf) {
         analyser.getByteTimeDomainData(buf);
         const l = levelFrom(buf);
@@ -360,6 +384,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         if (l > 0.015) {
           lastSound.current = Date.now();
           peak.current = l;
+          // Proof this microphone works. From here on, quiet is listening.
+          everHeard.current = true;
           // Real sound is the only proof a restart worked. Until it arrives,
           // the app has not earned another silence-triggered restart.
           quietFixes.current = 0;
@@ -425,6 +451,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         quietMs: Date.now() - lastSound.current,
         peak: peak.current,
         publishing: Boolean(L.pub && L.micTrack && m),
+        metering: metering.current,
+        everHeard: everHeard.current,
         attempts: attempts.current,
         quietFixes: quietFixes.current,
         label: L.micSay,
@@ -855,8 +883,16 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   // is actually here. With none shipped, that is three honest choices instead
   // of seven, five of which were cartoons.
   const shelf = shelfEffects(photoIds);
-  const show = verdict.level !== "ok" && dismissed < Date.now() - 30000;
-  const showCam = camV.level !== "ok" && camDismissed < Date.now() - 30000;
+  // DISMISSED MEANS DISMISSED. This used to bring the banner back thirty
+  // seconds later, which is how one wrong verdict became a quarter of an hour
+  // of pop-ups. A `dead` state — nothing is being sent at all — may return
+  // after a long pause, because that one really does need answering; a `warn`
+  // stays gone for the meeting.
+  const DISMISS_DEAD_MS = 300000;
+  const show = verdict.level !== "ok" &&
+    (verdict.level === "dead" ? dismissed < Date.now() - DISMISS_DEAD_MS : dismissed === 0);
+  const showCam = camV.level !== "ok" &&
+    (camV.level === "dead" ? camDismissed < Date.now() - DISMISS_DEAD_MS : camDismissed === 0);
   const spkWorks = speakerPickerWorks();
 
   return (

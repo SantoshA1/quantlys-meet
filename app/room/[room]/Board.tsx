@@ -29,6 +29,8 @@ import {
   strokePx, alphaFor, widthFor,
   type Board as BoardState, type Stroke, type Tool, type Pt,
 } from "@/lib/draw";
+import { setBoardStrokes } from "@/lib/boardshare";
+import { toWorkflow, captureNote } from "@/lib/workflow";
 
 const DRAW_TOPIC = "qm-draw";
 
@@ -44,13 +46,17 @@ const TOOLS: Array<{ id: Tool; glyph: string; label: string }> = [
 ];
 
 export default function Board({
-  open, surface, onClose,
+  open, surface, onClose, onCaptured,
 }: {
   open: boolean;
   /** "screen" annotates over whatever is being shared; "board" is a blank
    *  whiteboard. The label on the button already told the person which. */
   surface: "screen" | "board";
   onClose: () => void;
+  /** what the board was understood to contain, handed up when Done is
+   *  pressed — this component unmounts on close, so it cannot show it
+   *  itself. */
+  onCaptured?: (note: string) => void;
 }) {
   const { localParticipant } = useLocalParticipant();
   const me = localParticipant?.identity || "me";
@@ -70,6 +76,10 @@ export default function Board({
   const lastSent = useRef(0);
   const boardRef = useRef<BoardState>(EMPTY_BOARD);
   boardRef.current = board;
+  // The recording payload is built in RoomHeader, which is a SIBLING of this
+  // component and cannot see its state. Hand it a snapshot on every change so
+  // a diagram drawn here reaches the PRD — see lib/boardshare.ts.
+  setBoardStrokes(board.strokes);
 
   const bytes = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 
@@ -160,16 +170,33 @@ export default function Board({
 
   function onDown(e: React.PointerEvent) {
     if (typing) return;
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     const p = at(e);
+
+    // FIELD 2026-08-25: "the text button doesn't work."
+    //
+    // It did work, for about sixteen milliseconds. The input mounted where you
+    // clicked and even took focus — and then the NATIVE mousedown finished on
+    // the canvas underneath, and its default action moved focus off the input.
+    // `onBlur={commitText}` fired with an empty value, committed nothing, and
+    // removed the box. What a person saw was a text field flash and vanish,
+    // which reads exactly like a dead button.
+    //
+    // Reproduced in a real browser before this line was written — see
+    // lib/board.render.mjs, which runs both shapes and requires the old one to
+    // fail. Two changes: refuse the default so the canvas cannot take focus,
+    // and do not capture the pointer for a tool that is a click rather than a
+    // drag.
+    if (tool === "text") {
+      e.preventDefault();
+      setTyping({ at: p, value: "" });
+      return;
+    }
+
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
 
     if (tool === "eraser") {
       drawing.current = true;
       eraseAt(p);
-      return;
-    }
-    if (tool === "text") {
-      setTyping({ at: p, value: "" });
       return;
     }
     drawing.current = true;
@@ -268,7 +295,14 @@ export default function Board({
             if (e.key === "Enter") commitText();
             if (e.key === "Escape") setTyping(null);
           }}
+          // Clicking away commits what you typed — that is the right
+          // behaviour, and it is only safe now that a stray focus-steal
+          // cannot fire it a frame after the box appears.
           onBlur={commitText}
+          // The box belongs to the person typing in it, not to the canvas
+          // behind it. Without this, a pointer-down inside the input reaches
+          // the canvas handler and starts a new one on top.
+          onPointerDown={(e) => e.stopPropagation()}
         />
       ) : null}
 
@@ -328,7 +362,21 @@ export default function Board({
           >
             Clear all
           </button>
-          <button className="qmb-act qmb-done" onClick={onClose} title="Stop drawing (Esc)">Done</button>
+          <button
+            className="qmb-act qmb-done"
+            onClick={() => {
+              // Pressing Done is somebody saying the drawing is finished, so
+              // it is the honest moment to read it — and to say out loud what
+              // was understood. A capture that silently ignored half the
+              // board is how a person finds out at PRD time that their
+              // diagram was never read.
+              onCaptured?.(captureNote(toWorkflow(boardRef.current.strokes as any)));
+              onClose();
+            }}
+            title="Stop drawing (Esc)"
+          >
+            Done
+          </button>
         </div>
       </div>
 

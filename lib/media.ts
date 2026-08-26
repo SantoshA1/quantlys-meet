@@ -216,10 +216,42 @@ export function levelFrom(bytes: Uint8Array | number[]): number {
  *  A live mic in a silent room still shows electrical noise above it. */
 export const FLOOR = 0.012;
 
-/** How long we let a live, un-muted microphone produce nothing before we say
- *  so. Long enough to sit quietly in someone else's meeting; short enough that
- *  you find out inside one paragraph of talking. */
-export const QUIET_MS = 20000;
+/** RETIRED AS A FAULT THRESHOLD, 2026-08-25, and kept named so the mistake is
+ *  not repeated.
+ *
+ *  FIELD, with a screenshot: "We can't hear anything from your microphone.
+ *  Nothing has come from Logitech BRIO for 838 seconds." Fourteen minutes.
+ *  And in the SAME screenshot, the live notes panel is full of that person
+ *  talking — 30:32, 30:35, 30:48, 31:11, 31:33, 31:52, 32:07. Everyone could
+ *  hear him. The captions were transcribing him. The app told him nobody
+ *  could hear him, every thirty seconds, for a quarter of an hour.
+ *
+ *  TWO SEPARATE ERRORS, and the first is the serious one:
+ *
+ *  1. THE METER WASN'T MEASURING. The level comes from an AudioContext
+ *     analyser built in a try/catch that swallows its own failure — and when
+ *     it fails, `analyser` is null, the tick loop never updates `lastSound`,
+ *     and the "quiet for N seconds" counter climbs for ever while the person
+ *     talks. No evidence about the level was being treated as evidence of
+ *     silence. That is the same shape of bug as blaming a microphone for a
+ *     dropped connection: absence of a signal is not a negative signal.
+ *
+ *  2. TWENTY SECONDS OF QUIET IS NOT A FAULT. It is what LISTENING sounds
+ *     like. In a three-person meeting each person is quiet for most of it, by
+ *     definition. Only a microphone that has NEVER produced a sound is worth
+ *     mentioning, and even then only after long enough that the person has
+ *     plainly had a turn.
+ *
+ *  Kept as the export name because other code imports it; it is now the
+ *  "never heard anything at all" window, not the "you stopped talking" one. */
+export const QUIET_MS = 120000;
+
+/** Below this a reading is indistinguishable from DIGITAL ZERO. A live
+ *  microphone in a silent room still has a noise floor — the room, the
+ *  preamp, the person breathing. A muted-in-hardware or dead one reads
+ *  nothing at all. That difference, not "how loud", is what separates a
+ *  broken microphone from a quiet one. */
+export const DEAD_FLOOR = 0.0008;
 
 export type MicState = {
   /** the person pressed mute — this is never a fault */
@@ -234,6 +266,13 @@ export type MicState = {
   peak: number;
   /** is there a published microphone at all */
   publishing: boolean;
+  /** IS THE METER ACTUALLY RUNNING? False means we have no idea how loud this
+   *  microphone is, and "no idea" must never render as "silent" — see the
+   *  post-mortem above QUIET_MS. */
+  metering?: boolean;
+  /** has this microphone produced ANY sound since it was published? Once it
+   *  has, going quiet is a person listening, and never a fault. */
+  everHeard?: boolean;
   /** how many times we have already tried to bring it back */
   attempts: number;
   /** how many times we have already RESTARTED the microphone because it went
@@ -280,22 +319,29 @@ export function micVerdict(s: MicState): Verdict {
       action: s.attempts >= 3 ? "pick" : "recover",
     };
   }
-  if (s.quietMs >= QUIET_MS && s.peak < FLOOR) {
+  // THE THREE CONDITIONS, all of which have to hold before this app tells
+  // somebody in a live meeting that nobody can hear them. Getting any one of
+  // them wrong produces the 838-second screenshot.
+  //
+  //   · the meter is genuinely running, so "silent" is a measurement rather
+  //     than the absence of one;
+  //   · this microphone has never produced a sound at all — if it has, the
+  //     person is listening, which is what people do in meetings;
+  //   · the reading is DIGITAL ZERO, not merely quiet. A live mic in a silent
+  //     room has a noise floor; a dead one does not.
+  const meterWorking = s.metering !== false;
+  const neverHeard = s.everHeard !== true;
+  const trulySilent = s.peak <= DEAD_FLOOR;
+  if (meterWorking && neverHeard && trulySilent && s.quietMs >= QUIET_MS) {
     return {
       level: "warn",
-      title: "We can't hear anything from your microphone",
+      title: "We haven't heard anything from your microphone yet",
       detail: isBluetooth(s.label || "")
-        ? `Nothing has come from ${s.label || "your microphone"} for ${Math.round(s.quietMs / 1000)} seconds. If you've been talking, nobody heard you. Bluetooth headsets often need picking again from the list below.`
-        : `Nothing has come from ${s.label || "your microphone"} for ${Math.round(s.quietMs / 1000)} seconds. If you've been talking, nobody heard you — check it isn't muted in hardware, or pick a different one below.`,
-      // FIELD 2026-08-24: this used to be "pick" and nothing else, so the
-      // commonest Bluetooth failure of all — the track survives the HFP
-      // switch but produces silence, so neither `ended` nor `muted` is ever
-      // true — ended with a banner and a person who rejoined the meeting.
-      // Rejoining worked because rejoining restarts the microphone. So do
-      // that FOR them, once, and only fall back to asking when the restart
-      // did not bring the voice back. The camera has done exactly this for
-      // its black-frame case since 2026-08-19; the microphone was the organ
-      // still waiting for the medicine.
+        ? `${s.label || "Your microphone"} hasn't picked up a sound since you joined. If you've tried to speak, nobody heard you. Bluetooth headsets often need picking again from the list below.`
+        : `${s.label || "Your microphone"} hasn't picked up a sound since you joined. If you've tried to speak, nobody heard you — check it isn't muted in hardware, or pick a different one below.`,
+      // FIELD 2026-08-24: one automatic restart before asking, because the
+      // commonest Bluetooth failure leaves a track that is neither ended nor
+      // muted and simply produces nothing.
       action: (s.quietFixes || 0) < 1 ? "recover" : "pick",
     };
   }

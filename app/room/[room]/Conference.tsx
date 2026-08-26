@@ -30,6 +30,8 @@ import type { Caption, Engine } from "@/lib/captions";
 import { catchLive, caughtCounts, talked, atLabel, flagAt } from "@/lib/live";
 import { BAR, dockAnchor } from "@/lib/dock";
 import { surfaceFor, penLabel } from "@/lib/draw";
+import { getBoardStrokes } from "@/lib/boardshare";
+import { toWorkflow } from "@/lib/workflow";
 import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
@@ -1087,6 +1089,12 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
                                    transcript: `⚑ Moment flagged by ${f.by}` })),
           ].slice(0, 4000),
           captionText: toTranscript(cc.log).slice(0, 200000),
+          // FIELD 2026-08-25: "whatever they're drawing on the whiteboard
+          // should be converted into a workflow and added to the PRD." The
+          // board is stored as STRUCTURE, not pixels — a rect knows it is a
+          // rect — so the diagram is recovered from geometry rather than
+          // guessed at. See lib/workflow.ts.
+          workflow: toWorkflow(getBoardStrokes() as any),
         }),
       });
       const out = await r.json();
@@ -1825,6 +1833,7 @@ function Reactions() {
    whiteboard mid-presentation hides the pen exactly when it is wanted. */
 function Drawing() {
   const [on, setOn] = useState(false);
+  const [captured, setCaptured] = useState("");
   const shares = useTracks([Track.Source.ScreenShare], { onlySubscribed: false });
   const sharing = shares.length > 0;
   const surface = surfaceFor({ screenShareOn: sharing, boardOpen: on && !sharing });
@@ -1849,7 +1858,12 @@ function Drawing() {
         open={on && surface !== "none"}
         surface={surface === "screen" ? "screen" : "board"}
         onClose={() => setOn(false)}
+        onCaptured={(n) => { setCaptured(n); setTimeout(() => setCaptured(""), 9000); }}
       />
+      {/* What the whiteboard was understood to contain. Shown here rather
+          than inside Board because Board unmounts the moment Done is pressed,
+          and a capture nobody is told about is a capture nobody trusts. */}
+      {captured ? <div className="qmb-captured" role="status">{captured}</div> : null}
     </>
   );
 }
@@ -2191,6 +2205,10 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 
 
 const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
+.qmb-captured { position:absolute; left:50%; transform:translateX(-50%); bottom:96px; z-index:75;
+  max-width:min(560px, calc(100% - 24px)); background:#0d2a2a; border:1px solid #00a99d;
+  color:#c8f5f0; border-radius:11px; padding:11px 15px; font-size:13px; line-height:1.55;
+  box-shadow:0 14px 36px rgba(0,0,0,.55); }
 /* The connection banner. Full width and above everything, because when this
    is up it is the only thing on screen that is true. */
 .qmr-link { display:flex; align-items:center; gap:14px; padding:11px 18px;

@@ -276,8 +276,20 @@ export default function Agent({
 
       {on && !current ? (
         <div className="qa-status" role="status">
-          <b>PRD agent</b>
+          <b>PRD agent{project ? ` · ${project}` : ""}</b>
           <span>{busy ? "Thinking of a question…" : status}</span>
+          {/* FIELD 2026-08-25: "I clicked on PRD Agent and I'm not clear what
+              it is doing." Most of that was the auth bug — it switched itself
+              off without a word — but the rest is this: an agent whose whole
+              job is to wait needs to show what it is waiting FOR. Naming the
+              parts of the PRD still open turns a blinking box into a
+              checklist somebody can see progress against. */}
+          {open.length ? (
+            <span className="qa-open">
+              STILL OPEN — {open.map((d) => d.label).slice(0, 6).join(" · ")}
+              {open.length > 6 ? ` · +${open.length - 6}` : ""}
+            </span>
+          ) : null}
           {doneCount ? <span className="qa-done">{doneCount} answered</span> : null}
           {note ? <span className="qa-note">{note}</span> : null}
         </div>
@@ -330,4 +342,6 @@ export const AGENT_CSS = `
 .qa-status span { color:#8b93a5; font-size:12px; line-height:1.5; }
 .qa-done { color:#7fe0d6 !important; }
 .qa-note { color:#f0d9a6 !important; }
+.qa-open { color:#6c7688 !important; font-size:10.5px !important; letter-spacing:.06em;
+  text-transform:uppercase; line-height:1.5 !important; }
 `;

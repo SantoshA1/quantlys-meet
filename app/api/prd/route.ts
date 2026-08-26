@@ -23,6 +23,7 @@ import {
   prdFilename, prdPath, answeredKeys, type MeetingSource,
 } from "@/lib/prd";
 import { readContext } from "../project/route";
+import { describeWorkflow, toMermaid, type Workflow } from "@/lib/workflow";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -97,7 +98,7 @@ export async function POST(req: Request) {
   }
 
   // ── read them ───────────────────────────────────────────────────────────
-  const all: Array<MeetingSource & { path: string; project: string }> = [];
+  const all: Array<MeetingSource & { path: string; project: string; workflow?: Workflow | null }> = [];
   for (const p of paths) {
     try {
       const { data } = await sb.storage.from("recordings").download(p);
@@ -110,6 +111,7 @@ export async function POST(req: Request) {
         room: String(j?.room || "").trim(),
         at: String(j?.at || j?.finishedAt || "").trim() || p.split("/").pop()?.slice(0, 10) || "",
         transcript: String(j?.transcript || "").trim(),
+        workflow: (j?.workflow && typeof j.workflow === "object") ? (j.workflow as Workflow) : null,
       });
     } catch { /* one unreadable summary must not cost the whole project */ }
   }
@@ -152,6 +154,10 @@ export async function POST(req: Request) {
   // told us what they are building has told us.
   const explicit = String(body?.mode || "").trim();
   const stitched = stitchTranscripts(newest, 120000);
+  // The most recent whiteboard that actually contained a flow. Later wins,
+  // same as the transcripts — a team that redraws the diagram has changed
+  // its mind about the diagram.
+  const drawn = [...newest].reverse().find((m: any) => m?.workflow?.found)?.workflow as Workflow | undefined;
   // What the team wrote down about this project — the brief, and any question
   // they answered in the console between meetings. Both are deliberate
   // statements, so both outrank anything inferred from a transcript, and the
@@ -185,7 +191,12 @@ export async function POST(req: Request) {
         max_tokens: 8000,         // a real PRD plus eight assessments
         messages: [
           { role: "system", content: prdSystemPrompt(meta.artifact, meta.gate) },
-          { role: "user", content: prdPrompt(stitched.text, dims, meta, ctx) },
+          {
+            role: "user",
+            content: drawn
+              ? `${prdPrompt(stitched.text, dims, meta, ctx)}\n\n---\n\n${describeWorkflow(drawn)}`
+              : prdPrompt(stitched.text, dims, meta, ctx),
+          },
         ],
       }),
     });
@@ -216,7 +227,13 @@ export async function POST(req: Request) {
     meetings: newest.map((m) => ({ title: m.title, at: m.at, room: m.room, path: m.path })),
     meetings_used: stitched.used,
     meetings_dropped: stitched.dropped + droppedForCount,
-    markdown: prdMarkdown(report, project, newest),
+    // The diagram travels WITH the document. A PRD that describes a flow in
+    // prose while the picture of it sits in a recording nobody opens is a PRD
+    // that lost the clearest thing the meeting produced.
+    markdown: drawn
+      ? `${prdMarkdown(report, project, newest)}\n\n---\n\n## The workflow the team drew\n\n\`\`\`mermaid\n${toMermaid(drawn, project)}\n\`\`\`\n`
+      : prdMarkdown(report, project, newest),
+    workflow: drawn || null,
     filename: prdFilename(project, report.artifact),
     handoff: handoffPlan(report, project),
     model_note: chosen.exact ? "" : chosen.why,

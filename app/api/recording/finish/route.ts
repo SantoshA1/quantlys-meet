@@ -406,6 +406,11 @@ export async function POST(req: Request) {
     // can still be right, but it can't be checked — and an answer nobody can
     // check is the thing that makes people stop trusting the feature.
     utterances: timedLines,
+    // The workflow somebody drew on the whiteboard, recovered from the
+    // board's own geometry before it was sent. A meeting's diagram is
+    // usually the clearest statement of the user journey anybody makes, and
+    // it never reaches the transcript because nobody reads a picture aloud.
+    workflow: (body.workflow && typeof body.workflow === "object") ? body.workflow : null,
     people: Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [],
     fromCaptions: !ccLines.length ? false : notes.transcript === (ccText.trim() || ccLines.map((l) => l.transcript).join("\n")),
     createdAt: new Date().toISOString(),
