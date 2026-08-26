@@ -16,6 +16,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { Item } from "@/lib/digest";
 import { build, lastWeek, html as digestHtml, text as digestText, rangeLabel } from "@/lib/digest";
 import { chooseModel } from "@/lib/model";
+import { digestState, digestMessage } from "@/lib/scope";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -129,21 +130,51 @@ async function digestFor(
   req: Request,
   dryRun: boolean
 ) {
-  let q = sb
-    .from("action_items")
-    .select("id, project, room_name, meeting_title, text, owner, ts_seconds, status, met_at, video_path")
-    .eq("user_id", userId)
-    .eq("status", "open")
-    .order("met_at", { ascending: false })
-    .limit(400);
-  if (project) q = q.eq("project", project);
-  const { data, error } = await q;
-  if (error) return { ok: false, error: error.message, sent: false, open: 0 };
+  // FIELD 2026-08-26: "Email me this week digest also did not work. Says
+  // nothing is open, so there is nothing to send."
+  //
+  // It was TRUE — every action item in the database was ticked off — and it
+  // was still a bad thing to say, because one sentence covered three
+  // different situations: you finished everything (good news), nothing was
+  // ever captured (a setup problem), and you have open items but none from
+  // this week (also fine). Only the middle one is anything to act on.
+  //
+  // And the same ownership bug as the PRD: items are keyed by whoever pressed
+  // Record, so a host whose colleague recorded the meeting had their own
+  // action items filed under somebody else. Two reads, merged — mine, plus
+  // every item from a room I host.
+  const COLS = "id, project, room_name, meeting_title, text, owner, ts_seconds, status, met_at, video_path";
+  let hosted: string[] = [];
+  try {
+    const m = await sb.from("meetings").select("room_name, created_by").eq("created_by", userId).limit(500);
+    hosted = ((m.data as any[]) || []).map((r) => String(r?.room_name || "")).filter(Boolean);
+  } catch { /* without the lookup this behaves exactly as it did before */ }
 
-  const items = (data || []) as Item[];
+  const mineR: any = await sb.from("action_items").select(COLS).eq("user_id", userId).limit(600);
+  const roomR: any = hosted.length
+    ? await sb.from("action_items").select(COLS).in("room_name", hosted.slice(0, 200)).limit(600)
+    : { data: [], error: null };
+  if (mineR.error) return { ok: false, error: mineR.error.message, sent: false, open: 0 };
+
+  const byId = new Map<string, Item>();
+  for (const r of [...((mineR.data as Item[]) || []), ...((roomR.data as Item[]) || [])]) {
+    if (r && (r as any).id) byId.set(String((r as any).id), r);
+  }
+  let everything = Array.from(byId.values());
+  if (project) everything = everything.filter((i) => String((i as any).project || "") === project);
+
+  const items = everything.filter((i) => String((i as any).status || "") === "open");
   const { from, to } = lastWeek(now);
   const d = build(items, from, to);
-  if (!d.openCount) return { ok: true, sent: false, open: 0, reason: "nothing open" };
+  if (!d.openCount) {
+    const state = digestState({ total: everything.length, open: items.length });
+    return {
+      ok: true, sent: false, open: 0,
+      reason: state,
+      message: digestMessage(state, { total: everything.length, open: items.length }),
+      total: everything.length,
+    };
+  }
 
   const line = await intro(items, d.carried.reduce((t, g) => t + g.meetings.reduce((x, m) => x + m.items.length, 0), 0));
   const links = await linksFor(sb, items);

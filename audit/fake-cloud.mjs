@@ -25,6 +25,8 @@ export const CLOUD = {
   listCalls: 0,     // how often the routes asked the provider what it has
   models: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "openai/gpt-4o-mini"],
   chat: null,       // (body) => {status, json} — set per check
+  meetings: [],     // the meetings table: {room_name, project, created_by, title}
+  rows: {},         // any other table a suite needs
 };
 
 export function reset(patch = {}) {
@@ -32,6 +34,8 @@ export function reset(patch = {}) {
   CLOUD.user = { id: "u1", email: "maya@quantlys.local" };
   CLOUD.models = ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "openai/gpt-4o-mini"];
   CLOUD.chat = null;
+  CLOUD.meetings = [];
+  CLOUD.rows = {};
   Object.assign(CLOUD, patch);
 }
 
@@ -57,9 +61,25 @@ export function createClient() {
         createSignedUrl: async () => ({ data: { signedUrl: "https://example/signed" }, error: null }),
       }),
     },
-    from: () => ({
-      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
-    }),
+    // A tiny table stand-in. Routes use two shapes against `meetings`:
+    //   .select(...).eq(...).maybeSingle()   — one row by room
+    //   .select(...).eq(...).limit(n)        — every meeting I host
+    // Both are answered from CLOUD.meetings so a suite can set up a real
+    // host/colleague situation rather than mocking the answer.
+    from: (table) => {
+      const rows = () => (table === "meetings" ? CLOUD.meetings : CLOUD.rows[table] || []);
+      const build = (filters) => ({
+        eq: (col, val) => build([...filters, [col, (v) => v === val]]),
+        in: (col, vals) => build([...filters, [col, (v) => (vals || []).includes(v)]]),
+        limit: async () => ({ data: rows().filter((r) => filters.every(([c, f]) => f(r[c]))), error: null }),
+        maybeSingle: async () => ({
+          data: rows().find((r) => filters.every(([c, f]) => f(r[c]))) || null,
+          error: null,
+        }),
+        order: () => build(filters),
+      });
+      return { select: () => build([]), upsert: async () => ({ error: null }) };
+    },
   };
 }
 

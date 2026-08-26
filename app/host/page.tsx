@@ -279,8 +279,11 @@ export default function HostConsole() {
       setDigestNote(
         j?.sent
           ? `Sent to ${j.to} — ${j.open} open item${j.open === 1 ? "" : "s"}.`
-          : j?.reason === "nothing open"
-          ? "Nothing is open, so there is nothing to send."
+          : j?.message || j?.reason === "nothing open"
+          // The route now says WHICH of three situations this is — all done,
+          // nothing ever captured, or open-but-not-this-week — because they
+          // have three different answers and only one is a problem.
+          ? (j.message || "Nothing is open, so there is nothing to send.")
           : j?.error || "It didn't send. Check “Check my setup” above — the email step is the usual reason."
       );
     } catch {

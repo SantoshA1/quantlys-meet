@@ -146,8 +146,10 @@ await check("PRD-08", "a project nobody tagged says so, and says how to fix it",
   const r = await post({ project: "Quantlys Meet" });
   _a(r.status === 404, `HTTP ${r.status} — never a 500`);
   const j = await r.json();
-  _a(/tagged/i.test(j.error), "it explains that the tag is what groups meetings");
-  _a(j.error.includes("2"), "and says how many recordings DO carry a tag, so a typo is findable");
+  _a(/Something Else/.test(j.error),
+     "it NAMES the projects that do exist, which makes a typo findable at a glance — better than the old message, which only counted them");
+  _a(Array.isArray(j.projects_seen) && j.projects_seen.includes("Something Else"),
+     "…and hands the list back, so the panel could offer them");
 });
 
 await check("PRD-09", "no transcript is a different problem, and gets a different answer", async () => {
@@ -309,6 +311,71 @@ await check("PRD-22", "REBUILDING THE PRD DOES NOT WIPE THE BRIEF", async () => 
   _a(j.brief === "A receipt filer.", "three rebuilds later the sentences a person wrote are still there");
   _a(j.decisions.length === 1, "…and so are their answers");
   _a(CLOUD.files["u1/prd/quantlys-meet.project.json"], "because the context lives in its OWN file, not in the one Build overwrites");
+});
+
+await check("PRD-23", "A COLLEAGUE'S RECORDING OF MY MEETING IS INCLUDED", async () => {
+  reset();
+  // I host the meeting. Somebody ELSE pressed Record, so the file lives under
+  // their id. In the field this was five summaries across four owners.
+  CLOUD.meetings = [{ room_name: "room-a", project: "Quantlys Meet", created_by: "u1", title: "Kickoff" }];
+  CLOUD.listing[""] = [{ name: "u1" }, { name: "u2" }];
+  CLOUD.listing["u1"] = [];
+  CLOUD.listing["u2"] = [{ name: "room-a" }];
+  CLOUD.listing["u2/room-a"] = [{ name: "2026-08-01T10-00.summary.json", id: "f1" }];
+  CLOUD.files["u2/room-a/2026-08-01T10-00.summary.json"] = JSON.stringify({
+    room: "room-a", title: "Kickoff", transcript: "Kiran: the problem is lost receipts.",
+  });
+  CLOUD.chat = () => ({ status: 200, body: GOOD_REPLY });
+  const r = await post({ project: "Quantlys Meet" });
+  _a(r.status === 200, `HTTP ${r.status} — a host who did not press Record still gets their own meeting`);
+  const j = await r.json();
+  _a(j.meetings_used === 1, "the colleague's recording is read");
+  _a(JSON.stringify(CLOUD.calls).includes("lost receipts"), "…and its words reach the model");
+});
+
+await check("PRD-24", "…but a colleague's recording of somebody ELSE's meeting is not", async () => {
+  reset();
+  CLOUD.meetings = [{ room_name: "room-a", project: "Quantlys Meet", created_by: "u1" }];
+  CLOUD.listing[""] = [{ name: "u1" }, { name: "u2" }];
+  CLOUD.listing["u1"] = [];
+  CLOUD.listing["u2"] = [{ name: "room-private" }];
+  CLOUD.listing["u2/room-private"] = [{ name: "2026-08-01T10-00.summary.json", id: "f1" }];
+  CLOUD.files["u2/room-private/2026-08-01T10-00.summary.json"] = JSON.stringify({
+    room: "room-private", transcript: "something confidential",
+  });
+  const r = await post({ project: "Quantlys Meet" });
+  _a(r.status === 404, `HTTP ${r.status}`);
+  _a(!JSON.stringify(CLOUD.calls).includes("confidential"),
+     "NEGATIVE CONTROL: reading by MEETING must not become reading everything. A folder is only opened for a room this person hosts");
+});
+
+await check("PRD-25", "a recording older than the project tag is matched by its room", async () => {
+  reset();
+  // Summaries only started carrying `project` on 2026-08-25 12:48 UTC. This is
+  // one from before: no tag in the file, for ever.
+  CLOUD.meetings = [{ room_name: "room-a", project: "Quantlys Meet", created_by: "u1", title: "Old" }];
+  CLOUD.listing[""] = [{ name: "u1" }];
+  CLOUD.listing["u1"] = [{ name: "room-a" }];
+  CLOUD.listing["u1/room-a"] = [{ name: "2026-08-20T10-00.summary.json", id: "f1" }];
+  CLOUD.files["u1/room-a/2026-08-20T10-00.summary.json"] = JSON.stringify({
+    room: "room-a", title: "Old", transcript: "Raghu: v1 is a photo upload.",
+  });
+  CLOUD.chat = () => ({ status: 200, body: GOOD_REPLY });
+  const r = await post({ project: "Quantlys Meet" });
+  _a(r.status === 200, `HTTP ${r.status} — no backfill, no re-recording, it just works`);
+  _a((await r.json()).meetings_used === 1, "the room is in the path, and the meetings table knows that room's project");
+});
+
+await check("PRD-26", "a project whose meetings were never recorded says exactly that", async () => {
+  reset();
+  CLOUD.meetings = [{ room_name: "room-z", project: "Quantlys Meet", created_by: "u1" }];
+  CLOUD.listing[""] = [{ name: "u1" }];
+  CLOUD.listing["u1"] = [];
+  const r = await post({ project: "Quantlys Meet" });
+  _a(r.status === 404, `HTTP ${r.status}`);
+  const j = await r.json();
+  _a(/no saved recording|not from the invite/i.test(j.error),
+     "it distinguishes 'you never recorded it' from 'you never tagged it' — two different problems with two different fixes");
 });
 
 // ── report ───────────────────────────────────────────────────────────────
