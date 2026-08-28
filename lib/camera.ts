@@ -27,6 +27,7 @@
 // on its own — it is built to be imported, not copied.
 
 import { SLOTS, CUSTOM_ID, CUSTOM_PLACEHOLDER } from "./backgrounds.ts";
+import { joinFailure } from "./link.ts";
 
 export type CamVerdict = {
   level: "ok" | "warn" | "dead";
@@ -378,7 +379,14 @@ export function joinErrorText(name?: string | null, message?: string | null): st
         : "Other"
     );
   }
-  return `Couldn't connect to the meeting${m ? ` (${m.slice(0, 80)})` : ""}. Check your connection and reload — nobody can see or hear you until this page reconnects.`;
+  // FIELD 2026-08-26. This one sentence was shown for EVERY non-device
+  // failure, including "connection minutes limit exceeded" — the meeting
+  // service's own quota. Telling somebody to check their connection when the
+  // account has run out of minutes sends them to reload a page that will fail
+  // identically, for ever. A refusal has to be described by what happened,
+  // not by the transport it arrived through. See joinFailure in lib/link.ts.
+  const v = joinFailure(n, m);
+  return `${v.title}. ${v.detail}`;
 }
 
 /** Backoff for bringing a dead camera back: fast first, then slower, then

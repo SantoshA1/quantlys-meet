@@ -22,7 +22,7 @@ import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
 import Agent, { AGENT_CSS } from "./Agent";
 import { connectionAdvice } from "@/lib/media";
-import { linkVerdict, chipLabel, type LinkVerdict } from "@/lib/link";
+import { linkVerdict, chipLabel, joinFailure, type LinkVerdict } from "@/lib/link";
 import { joinErrorText, deviceFailText } from "@/lib/camera";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -472,7 +472,13 @@ export default function Conference({ room }: { room: string }) {
             resolution: VideoPresets.h720.resolution,
           },
         }}
-        onError={(e) => setMediaFail(joinErrorText((e as any)?.name, (e as any)?.message))}
+        onError={(e) => {
+          const err = e as any;
+          setMediaFail(joinErrorText(err?.name, err?.message));
+          // A quota refusal is not retryable. Offering Rejoin next to it sends
+          // somebody round a loop with no exit — see joinFailure in lib/link.ts.
+          try { window.sessionStorage.setItem("qm.joinFault", joinFailure(err?.name, err?.message).fault); } catch { /* fine without */ }
+        }}
         onMediaDeviceFailure={(f) => setMediaFail(deviceFailText(f ? String(f) : ""))}
         className="qmr-lk"
       >
@@ -1125,6 +1131,11 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
     }
   }
 
+  // Was the last refusal one that rejoining cannot fix?
+  const hopeless = (() => {
+    try { return window.sessionStorage.getItem("qm.joinFault") === "quota"; } catch { return false; }
+  })();
+
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
   const hostables = participants.filter((p) => p.identity !== ctx.localParticipant?.identity);
@@ -1146,8 +1157,14 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
           <b>{link.v.title}</b>
           <span>{link.v.detail}</span>
         </div>
-        {link.v.action === "rejoin" ? (
+        {link.v.action === "rejoin" && !hopeless ? (
           <button className="qmr-linkbtn" onClick={() => window.location.reload()}>Rejoin</button>
+        ) : link.v.action === "rejoin" ? (
+          // FIELD 2026-08-26: the quota case had a Rejoin button beside a
+          // failure that rejoining cannot fix. A button that cannot work is
+          // worse than no button — it costs the person three more attempts
+          // before they conclude the product is broken.
+          <span className="qmr-linknote">Rejoining won&apos;t help until the plan is topped up</span>
         ) : (
           <span className="qmr-linkspin" aria-hidden />
         )}
@@ -2220,6 +2237,7 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
   background:rgba(255,255,255,.09); color:inherit; border:1px solid rgba(255,255,255,.28);
   border-radius:8px; padding:6px 14px; }
 .qmr-linkbtn:hover { background:rgba(255,255,255,.18); }
+.qmr-linknote { margin-left:auto; font-size:12.5px; opacity:.85; white-space:nowrap; }
 .qmr-linkspin { margin-left:auto; width:13px; height:13px; flex:0 0 auto; border-radius:50%;
   border:2px solid rgba(240,217,166,.3); border-top-color:#f0d9a6; animation:qmrspin 900ms linear infinite; }
 @keyframes qmrspin { to { transform:rotate(360deg); } }

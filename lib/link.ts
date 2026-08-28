@@ -158,6 +158,89 @@ export function linkVerdict(s: {
   };
 }
 
+// ── why the server refused ────────────────────────────────────────────────
+//
+// FIELD 2026-08-26, from a screenshot:
+//
+//   "Couldn't connect to the meeting (could not establish signal connection:
+//    connection minutes limit exceeded. please). Check your connection and
+//    reload — nobody can see or hear you until this page reconnects."
+//
+// The first half is LiveKit Cloud saying the ACCOUNT has run out of connection
+// minutes. The second half is us telling the person to check their wifi.
+//
+// Their wifi is fine. Reloading will fail identically, for ever, until
+// somebody adds minutes to the plan — so "check your connection and reload" is
+// not merely unhelpful, it is a loop with no exit that the person will run
+// several times before giving up on the product.
+//
+// This is the same mistake as blaming a microphone for a dropped socket, one
+// layer further out: a failure is being described by the code path it arrived
+// through rather than by what actually happened. A server that refuses because
+// the bill is unpaid, because the token is wrong, and because the network is
+// down are three different events with three different answers, and only one
+// of them is the person's own connection.
+
+export type JoinFault = "quota" | "auth" | "unreachable" | "unknown";
+
+export type JoinVerdict = {
+  fault: JoinFault;
+  title: string;
+  detail: string;
+  /** is there any point pressing Rejoin? */
+  retryable: boolean;
+};
+
+/** ORDER MATTERS, and the field message is why: it contains BOTH "could not
+ *  establish signal connection" AND "connection minutes limit exceeded". Match
+ *  the specific cause before the generic transport wrapper it arrived in, or
+ *  every quota failure is misread as a network failure. */
+export function joinFailure(name?: string | null, message?: string | null): JoinVerdict {
+  const text = `${String(name || "")} ${String(message || "")}`.toLowerCase();
+
+  if (/\b(minutes|quota|limit)\b[^.]*\bexceed/.test(text) || /\bexceed[^.]*\b(minutes|quota|limit)\b/.test(text)) {
+    return {
+      fault: "quota",
+      title: "The meeting server is out of capacity",
+      detail:
+        "This is the meeting service's own limit, not your connection — reloading will not clear it. " +
+        "Whoever runs this Quantlys deployment needs to top up the plan (or point it at a self-hosted server). " +
+        "Everything you recorded before now is safe.",
+      retryable: false,
+    };
+  }
+
+  if (/\b(invalid|expired|unauthor|forbidden|permission denied|bad token)\b/.test(text)) {
+    return {
+      fault: "auth",
+      title: "This meeting link isn't valid any more",
+      detail:
+        "The pass this page uses to join has expired or was refused. Reload to get a fresh one — " +
+        "if that keeps happening, ask the host for a new link.",
+      retryable: true,
+    };
+  }
+
+  if (/\b(network|timeout|timed out|econnrefused|enotfound|dns|offline|unreachable|failed to fetch|signal connection)\b/.test(text)) {
+    return {
+      fault: "unreachable",
+      title: "Couldn't reach the meeting",
+      detail:
+        "The meeting server didn't answer. Check your connection and reload — nobody can see or hear you until this page reconnects.",
+      retryable: true,
+    };
+  }
+
+  return {
+    fault: "unknown",
+    title: "Couldn't connect to the meeting",
+    detail:
+      `${String(message || "").slice(0, 120) || "The server refused the connection."} ` +
+      "Reload to try again — nobody can see or hear you until this page reconnects.",
+    retryable: true,
+  };
+}
+
 /** The chip's text. Never says EXCELLENT for a room that is not connected —
  *  which is exactly what the screenshot caught it doing. */
 export function chipLabel(v: LinkVerdict, rttMs?: number | null): string {
