@@ -252,13 +252,11 @@ export default function HomeLanding() {
           license — not a slogan.
         </p>
         <p className="qml-honest">
-          <span>Honesty, not adjectives</span>
-          Captions and transcription currently use Deepgram. Video runs on
-          LiveKit. Auth, meetings, and recordings sit on Supabase. The app is
-          hosted on Vercel. We do not claim “private by default” while those
-          subprocessors hear the room. A public privacy page naming them is
-          next. Self-host and bring-your-own-model are the path, not a feature
-          toggle today.
+          <span>Hosted today. Yours later.</span>
+          Captions, recording, and the spec all run on our cloud right now.
+          The path is to run the same meeting on your servers, with your
+          models, with your data. Source is private until we put a date and a
+          license on this page. A privacy page is next.
         </p>
       </section>
 
