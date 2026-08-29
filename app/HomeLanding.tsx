@@ -256,7 +256,7 @@ export default function HomeLanding() {
           Captions, recording, and the spec all run on our cloud right now.
           The path is to run the same meeting on your servers, with your
           models, with your data. Source is private until we put a date and a
-          license on this page. A privacy page is next.
+          license on this page.
         </p>
       </section>
 
@@ -323,7 +323,7 @@ export default function HomeLanding() {
         <span>
           <Link href="/host">Host</Link>
           <a href="#own">Stack</a>
-          <span>Privacy (soon)</span>
+          <Link href="/privacy">Privacy</Link>
           <span>Source: private until dated</span>
         </span>
       </footer>
