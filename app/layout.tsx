@@ -4,7 +4,14 @@ import Image from "next/image";
 import { THEME_BOOT } from "@/lib/theme";
 import ThemeToggle from "./ThemeToggle";
 
-export const metadata = { title: "Quantlys Meeting" };
+export const metadata = {
+  metadataBase: new URL("https://quantlys-meeting.com"),
+  title: "Quantlys Meeting",
+  icons: {
+    icon: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
+  },
+};
 
 // The two faces the design is built on, fetched by the browser rather than at
 // build time. next/font self-hosts and is nicer — and it also makes the whole
