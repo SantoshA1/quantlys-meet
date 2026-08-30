@@ -5,8 +5,9 @@ const description =
   "Video in a browser tab. Guests need a link, not an account. The session writes a PRD: user stories, acceptance criteria, decisions, and open questions.";
 
 export const metadata: Metadata = {
-  title: "Meeting that writes a PRD, not notes | Quantlys",
+  title: "Quantlys Meeting | Leave the call with a spec, not notes",
   description,
+  robots: { index: true, follow: true },
   alternates: {
     canonical: "https://quantlys-meeting.com/",
   },
@@ -50,6 +51,8 @@ const jsonLd = {
       "@type": "SoftwareApplication",
       name: "Quantlys Meeting",
       url: "https://quantlys-meeting.com",
+      description:
+        "Video meeting in a browser tab. Guests need a link, not an account. The session writes a PRD.",
       applicationCategory: "CommunicationApplication",
       operatingSystem: "Web",
     },
