@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-const title = "Example PRD from a spec meeting";
+const title = "Example PRD from a spec meeting | Quantlys Meeting";
 const description =
   "Labeled specimen of the markdown PRD Quantlys Meeting writes from recorded meetings. Not a customer recording.";
 
