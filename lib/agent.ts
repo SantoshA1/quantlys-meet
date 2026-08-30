@@ -112,6 +112,10 @@ export type AgentState = {
   pending: boolean;
   /** a spec session interviews; a team meeting stays silence-biased */
   spec?: boolean;
+  /** captions are actually on and producing a clock the agent can trust.
+   *  undefined means "not specified" — existing callers without the field
+   *  still ask. Only an explicit false is deafness. */
+  hearing?: boolean;
 };
 
 export type AgentVerdict = {
@@ -129,6 +133,28 @@ const countAsks = (asked: AgentAsk[], key: string) =>
 
 /** THE WHOLE POINT OF THIS FILE. Ordered so the cheap, certain refusals come
  *  first and the judgement calls come last. */
+/** Everything the room can tell the agent, in wall-clock milliseconds.
+ *
+ *  ONE CLOCK. lastWordsAt null means nobody has spoken yet — quietMs is
+ *  time since startedAt, not a caption .at added to startedAt (that bug
+ *  made pause detection lie). */
+export function observe(o: {
+  now: number;
+  lastWordsAt: number | null;
+  lastAskAt: number;
+  startedAt: number;
+  wordsNow: number;
+  wordsAtAsk: number;
+}): { elapsedMs: number; quietMs: number; sinceAskMs: number; newWords: number } {
+  const origin = o.lastWordsAt == null ? o.startedAt : o.lastWordsAt;
+  return {
+    elapsedMs: Math.max(0, o.now - o.startedAt),
+    quietMs: Math.max(0, o.now - origin),
+    sinceAskMs: o.lastAskAt ? Math.max(0, o.now - o.lastAskAt) : 0,
+    newWords: Math.max(0, o.wordsNow - o.wordsAtAsk),
+  };
+}
+
 export function shouldAsk(s: AgentState): AgentVerdict {
   const spec = Boolean(s.spec);
   const warmup = spec ? SPEC_WARMUP_MS : WARMUP_MS;
@@ -137,6 +163,9 @@ export function shouldAsk(s: AgentState): AgentVerdict {
   const maxQ = spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS;
   const maxPer = spec ? SPEC_MAX_PER_DIMENSION : MAX_PER_DIMENSION;
   if (!s.on) return { ask: false, reason: "" };
+  if (s.hearing === false) {
+    return { ask: false, reason: "Captions are off — I can't hear the room. Turn captions on and I'll start." };
+  }
   if (s.pending) return { ask: false, reason: "Waiting for an answer to the last question." };
   if (!s.open || !s.open.length) {
     return { ask: false, reason: "Nothing left to ask — every part of the PRD has been covered." };
@@ -312,14 +341,19 @@ export function specOpeningLine(projectName: string, total: number): string {
   );
 }
 
-export function openingLine(projectName: string, total: number, opts?: { spec?: boolean }): string {
-  if (opts?.spec) return specOpeningLine(projectName, total);
-  const name = String(projectName || "").trim();
-  return (
-    `I'm listening for the ${total} things ${name ? `${name}'s` : "this project's"} PRD needs. ` +
-    "I'll ask at most one question at a time, only in a pause, and never more than " +
-    `${MAX_QUESTIONS} in a meeting. Anyone can dismiss a question or switch me off.`
-  );
+export function openingLine(projectName: string, total: number, opts?: { spec?: boolean; turnedCaptionsOn?: boolean }): string {
+  const base = opts?.spec
+    ? specOpeningLine(projectName, total)
+    : (() => {
+        const name = String(projectName || "").trim();
+        return (
+          `I'm listening for the ${total} things ${name ? `${name}'s` : "this project's"} PRD needs. ` +
+          "I'll ask at most one question at a time, only in a pause, and never more than " +
+          `${MAX_QUESTIONS} in a meeting. Anyone can dismiss a question or switch me off.`
+        );
+      })();
+  if (!opts?.turnedCaptionsOn) return base;
+  return base + " Captions just came on so I can hear the room.";
 }
 
 /** What the host sees while it is on and quiet. An assistant with no visible

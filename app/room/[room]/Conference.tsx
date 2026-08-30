@@ -631,6 +631,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   const audioCtx = useRef<AudioContext | null>(null);
   const ticker = useRef<any>(null);
   const stopping = useRef(0);
+  const saveWaiters = useRef<Array<() => void>>([]);
 
   useEffect(() => {
     db()
@@ -699,15 +700,25 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   }, [control, signedIn]);
 
   useEffect(() => {
+    const recStop = () => {
+      try { aRec.current?.stop(); } catch { /* already stopped */ }
+      try { vRec.current?.stop(); } catch { /* already stopped */ }
+    };
     const guard = (e: BeforeUnloadEvent) => {
-      if (status?.kind === "busy") {
+      if (status?.kind === "busy" || recording) {
+        recStop();
         e.preventDefault();
-        e.returnValue = "";
+        e.returnValue = recording ? "a recording is still saving" : "";
       }
     };
+    const onHide = () => { recStop(); };
     window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
-  }, [status]);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("beforeunload", guard);
+      window.removeEventListener("pagehide", onHide);
+    };
+  }, [status, recording]);
 
   const invite = useMemo(
     () => (typeof window === "undefined" ? "" : `${window.location.origin}/room/${room}`),
@@ -735,6 +746,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   // Ending the whole meeting asks once, in place — never a browser confirm.
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [endPhase, setEndPhase] = useState<"saving" | "ending" | "">("");
   // Where the header actually ends. The rail pins below it — measured, not
   // assumed, because the theme strip above and flex wrapping below both move
   // it, and a guessed offset already shipped a rail tangled into the header.
@@ -1038,25 +1050,47 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
     if (recording) announce(true);
   }, [participants.length, recording, announce]);
 
+  const waitForSave = () => new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const t = window.setTimeout(finish, 15_000);
+    saveWaiters.current.push(() => { window.clearTimeout(t); finish(); });
+  });
+
   const stopRecording = useCallback(() => {
+    const rec = vRec.current;
+    const live = rec && rec.state === "recording";
+    if (!live) {
+      if (saveWaiters.current.length) return waitForSave();
+      return Promise.resolve();
+    }
     setRecording(false);
     announce(false);
     if (ticker.current) clearInterval(ticker.current);
-    try {
-      aRec.current?.stop();
-    } catch {
-      /* the video is the one that matters */
-    }
-    try {
-      vRec.current?.stop();
-    } catch {
+    const p = waitForSave();
+    try { aRec.current?.stop(); } catch { /* already stopped */ }
+    try { rec.stop(); } catch {
       setStatus({ kind: "err", text: "Recording could not be closed cleanly." });
     }
+    return p;
   }, [announce]);
+
+  async function flushRecording() {
+    const rec = vRec.current;
+    const live = recording || (rec && rec.state === "recording");
+    if (!live && !saveWaiters.current.length) return;
+    setStatus({ kind: "busy", text: "Saving the recording…" });
+    await stopRecording();
+  }
 
   startRecordingRef.current = startRecording;
 
   async function save() {
+    try {
     const client = db();
     if (!signedIn || !client) return;
     const video = new Blob(vChunks.current, { type: `video/${vExt.current}` });
@@ -1098,6 +1132,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
       const { data: sess } = await client.auth.getSession();
       const r = await fetch("/api/recording/finish", {
         method: "POST",
+        keepalive: true,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
@@ -1152,6 +1187,10 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
       });
     } catch {
       setStatus({ kind: "ok", text: `Saved ${mb} MB — find it under Recordings on your host page.` });
+    }
+    } finally {
+      const waiters = saveWaiters.current.splice(0, saveWaiters.current.length);
+      for (const w of waiters) w();
     }
   }
 
@@ -1281,14 +1320,15 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             it speaks lives in lib/agent.ts, which refuses far more often than
             it agrees — see the header of Agent.tsx for why that is the whole
             design. */}
-        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} />
+        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
         <button
           className="qmr-leave"
-          onClick={() => {
+          onClick={async () => {
             if (status?.kind === "busy") return;
+            await flushRecording();
             ctx.disconnect();
             window.location.href = "/host";
           }}
@@ -1451,25 +1491,26 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             them back in unless you also lock the meeting.
           </p>
 
-          {/* FIELD 2026-08-18, his words: "there no way to end the meeting."
-              LEAVE walks YOU out and the meeting carries on; the host also
-              needs the other thing — the whole room ends, for everyone, and
-              the meeting is marked over. It lives here with the other
-              host-only controls, and it asks once, in place. */}
+          {/* FIELD: End is session-over; Delete on the host console is the
+              permanent action; recording is flushed first so it is not discarded. */}
           <div className="qmr-endrow">
             {confirmEnd ? (
               <>
                 <span className="qmr-fine" style={{ margin: 0 }}>
-                  Everyone is disconnected and the meeting is marked ended.
-                  {recording ? " Stop the recording first or it is cut off here." : ""}
+                  Everyone is dropped from this session. The recording is saved first.
+                  The meeting stays — same link, they can come back.
                 </span>
                 <button
                   className="qmr-endbtn"
                   disabled={ending}
                   onClick={async () => {
                     setEnding(true);
+                    setEndPhase("saving");
+                    try { await flushRecording(); } catch { /* still end the session */ }
+                    setEndPhase("ending");
                     const out = await control("end");
                     setEnding(false);
+                    setEndPhase("");
                     if (out?.error) {
                       setStatus({ kind: "err", text: out.error });
                       setConfirmEnd(false);
@@ -1479,13 +1520,13 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
                     window.location.href = "/host";
                   }}
                 >
-                  {ending ? "Ending…" : "Yes — end it for everyone"}
+                  {ending ? (endPhase === "saving" ? "Saving…" : "Ending…") : "Yes — end this session"}
                 </button>
                 <button className="qmr-ghost" onClick={() => setConfirmEnd(false)}>Keep going</button>
               </>
             ) : (
               <button className="qmr-endbtn" onClick={() => setConfirmEnd(true)}>
-                End meeting for everyone
+                End this session
               </button>
             )}
           </div>
@@ -1993,6 +2034,7 @@ type CaptionsApi = {
   note: string;
   log: Caption[];
   toggle: () => void;
+  enable: () => void;
 };
 
 function useCaptions(room: string, me: string, myName: string): CaptionsApi {
@@ -2189,7 +2231,9 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
 
   useEffect(() => () => { stopper.current?.(); }, []);
 
-  return { on, engine, note, log, toggle };
+  const enable = useCallback(() => { if (!on) toggle(); }, [on, toggle]);
+
+  return { on, engine, note, log, toggle, enable };
 }
 
 function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOpen: () => void }) {
