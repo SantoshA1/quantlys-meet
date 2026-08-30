@@ -5,7 +5,7 @@ const description =
   "Video in a browser tab. Guests need a link, not an account. The session writes a PRD: user stories, acceptance criteria, decisions, and open questions.";
 
 export const metadata: Metadata = {
-  title: "Quantlys Meeting — leave the call with a spec, not notes",
+  title: "Meeting that writes a PRD, not notes | Quantlys",
   description,
   alternates: {
     canonical: "https://quantlys-meeting.com/",
