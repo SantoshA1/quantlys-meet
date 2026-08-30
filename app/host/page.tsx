@@ -407,6 +407,39 @@ export default function HostConsole() {
     router.push(`/room/${room}`);
   }
 
+  async function startSpecSession() {
+    if (!user || busy) return;
+    setBusy(true);
+    setNote("");
+    const room = "qm-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const { error } = await db().from("meetings").insert({
+      room_name: room,
+      title: title.trim() || "Spec session",
+      created_by: user.id,
+      project: project.trim() || title.trim() || "spec",
+    });
+    setBusy(false);
+    if (error) {
+      setNote(`Could not start the spec session: ${error.message}`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(inviteLink(room));
+    } catch {
+      /* clipboard is a nicety, never a blocker */
+    }
+    if (guests.trim()) {
+      const said = await sendInvites(room, guests, new Date().toISOString());
+      if (said && !said.startsWith("Invitation sent")) {
+        setNote(`${said} The spec session is open at ${inviteLink(room)} — open it when you're ready.`);
+        return;
+      }
+      setGuests("");
+    }
+    setTitle("");
+    router.push(`/room/${room}?spec=1`);
+  }
+
   // Scheduling, the small honest version: the link exists NOW and works
   // forever. Nobody has to be let in at the right moment, no invitation can
   // expire, and a guest who clicks early is told when to come back instead of
@@ -651,19 +684,22 @@ export default function HostConsole() {
             {/* ── LAUNCH ─────────────────────────────────────────────── */}
             <section className="qh-panel qh-launch">
               <p className="qh-eyebrow">LAUNCH</p>
-              <h1 className="qh-h1">Start a meeting</h1>
+              <h1 className="qh-h1">Start a spec session</h1>
               <p className="qh-dim">
-                The invite link is on your clipboard the instant it opens. Anyone you name
-                gets a real calendar invitation — Yes / No / Maybe, straight into their calendar.
+                Talk the spec out — no one else has to join. The agent and recording turn on.
               </p>
               <div className="qh-row">
                 <input className="qh-input qh-grow" placeholder="Meeting name" value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && startMeeting()} />
+                  onKeyDown={(e) => e.key === "Enter" && startSpecSession()} />
                 <input className="qh-input qh-mid" placeholder="Project" value={project}
                   onChange={(e) => setProject(e.target.value)}
                   title="Meetings in the same project are rolled up together in your weekly digest" />
-                <button className="qh-primary" onClick={startMeeting} disabled={busy}>
+                <button className="qh-primary" onClick={startSpecSession} disabled={busy}>
+                  {busy ? "STARTING…" : "START SPEC SESSION"}
+                </button>
+                <button className="qh-ghost qh-btn" onClick={startMeeting} disabled={busy}
+                  title="Start a normal team meeting — agent and recording stay off until you turn them on">
                   {busy ? "STARTING…" : "START NOW"}
                 </button>
               </div>
