@@ -64,6 +64,20 @@ export const MAX_PER_DIMENSION = 2;
  *  middle of that is the worst first impression the feature can make. */
 export const WARMUP_MS = 120_000;
 
+// Spec sessions are the opposite product. A solo host is talking a PRD out;
+// the interview IS the meeting. Team meetings keep the silence-biased
+// constants above. These fire only when AgentState.spec is true.
+/** First prompt soon — they sat down to be interviewed, not to wait. */
+export const SPEC_WARMUP_MS = 15_000;
+/** After an answer, the next prompt. A solo host often goes quiet waiting. */
+export const SPEC_MIN_GAP_MS = 25_000;
+/** Do not demand a dump of new speech first. Zero means "ask anyway". */
+export const SPEC_MIN_NEW_WORDS = 0;
+/** Eight dimensions × a prompt and a follow-up, with a little room. */
+export const SPEC_MAX_QUESTIONS = 24;
+/** A thin answer gets one follow-up before the agent moves on. */
+export const SPEC_MAX_PER_DIMENSION = 3;
+
 // ── what the agent knows ──────────────────────────────────────────────────
 
 export type AgentAsk = {
@@ -96,6 +110,8 @@ export type AgentState = {
   open: Array<{ key: string; label: string; status: string }>;
   /** a question is already on screen waiting for the room */
   pending: boolean;
+  /** a spec session interviews; a team meeting stays silence-biased */
+  spec?: boolean;
 };
 
 export type AgentVerdict = {
@@ -114,27 +130,35 @@ const countAsks = (asked: AgentAsk[], key: string) =>
 /** THE WHOLE POINT OF THIS FILE. Ordered so the cheap, certain refusals come
  *  first and the judgement calls come last. */
 export function shouldAsk(s: AgentState): AgentVerdict {
+  const spec = Boolean(s.spec);
+  const warmup = spec ? SPEC_WARMUP_MS : WARMUP_MS;
+  const gap = spec ? SPEC_MIN_GAP_MS : MIN_GAP_MS;
+  const minWords = spec ? SPEC_MIN_NEW_WORDS : MIN_NEW_WORDS;
+  const maxQ = spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS;
+  const maxPer = spec ? SPEC_MAX_PER_DIMENSION : MAX_PER_DIMENSION;
   if (!s.on) return { ask: false, reason: "" };
   if (s.pending) return { ask: false, reason: "Waiting for an answer to the last question." };
   if (!s.open || !s.open.length) {
     return { ask: false, reason: "Nothing left to ask — every part of the PRD has been covered." };
   }
-  if ((s.asked || []).length >= MAX_QUESTIONS) {
-    return { ask: false, reason: `That's ${MAX_QUESTIONS} questions — the rest can wait for the notes.` };
+  if ((s.asked || []).length >= maxQ) {
+    return { ask: false, reason: `That's ${maxQ} questions — the rest can wait for the notes.` };
   }
-  if (s.elapsedMs < WARMUP_MS) {
-    return { ask: false, reason: "Listening while everyone settles in." };
+  if (s.elapsedMs < warmup) {
+    return { ask: false, reason: spec
+      ? "Give me a moment to listen, then I'll ask."
+      : "Listening while everyone settles in." };
   }
-  if (s.sinceAskMs && s.sinceAskMs < MIN_GAP_MS) {
+  if (s.sinceAskMs && s.sinceAskMs < gap) {
     return { ask: false, reason: "Just asked — giving the room the floor back." };
   }
-  if (s.newWords < MIN_NEW_WORDS) {
+  if (s.newWords < minWords) {
     return { ask: false, reason: "Listening — nothing new to build a question on yet." };
   }
   if (s.quietMs < PAUSE_MS) {
     return { ask: false, reason: "Waiting for a pause — it won't talk over anyone." };
   }
-  const key = pickDimension(s.open, s.asked);
+  const key = pickDimension(s.open, s.asked, maxPer);
   if (!key) {
     return { ask: false, reason: "The open parts have all been raised once already." };
   }
@@ -148,9 +172,11 @@ export function shouldAsk(s: AgentState): AgentVerdict {
  *  order a product is decided in. */
 export function pickDimension(
   open: Array<{ key: string; label: string; status: string }>,
-  asked: AgentAsk[]
+  asked: AgentAsk[],
+  maxPer: number = MAX_PER_DIMENSION
 ): string {
-  const live = (open || []).filter((d) => d && d.key && countAsks(asked, d.key) < MAX_PER_DIMENSION);
+  const cap = maxPer > 0 ? maxPer : MAX_PER_DIMENSION;
+  const live = (open || []).filter((d) => d && d.key && countAsks(asked, d.key) < cap);
   if (!live.length) return "";
   const missing = live.find((d) => String(d.status) === "missing");
   return (missing || live[0]).key;
@@ -277,7 +303,17 @@ export function looksAnswered(ask: AgentAsk, textSince: string): boolean {
 /** The line it opens with when somebody switches it on. It says what it will
  *  do AND what it will not do, because the second half is what makes people
  *  leave it on. */
-export function openingLine(projectName: string, total: number): string {
+export function specOpeningLine(projectName: string, total: number): string {
+  const name = String(projectName || "").trim();
+  return (
+    `I'm on. Talk through what you're building${name ? ` — ${name}` : ""}. ` +
+    `I'll walk the ${total} parts of the PRD so nothing is missing, one question at a time, only in a pause. ` +
+    "Talk, then answer the questions that come up."
+  );
+}
+
+export function openingLine(projectName: string, total: number, opts?: { spec?: boolean }): string {
+  if (opts?.spec) return specOpeningLine(projectName, total);
   const name = String(projectName || "").trim();
   return (
     `I'm listening for the ${total} things ${name ? `${name}'s` : "this project's"} PRD needs. ` +
@@ -292,7 +328,13 @@ export function statusLine(s: AgentState, verdict: AgentVerdict): string {
   if (!s.on) return "";
   const done = (s.asked || []).length;
   const left = Math.max(0, (s.open || []).length);
+  const names = (s.open || []).map((d) => d.label).filter(Boolean);
+  const openList = names.slice(0, 4).join(" · ") + (names.length > 4 ? ` · +${names.length - 4}` : "");
   if (verdict.reason) return verdict.reason;
+  if (s.spec && openList) {
+    if (!done) return `Listening — still open: ${openList}.`;
+    return `${done} asked · still open: ${openList}.`;
+  }
   if (!done) return `Listening — ${left} part${left === 1 ? "" : "s"} of the PRD still open.`;
   return `${done} asked · ${left} still open.`;
 }
@@ -310,6 +352,8 @@ export function agentQuestionPrompt(opts: {
    *  the dimension; with it the question is about their actual product, which
    *  is the difference between an assistant and a form. */
   brief?: string;
+  /** a spec session: pull a missing detail, do not recap. */
+  spec?: boolean;
 }): string {
   const brief = String(opts.brief || "").trim();
   return [
@@ -327,6 +371,10 @@ export function agentQuestionPrompt(opts: {
       ? `You have already asked these — do not repeat them:\n${opts.alreadyAsked.map((q) => `  - ${q}`).join("\n")}\n`
       : "",
     "Ask ONE question that closes that gap.",
+    "",
+    opts.spec
+      ? "This is a solo spec interview. Pull a MISSING detail — specific users, v1 vs out of scope, a success metric, or the top risk. Do not recap what they already said. If almost nothing has been said yet, ask the most useful opening question for this dimension."
+      : "",
     "",
     "RULES, and they matter more than the question being clever:",
     "- It goes on a screen in front of people who are mid-conversation. One",
