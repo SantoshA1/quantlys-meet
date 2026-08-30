@@ -77,16 +77,17 @@ export async function GET(req: Request) {
     report.recordings_error = e?.message || String(e);
   }
 
-  // 2. Meetings left "active" because everyone closed the tab rather than
-  //    pressing End. A meeting that has been running for two days is not a
-  //    meeting, and it keeps its room reachable and its code enumerable.
+  // 2. Meetings nobody ended. Stamp ended_at so we know the last session
+  //    went quiet on its own. The link still works — this is not meeting
+  //    death, and we do not flip active false (that badge reads as dead).
   try {
     const stale = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const { data, error } = await sb
       .from("meetings")
-      .update({ active: false, ended_at: now })
+      .update({ ended_at: now })
       .lt("started_at", stale)
       .eq("active", true)
+      .is("ended_at", null)
       .select("id");
     if (error) throw error;
     report.meetings_closed = (data || []).length;

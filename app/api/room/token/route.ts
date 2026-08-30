@@ -20,9 +20,19 @@ async function doorState(room: string): Promise<{ locked: boolean; waitingRoom: 
     const sb = createClient(url, key, { auth: { persistSession: false } });
     const { data } = await sb
       .from("meetings")
-      .select("locked, waiting_room")
+      .select("id, locked, waiting_room, active")
       .eq("room_name", room)
       .maybeSingle();
+    // A leftover "ended" row (old host END, cron, Kids) is not meeting death.
+    // OPEN mints a token and brings the row back to life. Fail open: a missed
+    // update must not refuse the token.
+    if (data && (data as any).active === false && (data as any).id) {
+      try {
+        await sb.from("meetings").update({ active: true }).eq("id", (data as any).id);
+      } catch {
+        /* leftover ended row staying ended is not a reason to refuse the token */
+      }
+    }
     return {
       locked: Boolean((data as any)?.locked),
       waitingRoom: Boolean((data as any)?.waiting_room),

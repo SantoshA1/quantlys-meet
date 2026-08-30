@@ -33,7 +33,7 @@ import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { finals, type Caption } from "@/lib/captions";
 import {
-  shouldAsk, statusLine, openingLine, specOpeningLine, looksAnswered,
+  shouldAsk, statusLine, openingLine, specOpeningLine, looksAnswered, observe,
   MAX_QUESTIONS, SPEC_MAX_QUESTIONS, type AgentAsk, type AgentState,
 } from "@/lib/agent";
 import { rubricFor, metaFor, detectMode } from "@/lib/prd";
@@ -49,6 +49,7 @@ type Broadcast =
 
 export default function Agent({
   room, project, log, myName, spec = false,
+  captionsOn, enableCaptions, captionEpoch, captionNote,
 }: {
   room: string;
   /** the project this meeting belongs to, from /api/room/info */
@@ -58,6 +59,10 @@ export default function Agent({
   myName: string;
   /** a spec session starts the interviewer on */
   spec?: boolean;
+  captionsOn: boolean;
+  enableCaptions: () => void;
+  captionEpoch?: number;
+  captionNote?: string;
 }) {
   const [on, setOn] = useState(!!spec);
   const [asked, setAsked] = useState<AgentAsk[]>([]);
@@ -70,6 +75,9 @@ export default function Agent({
   const startedAt = useRef(0);
   const lastAskAt = useRef(0);
   const wordsAtLastAsk = useRef(0);
+  const lastWordsAt = useRef<number | null>(null);
+  const wordsSeen = useRef(0);
+  const sinceMark = useRef(0);
   const inFlight = useRef(false);
   const { localParticipant } = useLocalParticipant();
 
@@ -135,12 +143,13 @@ export default function Agent({
   }, [on, project, rubric]);
 
   // Spec sessions start with the agent already on, so the opening line has to
-  // land without a click.
+  // land without a click. Captions are the ears — turn them on if they aren't.
   useEffect(() => {
     if (!spec) return;
     setNote(specOpeningLine(project, rubric.length));
     if (!startedAt.current) startedAt.current = Date.now();
-  }, [spec, project, rubric.length]);
+    if (!captionsOn) enableCaptions();
+  }, [spec, project, rubric.length, captionsOn, enableCaptions]);
 
   const ask = useCallback(async (state: AgentState, key: string, recent: string) => {
     if (inFlight.current) return;
@@ -177,6 +186,7 @@ export default function Agent({
       };
       lastAskAt.current = Date.now();
       wordsAtLastAsk.current = words(log);
+      sinceMark.current = finals(log).length;
       setAsked((a) => [...a, item]);
       setCurrent(item);
       setNote(String(j.model_note || ""));
@@ -196,19 +206,29 @@ export default function Agent({
     if (!on) { setStatus(""); return; }
     if (!startedAt.current) startedAt.current = Date.now();
     const tick = () => {
-      const f = finals(log);
-      const last = f.length ? f[f.length - 1] : null;
-      const lastAtMs = last ? startedAt.current + last.at : startedAt.current;
+      const n = words(log);
+      if (n > wordsSeen.current) {
+        lastWordsAt.current = Date.now();
+        wordsSeen.current = n;
+      } else if (n < wordsSeen.current) {
+        wordsSeen.current = n;
+      }
+      const clock = observe({
+        now: Date.now(),
+        lastWordsAt: lastWordsAt.current,
+        lastAskAt: lastAskAt.current,
+        startedAt: startedAt.current,
+        wordsNow: n,
+        wordsAtAsk: wordsAtLastAsk.current,
+      });
       const state: AgentState = {
         on: true,
-        elapsedMs: Date.now() - startedAt.current,
-        quietMs: Math.max(0, Date.now() - lastAtMs),
-        sinceAskMs: lastAskAt.current ? Date.now() - lastAskAt.current : 0,
-        newWords: Math.max(0, words(log) - wordsAtLastAsk.current),
+        ...clock,
         asked,
         open,
         pending: Boolean(current),
         spec: Boolean(spec),
+        hearing: Boolean(captionsOn),
       };
       const verdict = shouldAsk(state);
       setStatus(statusLine(state, verdict));
@@ -219,13 +239,13 @@ export default function Agent({
     tick();
     const iv = window.setInterval(tick, 5000);
     return () => window.clearInterval(iv);
-  }, [on, log, asked, open, current, ask, spec]);
+  }, [on, log, asked, open, current, ask, spec, captionsOn]);
 
   // A question the room talked straight past is not a question that needs
   // repeating on the screen for ever.
   useEffect(() => {
     if (!current) return;
-    const since = finals(log).filter((c) => startedAt.current + c.at > current.at).map((c) => c.text).join(" ");
+    const since = finals(log).slice(sinceMark.current).map((c) => c.text).join(" ");
     if (looksAnswered(current, since)) {
       shout({ kind: "answer", key: current.key, text: since.slice(-400), who: "the room" });
       setCurrent(null);
@@ -243,7 +263,7 @@ export default function Agent({
       localParticipant?.publishData?.(
         new TextEncoder().encode(JSON.stringify({
           id: `agent-${current.at}`, who: myName || "Agent answer",
-          text: line, final: true, at: Date.now() - startedAt.current,
+          text: line, final: true, at: captionEpoch ? Date.now() - captionEpoch : Date.now() - startedAt.current,
         })),
         { reliable: true, topic: "qm-cc" }
       );
@@ -262,7 +282,8 @@ export default function Agent({
         onClick={() => {
           const next = !on;
           setOn(next);
-          setNote(next ? openingLine(project, rubric.length, { spec }) : "");
+          if (next && !captionsOn) enableCaptions();
+          setNote(next ? openingLine(project, rubric.length, { spec, turnedCaptionsOn: !captionsOn }) : "");
           if (next && !startedAt.current) startedAt.current = Date.now();
         }}
         aria-pressed={on}
@@ -311,6 +332,7 @@ export default function Agent({
           ) : null}
           {doneCount ? <span className="qa-done">{doneCount} answered</span> : null}
           {note ? <span className="qa-note">{note}</span> : null}
+          {captionNote ? <span className="qa-note">{captionNote}</span> : null}
         </div>
       ) : null}
     </>

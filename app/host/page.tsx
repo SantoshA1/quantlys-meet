@@ -588,8 +588,24 @@ export default function HostConsole() {
     setConfirmDel("");
   }
 
-  async function endMeeting(id: string) {
-    await db().from("meetings").update({ active: false, ended_at: new Date().toISOString() }).eq("id", id);
+  async function endMeeting(room: string) {
+    try {
+      const { data: sess } = await db().auth.getSession();
+      const r = await fetch("/api/host/control", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ room, action: "end" }),
+      });
+      const j = await r.json();
+      if (!r.ok || j?.error) {
+        setInviteNote(j?.error || "Couldn't end that session.");
+      }
+    } catch {
+      setInviteNote("Couldn't reach the server to end that session.");
+    }
     loadMine();
   }
 
@@ -773,7 +789,7 @@ export default function HostConsole() {
                           {when(m.scheduled_at)}
                         </em>
                       ) : null}
-                      {m.active === false ? <em className="qm-ended"> · ended</em> : null}
+                      {m.active === false ? <em className="qm-ended"> · last session ended</em> : null}
                     </span>
                     <span className="qm-row">
                       <button className="qh-ghost" onClick={() => copyInvite(m.room_name)}>
@@ -792,9 +808,7 @@ export default function HostConsole() {
                       <button className="qh-primary qh-small" onClick={() => router.push(`/room/${m.room_name}`)}>
                         OPEN
                       </button>
-                      {m.active === false ? null : (
-                        <button className="qh-ghost" onClick={() => endMeeting(m.id)}>END</button>
-                      )}
+                      <button className="qh-ghost" onClick={() => endMeeting(m.room_name)}>END SESSION</button>
                       {confirmDel === m.room_name ? (
                         <>
                           <button className="qm-danger" disabled={deleting === m.room_name}

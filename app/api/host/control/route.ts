@@ -93,6 +93,27 @@ export async function POST(req: Request) {
     );
   }
 
+  // End tears down the live session; the meeting row stays; the same link
+  // still works; Delete is the permanent action. Conference calls this with
+  // no identity, so it MUST be handled before the LiveKit/identity gates
+  // below — those 400'd in-room End and only the host-console DB write
+  // actually marked sessions over.
+  if (action === "end") {
+    await sb
+      .from("meetings")
+      .update({ ended_at: new Date().toISOString() })
+      .eq("id", meeting!.id);
+    const svc = rooms();
+    if (svc) {
+      try {
+        await svc.deleteRoom(room);
+      } catch {
+        // The room may already be empty/gone — the row update is the record.
+      }
+    }
+    return Response.json({ ok: true, action: "end", session: "ended" });
+  }
+
   if (action === "lock" || action === "unlock") {
     const next = action === "lock";
     const { error } = await sb
@@ -182,22 +203,6 @@ export async function POST(req: Request) {
   if (!identity) return Response.json({ error: "Which person?" }, { status: 400 });
 
   try {
-    if (action === "end") {
-      // The whole meeting, ended for everyone — the LiveKit room is deleted
-      // (which disconnects every participant) and the row is marked ended so
-      // the link stops handing out tokens as an ACTIVE meeting. The host does
-      // this from inside the room; LEAVE was never the same thing.
-      await sb
-        .from("meetings")
-        .update({ active: false, ended_at: new Date().toISOString() })
-        .eq("id", meeting!.id);
-      try {
-        await svc.deleteRoom(room);
-      } catch {
-        // The room may already be empty/gone — the row update is the record.
-      }
-      return Response.json({ ok: true, action: "end" });
-    }
     if (action === "remove") {
       await svc.removeParticipant(room, identity);
       return Response.json({ ok: true, action: "remove", identity });

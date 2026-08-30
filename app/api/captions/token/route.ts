@@ -46,7 +46,8 @@ export async function POST(req: Request) {
 
   // Anyone in a meeting may caption — including guests, who have no account.
   // What stops this being an open key-vending machine is that the caller must
-  // name a meeting that exists and is running. A stranger with the URL and no
+  // name a meeting that exists. A session-ended meeting is still captionable
+  // because the next join is a new session. A stranger with the URL and no
   // room code gets nothing.
   let body: any = {};
   try {
@@ -61,14 +62,11 @@ export async function POST(req: Request) {
     try {
       const { data: meeting } = await admin()
         .from("meetings")
-        .select("room_name, active")
+        .select("room_name")
         .eq("room_name", room)
         .maybeSingle();
       if (!meeting) {
         return Response.json({ error: "No such meeting." }, { status: 404 });
-      }
-      if ((meeting as any).active === false) {
-        return Response.json({ error: "That meeting has ended." }, { status: 409 });
       }
     } catch {
       /* the lookup failing is not a reason to refuse captions to a real room */
