@@ -26,7 +26,7 @@ import { createClient } from "@supabase/supabase-js";
 import { chooseModel } from "@/lib/model";
 import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath } from "@/lib/prd";
 import { readContext } from "../../project/route";
-import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, MAX_QUESTIONS } from "@/lib/agent";
+import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -64,10 +64,13 @@ export async function POST(req: Request) {
 
   const project = String(body?.project || "").trim();
   const recent = String(body?.recent || "").trim();
-  const asked: string[] = Array.isArray(body?.asked) ? body.asked.map(String).slice(0, MAX_QUESTIONS) : [];
-  const askedKeys: string[] = Array.isArray(body?.askedKeys) ? body.askedKeys.map(String).slice(0, 40) : [];
+  const spec = Boolean(body?.spec);
+  const maxQ = spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS;
+  const maxPer = spec ? SPEC_MAX_PER_DIMENSION : MAX_PER_DIMENSION;
+  const asked: string[] = Array.isArray(body?.asked) ? body.asked.map(String).slice(0, maxQ) : [];
+  const askedKeys: string[] = Array.isArray(body?.askedKeys) ? body.askedKeys.map(String).slice(0, 80) : [];
 
-  if (!recent) {
+  if (!recent && !spec) {
     return Response.json({ ask: false, reason: "Nothing has been said yet." });
   }
 
@@ -114,7 +117,7 @@ export async function POST(req: Request) {
   // blocking one that has not been worn out. A question that follows from the
   // last thing said gets answered; one that arrives from nowhere gets ignored.
   const ranked = rankOpen(open, recent);
-  const key = pickDimension(ranked, askedKeys.map((k) => ({ key: k, label: "", question: "", options: [], why: "", at: 0 })));
+  const key = pickDimension(ranked, askedKeys.map((k) => ({ key: k, label: "", question: "", options: [], why: "", at: 0 })), maxPer);
   if (!key) {
     return Response.json({ ask: false, reason: "The open parts have all been raised already." });
   }
@@ -151,6 +154,7 @@ export async function POST(req: Request) {
     recent: recent.slice(-6000),
     alreadyAsked: asked,
     brief,
+    spec,
   });
 
   try {
