@@ -516,3 +516,10 @@ body { background:transparent; color:inherit;
   justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .qml-foot a { color: var(--muted); margin-right: 14px; }
 .qml-foot a:hover { color: var(--text); }
+
+/* ── public legal pages (`/privacy`) ──────────────────────────────────── */
+.qml-legal { max-width: 720px; padding: 8px 0 48px; }
+.qml-legal h2 { font-size: 20px; margin: 28px 0 10px; font-weight: 600; }
+.qml-legal p, .qml-legal li { color: var(--muted); line-height: 1.6; font-size: 15px; margin: 0 0 12px; }
+.qml-legal ul { margin: 0 0 12px; padding-left: 18px; }
+.qml-legal a { color: var(--accent2); }
