@@ -491,10 +491,9 @@ export default function HostConsole() {
     if (said.startsWith("Invitation sent")) setGuests("");
     setNote(
       said
-        ? `Scheduled. ${said} The link works from now until you end the meeting, so nobody can arrive to a locked door.`
+        ? `Scheduled. ${said} The link stays good after a session, so nobody arrives to a locked door. Delete the meeting if you want the link gone.`
         : "Scheduled. The invite link is on your clipboard and the calendar file is in your " +
-          "Downloads — send both. The link works from now until you end the meeting, so " +
-          "nobody can arrive to a locked door."
+          "Downloads — send both. The link stays good after a session, so nobody arrives to a locked door. Delete the meeting if you want the link gone."
     );
     loadMine();
   }
