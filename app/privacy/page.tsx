@@ -5,12 +5,23 @@ export const metadata: Metadata = {
   title: "Privacy — Quantlys Meeting",
   description:
     "How Quantlys Meeting uses meeting audio, recordings, captions, notes, and host email. Operated by Agility Business Services / Quantlys.",
+  alternates: {
+    canonical: "https://quantlys-meeting.com/privacy",
+  },
   openGraph: {
     title: "Privacy — Quantlys Meeting",
     description:
       "Who operates Quantlys Meeting, what we keep from a call, and how hosts can delete recordings.",
     url: "https://quantlys-meeting.com/privacy",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Quantlys Meeting",
+      },
+    ],
   },
 };
 
