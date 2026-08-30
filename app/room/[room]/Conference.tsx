@@ -110,7 +110,7 @@ const REC_TOPIC = "qm-recording";
 const REC_BEAT_MS = 3000;
 const REC_STALE_MS = 9000;   // three missed beats → assume it stopped
 
-export default function Conference({ room }: { room: string }) {
+export default function Conference({ room, spec = false }: { room: string; spec?: boolean }) {
   const [name, setName] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [joined, setJoined] = useState(false);
@@ -482,7 +482,7 @@ export default function Conference({ room }: { room: string }) {
         onMediaDeviceFailure={(f) => setMediaFail(deviceFailText(f ? String(f) : ""))}
         className="qmr-lk"
       >
-        <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} />
+        <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} spec={spec} />
         <PlaybackGate />
         {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
         <div className="qmr-conf">
@@ -565,8 +565,8 @@ function PlaybackGate() {
 // silently lose that person's voice, so the sources are kept and reused.
 const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
-function RoomHeader({ room, title, project, camWanted, micWanted }: {
-  room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean;
+function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }: {
+  room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean; spec?: boolean;
 }) {
   const participants = useParticipants();
   const ctx = useRoomContext();
@@ -616,6 +616,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
   const [acting, setActing] = useState("");
 
   const [recording, setRecording] = useState(false);
+  const startRecordingRef = useRef<() => void>(() => {});
+  const specCcOnce = useRef(false);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<{ kind: "ok" | "err" | "busy"; text: string } | null>(null);
 
@@ -725,7 +727,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
   // The meeting writing itself down — the rail on the right. Open by default
   // where there is room for it; a laptop keeps the video and gets a button.
   const [railOpen, setRailOpen] = useState<boolean>(() =>
-    typeof window !== "undefined" ? window.matchMedia("(min-width: 1180px)").matches : false);
+    spec ? true : (typeof window !== "undefined" ? window.matchMedia("(min-width: 1180px)").matches : false));
   // Moments the host marks by hand. They ride into the recording's captions
   // payload, so the transcript and the search can find them afterwards —
   // a flag that lives only on this screen dies with the tab.
@@ -756,6 +758,26 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
     if (cc.on && !ccStartRef.current) ccStartRef.current = Date.now();
     if (!cc.on) ccStartRef.current = 0;
   }, [cc.on]);
+
+  // Spec session: captions on once. Ref-guarded so Strict Mode's double
+  // effect does not toggle them straight back off.
+  useEffect(() => {
+    if (!spec) return;
+    if (specCcOnce.current || cc.on) {
+      specCcOnce.current = true;
+      return;
+    }
+    specCcOnce.current = true;
+    cc.toggle();
+  }, [spec, cc]);
+
+  // Spec session: start recording once the canvas has video. Cleanup the
+  // timeout so Strict Mode does not fire twice; host can still stop.
+  useEffect(() => {
+    if (!spec || !signedIn || recording) return;
+    const t = window.setTimeout(() => startRecordingRef.current(), 1200);
+    return () => window.clearTimeout(t);
+  }, [spec, signedIn, recording]);
   const flagNow = () => {
     const last = finals(cc.log).slice(-1)[0];
     const at = flagAt({
@@ -1032,6 +1054,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
     }
   }, [announce]);
 
+  startRecordingRef.current = startRecording;
+
   async function save() {
     const client = db();
     if (!signedIn || !client) return;
@@ -1172,6 +1196,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
     ) : null}
     <header className="qmr-bar" ref={barRef}>
       <span className="qmr-logo">Quantlys Meeting</span>
+      {spec ? <span className="qmr-speccue">Spec session, agent on</span> : null}
 
       {/* Everyone in the room sees this, not just whoever pressed Record. It
           is the second half of the promise made on the join screen. */}
@@ -1256,7 +1281,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted }: {
             it speaks lives in lib/agent.ts, which refuses far more often than
             it agrees — see the header of Agent.tsx for why that is the whole
             design. */}
-        <Agent room={room} project={project || ""} log={cc.log} myName={meName} />
+        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -2320,6 +2345,8 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
   gap: 12px; padding: 8px 14px; background: #12151d;
   border-bottom: 1px solid #262b36; flex-wrap: nowrap; overflow: visible; }
 .qmr-logo { font-weight: 600; }
+.qmr-speccue { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: #7fe0d6; font-weight: 600; white-space: nowrap; }
 .qmr-people { color: #8b93a5; font-size: 13px; }
 .qmr-bar button { flex: 0 0 auto; }
 .qmr-names { font-style: normal; color: #6f7789; }
