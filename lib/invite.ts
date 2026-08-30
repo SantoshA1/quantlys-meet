@@ -328,7 +328,7 @@ export function inviteHtml(o: {
       <a href="${esc(o.link)}" style="display:inline-block;padding:13px 26px;font-size:15px;font-weight:600;color:#04120f;text-decoration:none">Join the meeting</a>
     </td></tr>
   </table>
-  <p style="font-size:13px;color:#8b93a5;margin:0 0 6px;line-height:1.6">No account, no download — it opens in your browser.<br>The link works from now until the host ends it, so arriving early is fine.</p>
+  <p style="font-size:13px;color:#8b93a5;margin:0 0 6px;line-height:1.6">No account, no download — it opens in your browser.<br>The same link works next time too, so arriving early is fine.</p>
   <p style="font-size:12px;color:#6f7789;margin:0;word-break:break-all">${esc(o.link)}</p>`
   }
   <p style="font-size:12px;color:#6f7789;margin:28px 0 0;padding-top:16px;border-top:1px solid #262b36">

@@ -335,7 +335,7 @@ export default function Conference({ room, spec = false }: { room: string; spec?
               {info.host ? (
                 <span><i>HOST</i><b>{info.host}</b></span>
               ) : null}
-              <span><i>THIS LINK</i><b>Works until the host ends it</b></span>
+              <span><i>THIS LINK</i><b>Keeps working after a session</b></span>
             </div>
           ) : null}
           {starts && new Date(starts).getTime() - Date.now() > 90_000 ? (
