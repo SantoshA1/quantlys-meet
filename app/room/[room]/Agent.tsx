@@ -33,8 +33,8 @@ import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { finals, type Caption } from "@/lib/captions";
 import {
-  shouldAsk, statusLine, openingLine, looksAnswered,
-  MAX_QUESTIONS, type AgentAsk, type AgentState,
+  shouldAsk, statusLine, openingLine, specOpeningLine, looksAnswered,
+  MAX_QUESTIONS, SPEC_MAX_QUESTIONS, type AgentAsk, type AgentState,
 } from "@/lib/agent";
 import { rubricFor, metaFor, detectMode } from "@/lib/prd";
 
@@ -48,7 +48,7 @@ type Broadcast =
   | { kind: "dismiss"; key: string; at: number };
 
 export default function Agent({
-  room, project, log, myName,
+  room, project, log, myName, spec = false,
 }: {
   room: string;
   /** the project this meeting belongs to, from /api/room/info */
@@ -56,8 +56,10 @@ export default function Agent({
   /** the live caption log — the agent never transcribes anything itself */
   log: Caption[];
   myName: string;
+  /** a spec session starts the interviewer on */
+  spec?: boolean;
 }) {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(!!spec);
   const [asked, setAsked] = useState<AgentAsk[]>([]);
   const [current, setCurrent] = useState<AgentAsk | null>(null);
   const [status, setStatus] = useState("");
@@ -102,7 +104,14 @@ export default function Agent({
   // yet — a project's first meeting — means everything is open, which is
   // exactly right.
   useEffect(() => {
-    if (!on || !project) return;
+    if (!on) return;
+    // No project yet still means the whole rubric is open — otherwise shouldAsk
+    // sees an empty list and says nothing is left to ask, so a spec session
+    // never interviews.
+    if (!project) {
+      setOpen(rubric.map((d) => ({ key: d.key, label: d.label, status: "missing" })));
+      return;
+    }
     let alive = true;
     (async () => {
       try {
@@ -125,6 +134,14 @@ export default function Agent({
     return () => { alive = false; };
   }, [on, project, rubric]);
 
+  // Spec sessions start with the agent already on, so the opening line has to
+  // land without a click.
+  useEffect(() => {
+    if (!spec) return;
+    setNote(specOpeningLine(project, rubric.length));
+    if (!startedAt.current) startedAt.current = Date.now();
+  }, [spec, project, rubric.length]);
+
   const ask = useCallback(async (state: AgentState, key: string, recent: string) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -146,6 +163,7 @@ export default function Agent({
           open: state.open,
           asked: state.asked.map((a) => a.question),
           askedKeys: state.asked.map((a) => a.key),
+          spec: Boolean(spec),
         }),
       });
       const j = await r.json().catch(() => null);
@@ -169,7 +187,7 @@ export default function Agent({
       inFlight.current = false;
       setBusy(false);
     }
-  }, [project, mode, log, shout]);
+  }, [project, mode, log, shout, spec]);
 
   // The clock. Once every five seconds is enough for a decision whose
   // shortest interval is three minutes, and it keeps the status line honest
@@ -190,6 +208,7 @@ export default function Agent({
         asked,
         open,
         pending: Boolean(current),
+        spec: Boolean(spec),
       };
       const verdict = shouldAsk(state);
       setStatus(statusLine(state, verdict));
@@ -200,7 +219,7 @@ export default function Agent({
     tick();
     const iv = window.setInterval(tick, 5000);
     return () => window.clearInterval(iv);
-  }, [on, log, asked, open, current, ask]);
+  }, [on, log, asked, open, current, ask, spec]);
 
   // A question the room talked straight past is not a question that needs
   // repeating on the screen for ever.
@@ -243,7 +262,7 @@ export default function Agent({
         onClick={() => {
           const next = !on;
           setOn(next);
-          setNote(next ? openingLine(project, rubric.length) : "");
+          setNote(next ? openingLine(project, rubric.length, { spec }) : "");
           if (next && !startedAt.current) startedAt.current = Date.now();
         }}
         aria-pressed={on}
@@ -253,7 +272,7 @@ export default function Agent({
             : "This meeting has no project, so the agent asks the standard PRD questions"
         }
       >
-        {on ? `Agent · ${asked.length}/${MAX_QUESTIONS}` : "PRD agent"}
+        {on ? `Agent · ${asked.length}/${spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS}` : "PRD agent"}
       </button>
 
       {on && current ? (
