@@ -364,6 +364,25 @@ export function deviceFailText(failure?: string | null): string {
   }
 }
 
+/** A device-failure event while the wanted tracks are still live is a
+ *  failed switch or retry, not a browser block. Keeping the padlock banner
+ *  up in that state is a lie — the call is already sending. */
+export function deviceFailIsStale(opts: {
+  failureText: string;
+  camWanted: boolean;
+  micWanted: boolean;
+  camLive: boolean;
+  micLive: boolean;
+}): boolean {
+  const text = String(opts.failureText || "");
+  if (!text) return true;
+  const deviceish = /camera or microphone|padlock|plug one in|another app is already using/i.test(text);
+  if (!deviceish) return false;
+  const camOk = !opts.camWanted || opts.camLive;
+  const micOk = !opts.micWanted || opts.micLive;
+  return camOk && micOk;
+}
+
 /** Words for LiveKitRoom's onError, which fires for BOTH connection failures
  *  and device failures. Only name a device when the error is genuinely a
  *  getUserMedia one; a websocket failure described as a microphone problem
