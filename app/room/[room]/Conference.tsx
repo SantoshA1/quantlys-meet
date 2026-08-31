@@ -23,7 +23,7 @@ import MediaGuard, { GUARD_CSS } from "./MediaGuard";
 import Agent, { AGENT_CSS } from "./Agent";
 import { connectionAdvice } from "@/lib/media";
 import { linkVerdict, chipLabel, joinFailure, type LinkVerdict } from "@/lib/link";
-import { joinErrorText, deviceFailText } from "@/lib/camera";
+import { joinErrorText, deviceFailText, deviceFailIsStale } from "@/lib/camera";
 import { waitingMessage, pollDelay } from "@/lib/waiting";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Caption, Engine } from "@/lib/captions";
@@ -491,10 +491,52 @@ export default function Conference({ room, spec = false }: { room: string; spec?
       >
         <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} spec={spec} />
         <PlaybackGate />
-        {mediaFail ? <div className="qmr-mediafail">{mediaFail}</div> : null}
+        <MediaFailBanner text={mediaFail} onClear={() => setMediaFail("")} camWanted={choice.camOn} micWanted={choice.micOn} />
         <ConferenceStage />
         <Reactions />
       </LiveKitRoom>
+    </div>
+  );
+}
+
+/** A device-failure event while the wanted tracks are still live is a
+ *  failed switch or retry, not a browser block. Must sit inside LiveKitRoom
+ *  so useLocalParticipant can see whether the camera and mic are already
+ *  sending. Connection and quota errors are not treated as stale. */
+function MediaFailBanner({
+  text,
+  onClear,
+  camWanted,
+  micWanted,
+}: {
+  text: string;
+  onClear: () => void;
+  camWanted: boolean;
+  micWanted: boolean;
+}) {
+  const { isCameraEnabled, isMicrophoneEnabled } = useLocalParticipant();
+  useEffect(() => {
+    if (!text) return;
+    if (deviceFailIsStale({
+      failureText: text,
+      camWanted,
+      micWanted,
+      camLive: isCameraEnabled,
+      micLive: isMicrophoneEnabled,
+    })) onClear();
+  }, [text, camWanted, micWanted, isCameraEnabled, isMicrophoneEnabled, onClear]);
+  if (!text) return null;
+  if (deviceFailIsStale({
+    failureText: text,
+    camWanted,
+    micWanted,
+    camLive: isCameraEnabled,
+    micLive: isMicrophoneEnabled,
+  })) return null;
+  return (
+    <div className="qmr-mediafail" role="status">
+      <span>{text}</span>
+      <button type="button" className="qmr-mediafail-x" onClick={onClear}>Dismiss</button>
     </div>
   );
 }
@@ -2054,6 +2096,7 @@ type CaptionsApi = {
 };
 
 function useCaptions(room: string, me: string, myName: string): CaptionsApi {
+  const lkRoom = useRoomContext();
   const [on, setOn] = useState(false);
   const [engine, setEngine] = useState<Engine>("none");
   const [note, setNote] = useState("");
@@ -2149,7 +2192,16 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     let utter = `${me}-${seq.current++}`;
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // A second getUserMedia here can fire a permission failure even while
+      // the published mic is already live, which is how a padlock banner
+      // appears over a working call. Reuse the published track when we can.
+      const pub = lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      const mst = pub?.track?.mediaStreamTrack;
+      if (mst && mst.readyState === "live") {
+        stream = new MediaStream([mst.clone()]);
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
     } catch {
       setNote("Couldn't open the microphone for captions.");
       setOn(false);
@@ -2204,7 +2256,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
       try { ws?.close(); } catch {}
     };
-  }, [emit, me, myName, startBrowser]);
+  }, [emit, me, myName, startBrowser, lkRoom]);
 
   const toggle = useCallback(() => {
     if (on) {
@@ -2358,7 +2410,12 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
 .qmr-primary { background: #00a99d; color: #06110f; border: 0; font-weight: 600; }
 .qmr-mediafail { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:39;
   max-width:min(560px, calc(100% - 24px)); background:#2a1618; border:1px solid #5a2a2f;
-  color:#ffd0d0; border-radius:12px; padding:11px 14px; font-size:13.5px; line-height:1.5; }
+  color:#ffd0d0; border-radius:12px; padding:11px 14px; font-size:13.5px; line-height:1.5;
+  display:flex; align-items:flex-start; gap:12px; }
+.qmr-mediafail-x { flex:0 0 auto; margin:0; padding:0; background:transparent; border:0;
+  color:#ffd0d0; font:inherit; font-size:12.5px; font-weight:600; cursor:pointer;
+  opacity:.8; text-decoration:underline; white-space:nowrap; }
+.qmr-mediafail-x:hover { opacity:1; }
 .qmr-wr { margin-top:12px; padding-top:12px; border-top:1px solid #262b36; gap:10px; }
 .qmr-waitlist { margin-top:12px; padding:10px 12px; background:#0d3d39; border:1px solid #00a99d;
   border-radius:11px; }
