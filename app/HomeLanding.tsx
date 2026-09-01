@@ -315,6 +315,23 @@ export default function HomeLanding() {
         </div>
       </section>
 
+
+      <section className="qml-block" id="faq">
+        <p className="qml-kicker">FAQ</p>
+        <h2>Quantlys Meeting is not Quantalys.</h2>
+        <h3>What is Quantlys Meeting?</h3>
+        <p>
+          A browser video meeting. Guests join from a link. The recorded
+          session writes a markdown PRD: user stories, acceptance criteria,
+          decisions, and open questions.
+        </p>
+        <h3>Is Quantlys Meeting the same as Quantalys?</h3>
+        <p>
+          No. Quantlys Meeting is a spec-session video product at
+          quantlys-meeting.com. Quantalys is an unrelated fund-data company.
+        </p>
+      </section>
+
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}

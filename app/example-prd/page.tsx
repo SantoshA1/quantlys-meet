@@ -8,6 +8,7 @@ const description =
 export const metadata: Metadata = {
   title,
   description,
+  robots: { index: true, follow: true },
   alternates: {
     canonical: "https://quantlys-meeting.com/example-prd",
   },

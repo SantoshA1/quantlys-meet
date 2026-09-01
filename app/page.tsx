@@ -1,20 +1,20 @@
 import type { Metadata } from "next";
 import HomeLanding from "./HomeLanding";
 
+const title = "Quantlys Meeting | Leave the call with a spec, not notes";
 const description =
   "Video in a browser tab. Guests need a link, not an account. The session writes a PRD: user stories, acceptance criteria, decisions, and open questions.";
 
 export const metadata: Metadata = {
-  title: "Quantlys Meeting | Leave the call with a spec, not notes",
+  title,
   description,
   robots: { index: true, follow: true },
   alternates: {
     canonical: "https://quantlys-meeting.com/",
   },
   openGraph: {
-    title: "Quantlys Meeting — the meeting that writes the PRD",
-    description:
-      "Guests join in a tab. Hosts leave with a spec. Later, run it on your cloud with your models.",
+    title,
+    description,
     url: "https://quantlys-meeting.com/",
     siteName: "Quantlys Meeting",
     type: "website",
@@ -29,8 +29,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Quantlys Meeting — the meeting that writes the PRD",
-    description: "Guests join in a tab. Hosts leave with a spec.",
+    title,
+    description,
     images: ["/og.png"],
   },
 };
@@ -40,6 +40,7 @@ const jsonLd = {
   "@graph": [
     {
       "@type": "Organization",
+      "@id": "https://www.quantlys.ai/#org",
       name: "Agility Business Services dba Quantlys",
       url: "https://www.quantlys.ai",
       sameAs: [
@@ -48,13 +49,49 @@ const jsonLd = {
       ],
     },
     {
-      "@type": "SoftwareApplication",
+      "@type": "WebSite",
+      "@id": "https://quantlys-meeting.com/#website",
       name: "Quantlys Meeting",
-      url: "https://quantlys-meeting.com",
+      url: "https://quantlys-meeting.com/",
+      publisher: { "@id": "https://www.quantlys.ai/#org" },
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://quantlys-meeting.com/#app",
+      name: "Quantlys Meeting",
+      url: "https://quantlys-meeting.com/",
       description:
-        "Video meeting in a browser tab. Guests need a link, not an account. The session writes a PRD.",
+        "Quantlys Meeting is a browser video room whose recorded session writes a markdown PRD. It is not Quantalys, the fund-data company.",
       applicationCategory: "CommunicationApplication",
       operatingSystem: "Web",
+      brand: { "@id": "https://www.quantlys.ai/#org" },
+      offers: {
+        "@type": "Offer",
+        price: "0",
+        priceCurrency: "USD",
+      },
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://quantlys-meeting.com/#faq",
+      mainEntity: [
+        {
+          "@type": "Question",
+          name: "What is Quantlys Meeting?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "A browser video meeting. Guests join from a link. The recorded session writes a markdown PRD: user stories, acceptance criteria, decisions, and open questions.",
+          },
+        },
+        {
+          "@type": "Question",
+          name: "Is Quantlys Meeting the same as Quantalys?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "No. Quantlys Meeting is a spec-session video product at quantlys-meeting.com. Quantalys is an unrelated fund-data company.",
+          },
+        },
+      ],
     },
   ],
 };
