@@ -13,6 +13,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { RoomServiceClient, TrackSource, TrackType } from "livekit-server-sdk";
 import { dedupeKnocks, hostSummary, isStale, type Knock } from "@/lib/waiting";
+import { sendSpecIfDue, appUrl } from "@/lib/spec-email-send";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -111,7 +112,16 @@ export async function POST(req: Request) {
         // The room may already be empty/gone — the row update is the record.
       }
     }
-    return Response.json({ ok: true, action: "end", session: "ended" });
+    // Spec mail is one shot on End when a PRD exists — never on Delete.
+    // Recording finish may still be writing; sendSpecIfDue no-ops without a
+    // PRD and finish will try again once the summary is on disk.
+    let specMail: any = null;
+    try {
+      specMail = await sendSpecIfDue(sb, meeting!.id, appUrl(req));
+    } catch (e: any) {
+      console.warn("[spec-email] End send failed", e?.message || e);
+    }
+    return Response.json({ ok: true, action: "end", session: "ended", specMail });
   }
 
   if (action === "lock" || action === "unlock") {

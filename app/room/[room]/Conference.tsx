@@ -21,6 +21,7 @@ import { Track, AudioPresets, VideoPresets, RoomEvent } from "livekit-client";
 import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
 import Agent, { AGENT_CSS } from "./Agent";
+import { SpecEmailHost, SpecEmailGuest, SpecEmailChip, SPEC_EMAIL_CSS } from "./SpecEmail";
 import { connectionAdvice } from "@/lib/media";
 import { linkVerdict, chipLabel, joinFailure, type LinkVerdict } from "@/lib/link";
 import { joinErrorText, deviceFailText, deviceFailIsStale } from "@/lib/camera";
@@ -630,6 +631,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   const ctx = useRoomContext();
   const [copied, setCopied] = useState(false);
   const [signedIn, setSignedIn] = useState<string | null>(null);
+  const [accountEmail, setAccountEmail] = useState("");
 
   // ── Who is recording, as seen by EVERYONE ───────────────────────────────
   // `recording` below is "am I the one recording". This is "is anyone", and
@@ -694,7 +696,10 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   useEffect(() => {
     db()
       ?.auth.getSession()
-      .then(({ data }) => setSignedIn(data.session?.user?.id ?? null));
+      .then(({ data }) => {
+        setSignedIn(data.session?.user?.id ?? null);
+        setAccountEmail(data.session?.user?.email ?? "");
+      });
   }, []);
 
   // The host is not going to remember to check. A person standing outside is
@@ -1355,6 +1360,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             Manage people
           </button>
         ) : null}
+        {isHost ? <SpecEmailChip room={room} onOpen={() => setPanel(true)} /> : null}
         <button
           className={`qmr-ghost${cc.on ? " qmr-on" : ""}`}
           onClick={cc.toggle}
@@ -1549,6 +1555,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             them back in unless you also lock the meeting.
           </p>
 
+          <SpecEmailHost room={room} accountEmail={accountEmail} />
+
           {/* FIELD: End is session-over; Delete on the host console is the
               permanent action; recording is flushed first so it is not discarded. */}
           <div className="qmr-endrow">
@@ -1605,6 +1613,14 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
       ) : null}
 
       <CaptionBar cc={cc} open={ccOpen} onOpen={() => setCcOpen((o) => !o)} />
+      {!isHost ? (
+        <SpecEmailGuest
+          room={room}
+          name={meName}
+          live={String(ctx.state) === "connected"}
+          disconnected={String(ctx.state) === "disconnected"}
+        />
+      ) : null}
 
       {status ? (
         <span className={`qmr-status qmr-${status.kind}`}>
@@ -2358,7 +2374,7 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 }
 
 
-const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + `
+const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 .qmb-captured { position:absolute; left:50%; transform:translateX(-50%); bottom:96px; z-index:75;
   max-width:min(560px, calc(100% - 24px)); background:#0d2a2a; border:1px solid #00a99d;
   color:#c8f5f0; border-radius:11px; padding:11px 15px; font-size:13px; line-height:1.55;
