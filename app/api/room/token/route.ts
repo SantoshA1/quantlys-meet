@@ -18,19 +18,37 @@ async function doorState(room: string): Promise<{ locked: boolean; waitingRoom: 
   if (!url || !key) return open;          // no database to ask → never lock anyone out
   try {
     const sb = createClient(url, key, { auth: { persistSession: false } });
-    const { data } = await sb
+    let data: any = null;
+    const full = await sb
       .from("meetings")
-      .select("id, locked, waiting_room, active")
+      .select("id, locked, waiting_room, active, ended_at, spec_email_sent_at")
       .eq("room_name", room)
       .maybeSingle();
+    if (!full.error) data = full.data;
+    else {
+      const basic = await sb
+        .from("meetings")
+        .select("id, locked, waiting_room, active")
+        .eq("room_name", room)
+        .maybeSingle();
+      data = basic.data;
+    }
     // A leftover "ended" row (old host END, cron, Kids) is not meeting death.
     // OPEN mints a token and brings the row back to life. Fail open: a missed
     // update must not refuse the token.
-    if (data && (data as any).active === false && (data as any).id) {
-      try {
-        await sb.from("meetings").update({ active: true }).eq("id", (data as any).id);
-      } catch {
-        /* leftover ended row staying ended is not a reason to refuse the token */
+    if (data && (data as any).id) {
+      const patch: any = {};
+      if ((data as any).active === false) patch.active = true;
+      // A rejoin after End is a later session: the next End may send again.
+      if ((data as any).ended_at && (data as any).spec_email_sent_at) {
+        patch.spec_email_sent_at = null;
+      }
+      if (Object.keys(patch).length) {
+        try {
+          await sb.from("meetings").update(patch).eq("id", (data as any).id);
+        } catch {
+          /* leftover ended row staying ended is not a reason to refuse the token */
+        }
       }
     }
     return {

@@ -97,3 +97,30 @@ alter table meetings add column if not exists waiting_room boolean default false
 alter table pending_admissions add column if not exists decided_at timestamptz;
 create index if not exists pending_admissions_room_idx
   on pending_admissions (room_name, status, requested_at);
+
+
+-- Email the spec (optional, off by default). Guests request; the host
+-- approves; one mail goes out when End finishes and a PRD exists. Delete
+-- never sends. Service-role API routes enforce who may toggle / request;
+-- guests are not signed in, so RLS here matches pending_admissions: on,
+-- and the route is the door.
+alter table meetings add column if not exists spec_email_on boolean default false;
+alter table meetings add column if not exists spec_email_host_copy boolean default true;
+alter table meetings add column if not exists spec_email_host_address text;
+alter table meetings add column if not exists spec_email_sent_at timestamptz;
+
+create table if not exists spec_email_requests (
+  id uuid primary key default gen_random_uuid(),
+  meeting_id uuid references meetings(id) on delete cascade,
+  email text not null,
+  display_name text,
+  status text default 'pending',          -- pending | approved | denied | unsubscribed
+  requested_at timestamptz default now(),
+  decided_at timestamptz
+);
+create unique index if not exists spec_email_requests_meeting_email
+  on spec_email_requests (meeting_id, lower(email));
+create index if not exists spec_email_requests_meeting_status
+  on spec_email_requests (meeting_id, status, requested_at);
+
+alter table spec_email_requests enable row level security;

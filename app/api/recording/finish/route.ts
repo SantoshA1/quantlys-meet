@@ -15,6 +15,7 @@ import {
   EMPTY as EMPTY_NOTES, notesPrompt, parseNotes, notesHtml, notesText, notesSubject,
 } from "@/lib/notes";
 import { chooseModel } from "@/lib/model";
+import { sendSpecIfDue, appUrl } from "@/lib/spec-email-send";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -375,7 +376,7 @@ export async function POST(req: Request) {
   try {
     const { data } = await sb
       .from("meetings")
-      .select("id, title, project, started_at")
+      .select("id, title, project, started_at, ended_at")
       .eq("room_name", room)
       .maybeSingle();
     meetingRow = data || null;
@@ -518,6 +519,16 @@ export async function POST(req: Request) {
         { contentType: "application/json", upsert: true });
   } catch {
     /* the notes are already saved; this is the annotation */
+  }
+
+  // If End already ran while this summary was still writing, the spec mail
+  // waited. This is that second chance. Delete never calls this.
+  try {
+    if (meetingRow?.id && meetingRow?.ended_at) {
+      await sendSpecIfDue(sb, meetingRow.id, appUrl(req));
+    }
+  } catch (e: any) {
+    console.warn("[spec-email] finish send failed", e?.message || e);
   }
 
   return Response.json({
