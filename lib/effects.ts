@@ -655,8 +655,8 @@ export function keepCenterPersonIsland(
 
 /** Morphological open radius at segment resolution. Small disk/square breaks
  *  thin chair→couch bridges without shaving wide shoulders (floating-head fix).
- *  v3: bumped 2→3 so chair fluff / plant flecks detach more reliably. */
-export const OPEN_RADIUS_PX = 3;
+ *  Edge-spill: bumped 3→4 so medium plant blobs detach more reliably. */
+export const OPEN_RADIUS_PX = 4;
 
 /** Morphological opening on the person matte: binary threshold → erode →
  *  dilate, then zero person pixels that the open removed (bridges / thin
@@ -729,7 +729,7 @@ export function openPersonMask(
  *  Core kept where |nx-0.5| <= halfWidth; soft falloff over next falloff of
  *  frame width to zero. Mutates person alphas by gate weight. */
 export const LATERAL_GATE = {
-  halfWidth: 0.40,
+  halfWidth: 0.34,
   falloff: 0.06,
 };
 
@@ -770,10 +770,10 @@ export function lateralPersonGate(
   return mask;
 }
 
-/** Zero remaining person components whose area is below max(24, minAreaFrac
- *  of frame). Kills tiny green flecks that survive open+island+lateral.
+/** Zero remaining person components whose area is below max(48, minAreaFrac
+ *  of frame). Kills tiny/medium plant flecks that survive open+island+lateral.
  *  Must NOT remove the main body. Mutates and returns the same buffer. */
-export const DESPECKLE_MIN_AREA_FRAC = 0.004;
+export const DESPECKLE_MIN_AREA_FRAC = 0.008;
 
 export function despecklePersonMask(
   mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
@@ -790,7 +790,7 @@ export function despecklePersonMask(
   const thresh = Math.max(0, Math.min(255, Number(personThresh)));
   const t = Number.isFinite(thresh) ? thresh : HARDEN_PERSON_CLEAR;
   const frac = Math.max(0, Number(minAreaFrac) || 0);
-  const minArea = Math.max(24, Math.floor(n * frac));
+  const minArea = Math.max(48, Math.floor(n * frac));
   const visited = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     if (visited[i] || (mask[i] as number) < t) continue;
@@ -817,6 +817,40 @@ export function despecklePersonMask(
     }
     if (pixels.length < minArea) {
       for (let k = 0; k < pixels.length; k++) mask[pixels[k]] = 0;
+    }
+  }
+  return mask;
+}
+
+/** Zero leaf-green person pixels outside a center head box (~30% width,
+ *  upper ~45% height). Requires RGBA buffer 1:1 with mask dims (smallCanvas
+ *  ImageData). Call only in segment callback — not every paint. Mutates. */
+export function suppressLeafLeaks(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  rgba: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !rgba || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n || rgba.length < n * 4) return mask;
+  // Center 30% width, upper ~45% — keep green clothing/hair near head.
+  const x0 = Math.floor(W * 0.35);
+  const x1 = Math.ceil(W * 0.65);
+  const y1 = Math.ceil(H * 0.45);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if ((mask[i] as number) <= 0) continue;
+      if (x >= x0 && x < x1 && y < y1) continue; // head box
+      const j = i * 4;
+      const r = rgba[j] as number;
+      const g = rgba[j + 1] as number;
+      const b = rgba[j + 2] as number;
+      // Leaf green: g exceeds r and b by margin.
+      if (g > r + 15 && g > b + 10) mask[i] = 0;
     }
   }
   return mask;
