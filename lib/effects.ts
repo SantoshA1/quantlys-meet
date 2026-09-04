@@ -574,6 +574,78 @@ export function effectIdOfProcessor(name?: string | null): string {
  *  the most reliably "room" part of any tile. */
 export const CENTER_BOX = { x: 0.32, y: 0.15, w: 0.36, h: 0.7 };
 
+/** Drop disconnected false-person islands (couch / plant chunks). Keep the
+ *  main person component that intersects CENTER_BOX; if none intersect, keep
+ *  the globally largest. Mutates and returns the same alpha buffer. */
+export function keepCenterPersonIsland(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  box: { x: number; y: number; w: number; h: number } = CENTER_BOX,
+  personThresh: number = HARDEN_PERSON_CLEAR,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const thresh = Math.max(0, Math.min(255, Number(personThresh)));
+  const t = Number.isFinite(thresh) ? thresh : HARDEN_PERSON_CLEAR;
+  const visited = new Uint8Array(n);
+  type Comp = { area: number; hitsCenter: boolean; pixels: number[] };
+  const comps: Comp[] = [];
+  const bx0 = Math.max(0, Math.floor(box.x * W));
+  const by0 = Math.max(0, Math.floor(box.y * H));
+  const bx1 = Math.min(W, Math.ceil((box.x + box.w) * W));
+  const by1 = Math.min(H, Math.ceil((box.y + box.h) * H));
+  const inCenter = (x: number, y: number) =>
+    x >= bx0 && x < bx1 && y >= by0 && y < by1;
+
+  for (let i = 0; i < n; i++) {
+    if (visited[i] || (mask[i] as number) < t) continue;
+    const pixels: number[] = [];
+    let area = 0;
+    let hitsCenter = false;
+    const stack = [i];
+    visited[i] = 1;
+    while (stack.length) {
+      const p = stack.pop()!;
+      pixels.push(p);
+      area++;
+      const x = p % W;
+      const y = (p / W) | 0;
+      if (inCenter(x, y)) hitsCenter = true;
+      const neigh = [
+        x > 0 ? p - 1 : -1,
+        x + 1 < W ? p + 1 : -1,
+        y > 0 ? p - W : -1,
+        y + 1 < H ? p + W : -1,
+      ];
+      for (let k = 0; k < 4; k++) {
+        const q = neigh[k];
+        if (q < 0 || visited[q] || (mask[q] as number) < t) continue;
+        visited[q] = 1;
+        stack.push(q);
+      }
+    }
+    comps.push({ area, hitsCenter, pixels });
+  }
+  if (!comps.length) return mask;
+  const centerOnes = comps.filter((c) => c.hitsCenter);
+  const pool = centerOnes.length ? centerOnes : comps;
+  let best = pool[0];
+  for (let k = 1; k < pool.length; k++) {
+    if (pool[k].area > best.area) best = pool[k];
+  }
+  const keep = new Uint8Array(n);
+  for (let k = 0; k < best.pixels.length; k++) keep[best.pixels[k]] = 1;
+  for (let i = 0; i < n; i++) {
+    if ((mask[i] as number) >= t && !keep[i]) mask[i] = 0;
+  }
+  return mask;
+}
+
+
 /** How much brighter the centre must be than the edges before we believe it.
  *  Below this the frame is ambiguous (an extreme close-up fills everything;
  *  an empty chair fills nothing) and the last confident answer is kept. */
