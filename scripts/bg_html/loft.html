@@ -1,0 +1,31 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden}
+.scene{position:relative;width:1920px;height:1080px;background:linear-gradient(180deg,#b07a62,#7a4d3d);overflow:hidden}
+.bricks{position:absolute;inset:0;background:
+ linear-gradient(#0000 29px,#d7b1a0 30px) 0 0/80px 30px,
+ linear-gradient(90deg,#0000 74px,#d7b1a0 75px) 0 0/80px 30px,
+ linear-gradient(#0000 29px,#d7b1a0 30px) 40px 15px/80px 30px,
+ linear-gradient(90deg,#0000 74px,#d7b1a0 75px) 40px 15px/80px 30px;opacity:.28}
+.win{position:absolute;left:120px;top:70px;width:900px;height:720px;background:linear-gradient(180deg,#dff0fb,#f7e4c4);border:16px solid #1c222b;box-shadow:0 40px 100px rgba(0,0,0,.35),inset 0 0 60px rgba(255,255,255,.25)}
+.bar{position:absolute;background:#1c222b}
+.sun{position:absolute;inset:0;background:radial-gradient(circle at 28% 28%,rgba(255,243,208,.75),transparent 40%)}
+.floor{position:absolute;left:0;right:0;bottom:0;height:220px;background:linear-gradient(180deg,#6b4b39,#4a3228)}
+.pool{position:absolute;left:140px;top:0;width:780px;height:220px;background:linear-gradient(180deg,rgba(255,233,189,.45),rgba(255,233,189,.08));clip-path:polygon(0 0,100% 0,115% 100%,-8% 100%)}
+.neon1,.neon2{position:absolute;top:140px;width:14px;height:560px;border-radius:8px;filter:blur(.4px)}
+.neon1{right:360px;background:#00e8ff;box-shadow:0 0 24px #00e8ff,0 0 80px rgba(0,232,255,.55)}
+.neon2{right:320px;width:10px;top:180px;height:500px;background:#ff3cb4;box-shadow:0 0 24px #ff3cb4,0 0 70px rgba(255,60,180,.5)}
+.plant{position:absolute;right:420px;bottom:200px;width:120px;height:220px;background:radial-gradient(circle at 50% 20%,#4ea06a,#234f36 70%);border-radius:50% 50% 45% 45%;box-shadow:-30px 40px 0 -20px #2f6a45,35px 50px 0 -30px #3d8a58}
+.pot{position:absolute;right:445px;bottom:150px;width:80px;height:60px;background:linear-gradient(180deg,#a67a55,#7a5438);border-radius:8px}
+.dof{position:absolute;inset:0;backdrop-filter:blur(1.1px);background:radial-gradient(ellipse at 40% 45%,transparent 30%,rgba(40,20,15,.22))}
+</style></head><body><div class="scene">
+<div class="bricks"></div><div class="sun"></div>
+<div class="win">
+ <div class="bar" style="left:33%;top:0;bottom:0;width:10px"></div>
+ <div class="bar" style="left:66%;top:0;bottom:0;width:10px"></div>
+ <div class="bar" style="left:0;right:0;top:33%;height:10px"></div>
+ <div class="bar" style="left:0;right:0;top:66%;height:10px"></div>
+</div>
+<div class="neon1"></div><div class="neon2"></div>
+<div class="floor"><div class="pool"></div></div>
+<div class="plant"></div><div class="pot"></div><div class="dof"></div>
+</div></body></html>

@@ -41,7 +41,7 @@ import {
   shelfEffects, effectUsable,
   camRetryDelay, camShouldKeepTrying, type CamVerdict,
 } from "@/lib/camera";
-import { SLOTS } from "@/lib/backgrounds";
+import { SLOTS, LOOPS } from "@/lib/backgrounds";
 import {
   shouldApplyEffect, effectIdOfProcessor, BLUR_PX,
   DEFAULT_EFFECT_ID, effectCostNote, panelShouldClose,
@@ -81,6 +81,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
    *  Empty is the honest normal state until somebody adds the files — see
    *  shelfEffects in lib/camera.ts for why a drawn room is not offered. */
   const [photoIds, setPhotoIds] = useState<string[]>([]);
+  /** Living loops whose files exist in this deployment — same probe as photos. */
+  const [loopIds, setLoopIds] = useState<string[]>([]);
   const [dismissed, setDismissed] = useState(0);
   const [camDismissed, setCamDismissed] = useState(0);
 
@@ -120,6 +122,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
 
   const photoIdsRef = useRef<string[]>([]);
   photoIdsRef.current = photoIds;
+  const loopIdsRef = useRef<string[]>([]);
+  loopIdsRef.current = loopIds;
   const fileRef = useRef<HTMLInputElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const poorSince = useRef(0);
@@ -525,7 +529,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         effect.id,
         p.kind === "blur"
           ? { kind: "blur", blurRadius: BLUR_PX }
-          : { kind: "image", imagePath: p.imagePath },
+          : p.kind === "video"
+            ? { kind: "video", videoPath: p.videoPath }
+            : { kind: "image", imagePath: p.imagePath },
       );
       // setProcessor replaces any active one AND swaps the published
       // MediaStreamTrack for a generated one. That swap is what used to
@@ -583,14 +589,23 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
           if (r.ok && /^image\//i.test(r.headers.get("content-type") || "image/")) found.push(slot.id);
         } catch { /* absent is the normal answer, not an error */ }
       }));
+      const foundLoops: string[] = [];
+      await Promise.all(LOOPS.map(async (slot) => {
+        try {
+          const r = await fetch(slot.loop, { method: "HEAD", cache: "force-cache" });
+          const ct = r.headers.get("content-type") || "";
+          if (r.ok && (/^video\//i.test(ct) || ct === "" || /octet-stream/i.test(ct))) foundLoops.push(slot.id);
+        } catch { /* absent is fine */ }
+      }));
       if (!alive) return;
       setPhotoIds(found);
+      setLoopIds(foundLoops);
 
       // DEFAULT_EFFECT_ID is what somebody who has never chosen gets; anyone
       // who HAS chosen gets their choice back — unless what they chose was a
       // drawn room, in which case they get plain video rather than the
       // cartoon they were actually looking at.
-      const wantedFx = restoreEffect(load(SAVED.effect) || DEFAULT_EFFECT_ID, load(SAVED.blur), found);
+      const wantedFx = restoreEffect(load(SAVED.effect) || DEFAULT_EFFECT_ID, load(SAVED.blur), found, foundLoops);
       if (wantedFx.kind !== "none") { effectRef.current = wantedFx; setFx(wantedFx.id); }
     })();
     return () => { alive = false; };
@@ -616,7 +631,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // reproduces on real hardware is a loop that ships.
     if (
       cmst && camLkTrack && !effectDisabled.current &&
-      effectUsable(effectRef.current, photoIdsRef.current) &&
+      effectUsable(effectRef.current, photoIdsRef.current, loopIdsRef.current) &&
       shouldApplyEffect({
         wantedId: effectRef.current.id,
         liveId: effectIdOfProcessor(camLkTrack.processor?.name),
@@ -882,7 +897,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   // None, Blur and their own picture always; a room only when its photograph
   // is actually here. With none shipped, that is three honest choices instead
   // of seven, five of which were cartoons.
-  const shelf = shelfEffects(photoIds);
+  const shelf = shelfEffects(photoIds, loopIds);
   // DISMISSED MEANS DISMISSED. This used to bring the banner back thirty
   // seconds later, which is how one wrong verdict became a quarter of an hour
   // of pop-ups. A `dead` state — nothing is being sent at all — may return
@@ -1013,21 +1028,22 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
                 title={e.custom && !customReady(e, customBg) ? "Add a picture of your own" : e.label}
                 aria-pressed={fx === e.id}
               >
-                {e.kind === "image" ? (
+                {e.kind === "image" || e.kind === "video" ? (
                   // The swatch shows what you will ACTUALLY get, which is the
                   // point of a swatch — and since the shelf now only offers
                   // rooms whose photograph exists, that is the photograph.
+                  // Loops use their poster still for the thumbnail.
                   <img
-                    src={effectSrc(e, customBg, photoIds.includes(e.id))}
+                    src={e.kind === "video" ? (e.photo || e.src || "") : effectSrc(e, customBg, photoIds.includes(e.id))}
                     alt=""
-                    onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = e.src || ""; }}
+                    onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = e.src || e.photo || ""; }}
                   />
                 ) : (
                   <span className={e.kind === "blur" ? "qmg-swblur" : "qmg-swnone"}>
                     {e.kind === "blur" ? "◐" : "∅"}
                   </span>
                 )}
-                <i>{e.label}</i>
+                <i>{e.kind === "video" ? `Loop · ${e.label}` : e.label}</i>
               </button>
             ))}
           </div>

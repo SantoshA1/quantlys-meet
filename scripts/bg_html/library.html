@@ -1,0 +1,24 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden}
+.scene{position:relative;width:1920px;height:1080px;background:linear-gradient(135deg,#241810,#120d09 60%,#1a120e);overflow:hidden}
+.shelf{position:absolute;left:30px;right:30px;height:210px;background:linear-gradient(180deg,#3a281c,#2a1c14);border-bottom:18px solid #4a3426;box-shadow:inset 0 20px 40px rgba(0,0,0,.35)}
+.book{position:absolute;bottom:18px;border-radius:2px 2px 0 0;box-shadow:inset -3px 0 0 rgba(255,255,255,.08),2px 0 4px rgba(0,0,0,.3)}
+.lamp{position:absolute;inset:0;background:radial-gradient(circle at 82% 42%,rgba(255,190,110,.55),transparent 42%),radial-gradient(circle at 20% 70%,rgba(255,160,80,.12),transparent 35%)}
+.grain{position:absolute;inset:0;opacity:.12;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");pointer-events:none}
+.dof{position:absolute;inset:0;backdrop-filter:blur(1.4px);background:radial-gradient(ellipse at 50% 40%,transparent 35%,rgba(0,0,0,.28))}
+</style></head><body><div class="scene" id="s">
+<script>
+const hues=[[90,50,35],[70,45,40],[110,70,45],[55,40,55],[40,55,70],[100,60,40],[60,35,30],[80,55,35],[45,60,50],[95,40,45]];
+const s=document.getElementById('s');
+for(let row=0;row<4;row++){
+  const sh=document.createElement('div'); sh.className='shelf'; sh.style.top=(60+row*245)+'px'; s.appendChild(sh);
+  let x=24; let i=row*97;
+  while(x<1860){ i=(i*1103515245+12345)&0x7fffffff; const w=14+(i%22); const h=120+(i%70); const c=hues[(i>>5)%hues.length];
+    const b=document.createElement('div'); b.className='book';
+    b.style.left=x+'px'; b.style.width=w+'px'; b.style.height=h+'px';
+    b.style.background=`linear-gradient(90deg,rgb(${c[0]+20},${c[1]+15},${c[2]+10}),rgb(${c.join(',')}))`;
+    if((i>>9)%11===0) b.style.transform='rotate(4deg)'; sh.appendChild(b); x+=w+3; }
+}
+</script>
+<div class="lamp"></div><div class="grain"></div><div class="dof"></div>
+</div></body></html>

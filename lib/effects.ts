@@ -40,6 +40,12 @@
  *  and it reads as a filter again. */
 export const BLUR_PX = 24;
 
+/** Soft depth-of-field applied to a STILL or LOOP backdrop so it sits
+ *  behind the person instead of reading as a sticker glued to their
+ *  shoulders. Small on purpose — a few pixels of lens falloff, not a
+ *  second privacy blur. */
+export const BACKDROP_DOF_PX = 3;
+
 /** RETIRED 2026-08-20, and kept named so the mistake is not repeated.
  *
  *  This was "a virtual background blurs the ORIGINAL room slightly before the
@@ -95,11 +101,13 @@ export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMEN
  *  boundary jitters and the eye reads "computer". Mixing a new mask into the
  *  old one with a fixed weight gives the edge memory. Too much memory and a
  *  moving hand smears; too little and the crawl comes back. 0.6 tracks a
- *  gesture within ~3 frames while removing the shimmer of a still head.
+ *  gesture within ~2-3 frames while removing the shimmer of a still head.
+  Retuned 2026-09-03 from 0.6 to 0.72 so a head turn does not smear; hair
+  softness still comes from confidence alpha, not from temporal lag.
  *
  *  Written as a mutation of `prev` and returning it, because this runs on
  *  every frame at 921,600 subpixels and allocation is the enemy. */
-export const MASK_SMOOTHING = 0.6;
+export const MASK_SMOOTHING = 0.72;
 
 export function blendMask(
   prev: Uint8ClampedArray | Uint8Array | number[] | null,
@@ -144,13 +152,10 @@ export function warmupPaint(s: {
  *  Segmenting a 384-wide copy is measurably cheaper and pixel-identical
  *  after feathering. Height follows the source aspect so a face is never
  *  squashed into a mask that fits somebody else. */
-export const SEGMENT_WIDTH = 512;
-// 2026-08-24: was 384. The claim above — "pixel-identical after feathering" —
-// was true only because the feather was 14px wide. With a 3px feather the
-// mask's own resolution is what you see, and 384 across a 1280 frame put a
-// three-pixel staircase on every shoulder. 512 costs about a third more in a
-// stage that runs at 20Hz, not 30, and is the difference between an edge and
-// a set of steps.
+export const SEGMENT_WIDTH = 640;
+// 2026-08-24: was 384 then 512. 2026-09-03: 512 to 640. At 720p a 640-wide mask
+// is about 2px per source pixel after upscale — enough for hair strands once
+// confidence alpha is in play, still cheap at 20Hz.
 
 export function segmentSize(w: number, h: number): { w: number; h: number } {
   const sw = Number(w) || 0, sh = Number(h) || 0;

@@ -26,7 +26,8 @@
 // It is deliberately ZERO-IMPORT so it can travel into any Next.js project
 // on its own — it is built to be imported, not copied.
 
-import { SLOTS, CUSTOM_ID, CUSTOM_PLACEHOLDER } from "./backgrounds.ts";
+import { SLOTS, LOOPS, CUSTOM_ID, CUSTOM_PLACEHOLDER } from "./backgrounds.ts";
+import { BLUR_PX } from "./effects.ts";
 import { joinFailure } from "./link.ts";
 
 export type CamVerdict = {
@@ -206,12 +207,14 @@ export function blameKind(s: {
 
 export type Effect = {
   id: string;
-  kind: "none" | "blur" | "image";
+  kind: "none" | "blur" | "image" | "video";
   label: string;
   /** data: URL for image effects — self-contained, nothing to host or fetch */
   src?: string;
   /** where a real photograph would live in this deployment, if it ships one */
   photo?: string;
+  /** muted seamless loop URL for living backgrounds */
+  loop?: string;
   /** the person's own picture rather than one of ours */
   custom?: boolean;
 };
@@ -230,6 +233,7 @@ export const EFFECTS: Effect[] = [
   { id: "none", kind: "none", label: "None" },
   { id: "blur", kind: "blur", label: "Blur" },
   ...SLOTS.map((s): Effect => ({ id: s.id, kind: "image", label: s.label, src: s.drawn, photo: s.photo })),
+  ...LOOPS.map((s): Effect => ({ id: s.id, kind: "video", label: s.label, src: s.poster, loop: s.loop, photo: s.poster })),
   { id: CUSTOM_ID, kind: "image", label: "Your photo", src: CUSTOM_PLACEHOLDER, custom: true },
 ];
 
@@ -266,16 +270,24 @@ export function effectSrc(effect: Effect, customDataUrl?: string, photoOk?: bool
  *  Pure and separate from EFFECTS on purpose: EFFECTS stays the full
  *  CATALOGUE so a saved "library" from a previous meeting still resolves to
  *  something with a name, instead of silently becoming a different backdrop. */
-export function shelfEffects(availablePhotoIds?: string[] | null): Effect[] {
+export function shelfEffects(availablePhotoIds?: string[] | null, availableLoopIds?: string[] | null): Effect[] {
   const have = new Set((availablePhotoIds || []).map((x) => String(x || "")));
-  return EFFECTS.filter((e) => e.kind !== "image" || e.custom || have.has(e.id));
+  const loops = new Set((availableLoopIds || []).map((x) => String(x || "")));
+  return EFFECTS.filter((e) => {
+    if (e.kind === "image") return Boolean(e.custom) || have.has(e.id);
+    if (e.kind === "video") return loops.has(e.id);
+    return true;
+  });
 }
 
 /** Is this effect actually usable in this deployment? A room whose photograph
  *  was never shipped is not — and must not be applied just because somebody
  *  chose it back when the shelf still offered cartoons. */
-export function effectUsable(effect: Effect, availablePhotoIds?: string[] | null): boolean {
+export function effectUsable(effect: Effect, availablePhotoIds?: string[] | null, availableLoopIds?: string[] | null): boolean {
   if (!effect) return false;
+  if (effect.kind === "video") {
+    return (availableLoopIds || []).some((x) => String(x || "") === effect.id);
+  }
   if (effect.kind !== "image") return true;
   if (effect.custom) return true;
   return (availablePhotoIds || []).some((x) => String(x || "") === effect.id);
@@ -296,14 +308,14 @@ export function effectById(id: string): Effect {
 /** What to restore on the next join. Reads the new key's value, and honours
  *  the legacy "qm.blur" flag ("1") from before backgrounds existed — an
  *  upgrade must not silently un-blur somebody who chose blur. */
-export function restoreEffect(saved: string, legacyBlur?: string, availablePhotoIds?: string[] | null): Effect {
+export function restoreEffect(saved: string, legacyBlur?: string, availablePhotoIds?: string[] | null, availableLoopIds?: string[] | null): Effect {
   const s = String(saved || "").trim();
   if (s) {
     const e = effectById(s);
     // A room somebody chose while the shelf was still offering drawn ones
     // must not come back as a drawn one. Plain video is the honest
     // substitute; blur would be a decision they never made.
-    return effectUsable(e, availablePhotoIds) ? e : EFFECTS[0];
+    return effectUsable(e, availablePhotoIds, availableLoopIds) ? e : EFFECTS[0];
   }
   if (String(legacyBlur || "") === "1") return effectById("blur");
   return EFFECTS[0];
@@ -332,8 +344,12 @@ export function effectSupport(env: {
 export function processorFor(effect: Effect, customDataUrl?: string, photoOk?: boolean):
   | { kind: "none" }
   | { kind: "blur"; blurRadius: number }
-  | { kind: "image"; imagePath: string; photo?: string } {
-  if (effect.kind === "blur") return { kind: "blur", blurRadius: 12 };
+  | { kind: "image"; imagePath: string; photo?: string }
+  | { kind: "video"; videoPath: string; poster?: string } {
+  if (effect.kind === "blur") return { kind: "blur", blurRadius: BLUR_PX };
+  if (effect.kind === "video" && effect.loop) {
+    return { kind: "video", videoPath: effect.loop, poster: effect.photo || effect.src };
+  }
   if (effect.kind === "image") {
     const src = effectSrc(effect, customDataUrl, photoOk);
     // An empty custom slot is NOT an image effect — applying it would put a
