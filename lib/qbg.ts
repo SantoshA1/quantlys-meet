@@ -32,11 +32,10 @@ import {
   BLUR_PX, BACKDROP_DOF_PX, blendMask,
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
-  maskBlurPx, ERODE_POWER, needsInvert, featherPx,
-  confidenceToAlpha, hardenMaskAlpha, adaptiveSmoothAlpha,
+  needsInvert, featherPx, shouldSegment,
+  confidenceToAlpha, hardenPersonMatte, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
-  plateDilatePx, plateFillSize,
-  HARDEN_PERSON_OPAQUE, HARDEN_PERSON_CLEAR,
+  plateDilatePx,
 } from "./effects";
 
 export type QbgOptions = {
@@ -60,7 +59,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private smooth: Uint8ClampedArray | null = null;
   private maskCanvas?: OffscreenCanvas;
   private maskCtx?: OffscreenCanvasRenderingContext2D | null;
-  /** the mask after inversion, blur and erosion — always means THE PERSON */
+  /** Hard person matte at output size (upscaled from segment mask) */
   private silCanvas?: OffscreenCanvas;
   private silCtx?: OffscreenCanvasRenderingContext2D | null;
   private maskImage?: ImageData;
@@ -79,9 +78,6 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   /** person cutout layer for source-over composite (kills destination-over halo) */
   private personCanvas?: OffscreenCanvas;
   private personCtx?: OffscreenCanvasRenderingContext2D | null;
-  /** Hard (near-binary) person matte for the cutout — soft sil dissolves face. */
-  private hardSilCanvas?: OffscreenCanvas;
-  private hardSilCtx?: OffscreenCanvasRenderingContext2D | null;
   /** Person-free blur plate: scrub the subject before blur so a soft matte
    *  cannot reveal a smeared double as ghost/halo. */
   private plateCanvas?: OffscreenCanvas;
@@ -229,10 +225,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         controller.enqueue(frame);
         return;
       }
-      // Output canvas must match the camera coded/display size. An undersized
-      // canvas softens the whole published picture (waxy face at any matte).
-      const fw = Number((frame as any).displayWidth || (frame as any).codedWidth || 0) || 0;
-      const fh = Number((frame as any).displayHeight || (frame as any).codedHeight || 0) || 0;
+      // Prefer coded size over display size — display can differ (CSS/layout)
+      // and an undersized canvas softens the whole published picture.
+      const fw = Number((frame as any).codedWidth || (frame as any).displayWidth || 0) || 0;
+      const fh = Number((frame as any).codedHeight || (frame as any).displayHeight || 0) || 0;
       if (fw > 0 && fh > 0 && (this.canvas.width !== fw || this.canvas.height !== fh)) {
         this.canvas.width = fw;
         this.canvas.height = fh;
@@ -284,16 +280,16 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   }
 
   /** Run the model on a downscaled copy of the SAME frame about to be
-   *  painted, then mix the result into the smoothed mask. Segment every
-   *  paint frame so a ~60fps camera never rides a one-frame-stale
-   *  silhouette; only coalesce back-to-back paints within 8ms.
+   *  painted, then mix the result into the smoothed mask. Cap at SEGMENT_HZ
+   *  (30) so CPU has headroom after dropping full-res pixel readback; paint
+   *  keeps using the last hard matte when the mask is briefly stale.
    *  Synchronous by design - segmentForVideo's callback fires inline, and
    *  awaiting anything here is how the stock version ended up with a mask
    *  that belonged to a frame already gone. */
   private segmentFrame(src: CanvasImageSource, W: number, H: number) {
     const now = performance.now();
     if (!this.seg) return;
-    if (this.lastSegAt && now - this.lastSegAt < 8) return;
+    if (!shouldSegment(now, this.lastSegAt)) return;
     // Prefer the source's intrinsic size; fall back to the output canvas.
     const vw = Number((src as any).videoWidth || (src as any).codedWidth || (src as any).width || W) || W;
     const vh = Number((src as any).videoHeight || (src as any).codedHeight || (src as any).height || H) || H;
@@ -339,10 +335,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // the previous pose cannot linger beside the new one.
         const mix = adaptiveSmoothAlpha(this.smooth, raw as any);
         this.smooth = blendMask(this.smooth, raw as any, mix) as Uint8ClampedArray;
-        // Harden AFTER temporal blend, BEFORE silhouette blur: face/hat/torso
-        // become fully opaque so destination-over cannot show city lights
-        // through the person. Soft band stays only at the thin boundary.
-        hardenMaskAlpha(this.smooth);
+        // Near-binary harden at SEGMENT RES (cheap). maskCanvas then already
+        // carries a hard person alpha — no full-res pixel readback later.
+        hardenPersonMatte(this.smooth);
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
@@ -380,16 +375,12 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     }
   }
 
-  /** The silhouette, prepared once per frame on its own canvas: normalised so
-   *  it always means THE PERSON, blurred, then eroded so it sits inside the
-   *  mask's own generous edge.
-   *
-   *  Erosion is why "blur is not effective around the edges of the people"
-   *  stopped being true: the selfie model keeps a rim of real room around a
-   *  person, and feathering that rim leaves it SHARP, drawn at full strength
-   *  exactly where the eye is looking. Pulling the silhouette in hands that
-   *  rim to the blur where it belongs. */
-  private silhouette(W: number, H: number): OffscreenCanvas | null {
+  /** Meet-style person matte: hard alpha already on maskCanvas (segment res),
+   *  upscaled to output with smoothing for slight AA only. NO full-res pixel
+   *  readback — that CPU path was the #22 soft-face regression (dropped frames).
+   *  Optional 1px canvas-filter blur + one source-in self-composite pulls
+   *  soft mid alpha inward (cheap erode) without pixel loops. */
+  private personMatte(W: number, H: number): OffscreenCanvas | null {
     if (!this.maskCanvas) return null;
     if (!this.silCanvas || this.silCanvas.width !== W || this.silCanvas.height !== H) {
       this.silCanvas = new OffscreenCanvas(W, H);
@@ -401,11 +392,12 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     s.save();
     s.globalCompositeOperation = "copy";
     s.filter = "none";
+    // Upscale AA only — hard matte was decided at segment resolution.
+    s.imageSmoothingEnabled = true;
     s.drawImage(this.maskCanvas as any, 0, 0, W, H);
 
-    // Normalise polarity ONCE, here, instead of branching the composite in
-    // the paint path where getting it backwards blurs the person (which it
-    // did). `source-out` + a full fill is alpha inversion on a canvas.
+    // Normalise polarity ONCE so white alpha always means THE PERSON.
+    // `source-out` + a full fill is alpha inversion on a canvas.
     if (needsInvert(this.polarity || "background")) {
       s.globalCompositeOperation = "source-out";
       // WHITE, not black: black RGB + blur smears a dark fringe (halo).
@@ -413,83 +405,20 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       s.fillRect(0, 0, W, H);
     }
 
-    // Soften enough to carry both jobs: the erosion needs a ramp to bite on,
-    // and what survives it is the feather.
-    s.globalCompositeOperation = "copy";
-    s.filter = `blur(${maskBlurPx(H)}px)`;
-    s.drawImage(this.silCanvas as any, 0, 0, W, H);
-    s.filter = "none";
-
-    // alpha -> alpha^ERODE_POWER, which walks the half-way line inward. Each
-    // self-composite with source-in multiplies the alpha by itself.
-    s.globalCompositeOperation = "source-in";
-    for (let i = 1; i < ERODE_POWER; i++) s.drawImage(this.silCanvas as any, 0, 0, W, H);
-    // One more erode pass: soft dark clothing / cap brim must not sit over
-    // the blur plate as a halo fringe.
-    s.drawImage(this.silCanvas as any, 0, 0, W, H);
+    // At most featherPx AA blur — never a soft dissolve of the face.
+    const aa = featherPx(H);
+    if (aa > 0) {
+      s.globalCompositeOperation = "copy";
+      s.filter = `blur(${aa}px)`;
+      s.drawImage(this.silCanvas as any, 0, 0, W, H);
+      s.filter = "none";
+      // Cheap erode: source-in self-composite pulls soft mid inward.
+      s.globalCompositeOperation = "source-in";
+      s.drawImage(this.silCanvas as any, 0, 0, W, H);
+    }
 
     s.restore();
     return this.silCanvas;
-  }
-
-  /** Hard person matte for the cutout layer. Soft sil alpha dissolved the
-   *  face into the blur (waxy) and mid-alpha dark clothing made a dark fringe.
-   *  Near-binary + 1px AA keeps Zoom/Meet-sharp subject, thin edge only. */
-  private hardSilhouette(W: number, H: number): OffscreenCanvas | null {
-    const soft = this.silhouette(W, H);
-    if (!soft) return null;
-    if (!this.hardSilCanvas || this.hardSilCanvas.width !== W || this.hardSilCanvas.height !== H) {
-      this.hardSilCanvas = new OffscreenCanvas(W, H);
-      this.hardSilCtx = this.hardSilCanvas.getContext("2d", { willReadFrequently: true });
-    }
-    const hctx = this.hardSilCtx;
-    if (!hctx) return null;
-
-    hctx.save();
-    hctx.globalCompositeOperation = "copy";
-    hctx.filter = "none";
-    hctx.drawImage(soft as any, 0, 0, W, H);
-    hctx.restore();
-
-    // Threshold alpha in place — person core fully opaque, room fully clear.
-    const img = hctx.getImageData(0, 0, W, H);
-    const px = img.data;
-    const hi = HARDEN_PERSON_OPAQUE, lo = HARDEN_PERSON_CLEAR;
-    for (let i = 3; i < px.length; i += 4) {
-      const a = px[i];
-      if (a >= hi) {
-        px[i] = 255; px[i - 3] = 255; px[i - 2] = 255; px[i - 1] = 255;
-      } else if (a <= lo) {
-        px[i] = 0; px[i - 3] = 255; px[i - 2] = 255; px[i - 1] = 255;
-      } else {
-        // Tiny mid band kept for 1px AA; RGB stays white (no dark fringe).
-        px[i - 3] = 255; px[i - 2] = 255; px[i - 1] = 255;
-      }
-    }
-    hctx.putImageData(img, 0, 0);
-
-    // At most 1px AA blur on the hard matte — never a soft dissolve.
-    const aa = featherPx(H);
-    if (aa > 0) {
-      hctx.save();
-      hctx.globalCompositeOperation = "copy";
-      hctx.filter = `blur(${aa}px)`;
-      hctx.drawImage(this.hardSilCanvas as any, 0, 0, W, H);
-      hctx.filter = "none";
-      // Re-harden after AA so the face core stays fully opaque (source-in
-      // must not leave mid-alpha over eyes/cheeks).
-      const img2 = hctx.getImageData(0, 0, W, H);
-      const p2 = img2.data;
-      for (let i = 3; i < p2.length; i += 4) {
-        const a = p2[i];
-        if (a >= hi) { p2[i] = 255; p2[i - 3] = 255; p2[i - 2] = 255; p2[i - 1] = 255; }
-        else if (a <= lo) { p2[i] = 0; p2[i - 3] = 255; p2[i - 2] = 255; p2[i - 1] = 255; }
-        else { p2[i - 3] = 255; p2[i - 2] = 255; p2[i - 1] = 255; }
-      }
-      hctx.putImageData(img2, 0, 0);
-      hctx.restore();
-    }
-    return this.hardSilCanvas;
   }
 
   /** The background blur, drawn once into its own small canvas.
@@ -642,7 +571,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private paintMasked(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
     // Hard matte for the person punch — soft sil was dissolving the face.
-    const sil = this.hardSilhouette(W, H);
+    const sil = this.personMatte(W, H);
     if (!sil) {
       // Never Gaussian the subject. Sharp passthrough until a matte exists.
       ctx.save();
@@ -667,7 +596,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       return;
     }
 
-    // Person cutout: hardSil × full-res VideoFrame. No filter on the person
+    // Person cutout: hard matte × full-res VideoFrame. No filter on the person
     // layer — subject stays as sharp as the raw camera (Zoom/Meet pattern).
     p.save();
     p.globalCompositeOperation = "copy";
