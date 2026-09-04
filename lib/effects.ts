@@ -67,12 +67,10 @@ export const IMAGE_UNDERBLUR_PX = 0;
 export function featherPx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
   if (h <= 0) return 1;
-  // FIELD 2026-08-24: cut 1.1% camouflage feather down to ~0.4% once the
-  // mask carried its own gradient. FIELD 2026-09-04 screenshots: even that
-  // left a thick soft glow / sticker halo around hat and shoulders on blur
-  // and stills. Narrow again to a thin anti-aliased band — ~0.22% of height:
-  // 2px at 720p, 1px at 360p — not a 20px dissolve.
-  return Math.max(1, Math.min(3, Math.round(h * 0.0022)));
+  // FIELD 2026-08-24 / 2026-09-04: thick feather = sticker halo. Post-#18
+  // screenshots still showed a dark fringe around the cap — soft edge was
+  // still too wide. Hold to a 1px AA band at 720p (~0.14% of height).
+  return Math.max(1, Math.min(2, Math.round(h * 0.0014)));
 }
 
 /** Segmentation cadence. FIELD 2026-09-04 screenshots: a 20Hz mask under
@@ -89,6 +87,16 @@ export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMEN
   return nowMs - lastMs >= 1000 / rate;
 }
 
+/** How old a mask may be (ms) before paintMasked is unsafe — painting a
+ *  live VideoFrame with a silhouette from two poses ago is the ghost trail
+ *  beside a turning head. Past this, prefer blur-all over a wrong matte. */
+export const MASK_MAX_AGE_MS = 66;
+
+export function maskIsFresh(nowMs: number, maskAtMs: number, maxAgeMs: number = MASK_MAX_AGE_MS): boolean {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(maskAtMs) || maskAtMs <= 0) return false;
+  return nowMs - maskAtMs <= Math.max(0, Number(maxAgeMs) || 0);
+}
+
 /** Temporal smoothing: this frame's mask, mixed into the last one.
  *
  *  THE POINT: a per-frame mask is independent of the frame before it, so the
@@ -96,22 +104,27 @@ export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMEN
  *  old one with a fixed weight gives the edge memory. Too much memory and a
  *  moving hand smears; too little and the crawl comes back.
  *
- *  Retuned 2026-09-03 from 0.6 to 0.72. Retuned again 2026-09-04 from 0.72
- *  to 0.90 after screenshots showed a translucent duplicate of head/ear
- *  beside a turning person — the edge was remembering too long. Hair
- *  softness still comes from confidence alpha + a thin feather, not lag.
- *  On a large mean-abs delta (head turn), adaptiveSmoothAlpha bumps one
- *  frame to MASK_SMOOTHING_FAST so trails do not linger.
+ *  FIELD 2026-09-04 (post-#18 screenshots): even 0.90 / 0.95 left a
+ *  translucent ghost of the head beside a turn. Any retained fraction of the
+ *  previous pose is a trail the eye cannot miss. Default is now SNAP (1.0):
+ *  adopt the new mask whole. adaptiveSmoothAlpha only mixes when the mask is
+ *  nearly still (anti-crawl), and on any real motion returns 1.0.
+ *  Hair softness stays with confidence alpha + a thin feather, never lag.
  *
  *  Written as a mutation of `prev` and returning it, because this runs on
  *  every frame at 921,600 subpixels and allocation is the enemy. */
-export const MASK_SMOOTHING = 0.90;
+export const MASK_SMOOTHING = 1.0;
 
-/** One-frame burst weight when the mask jumps (head turn / gesture). */
-export const MASK_SMOOTHING_FAST = 0.95;
+/** Mild mix used ONLY when the mask is nearly still (anti-crawl). Never used
+ *  on a head turn — that path snaps. */
+export const MASK_SMOOTHING_STILL = 0.82;
 
-/** Mean |Δ| across the mask (0..255) that counts as a large motion. */
-export const MASK_DELTA_FAST = 28;
+/** @deprecated alias kept so older call sites reading FAST still compile;
+ *  motion always snaps to 1.0 now. */
+export const MASK_SMOOTHING_FAST = 1.0;
+
+/** Mean |Δ| above which we treat the mask as moving and SNAP (no EMA). */
+export const MASK_DELTA_FAST = 12;
 
 /** Mean absolute per-pixel difference between two masks. Pure helper. */
 export function maskMeanAbsDelta(
@@ -126,20 +139,22 @@ export function maskMeanAbsDelta(
   return sum / n;
 }
 
-/** Which EMA weight to use this frame. Large mask motion → fast; else base. */
+/** Which EMA weight to use this frame.
+ *  Moving mask → 1.0 (snap, no ghost). Nearly still → mild still-mix. */
 export function adaptiveSmoothAlpha(
   prev: ArrayLike<number> | null | undefined,
   next: ArrayLike<number> | null | undefined,
   base: number = MASK_SMOOTHING,
-  fast: number = MASK_SMOOTHING_FAST,
+  still: number = MASK_SMOOTHING_STILL,
   threshold: number = MASK_DELTA_FAST,
 ): number {
   if (!prev || !next || prev.length !== next.length) return 1;
   const d = maskMeanAbsDelta(prev, next);
-  const b = Math.min(1, Math.max(0, Number(base)));
-  const f = Math.min(1, Math.max(0, Number(fast)));
+  const snap = Math.min(1, Math.max(0, Number(base)));
+  const s = Math.min(1, Math.max(0, Number(still)));
   const t = Math.max(0, Number(threshold) || 0);
-  return d >= t ? Math.max(b, f) : b;
+  // Any real motion snaps. Only a nearly-still mask gets a gentle mix.
+  return d >= t ? Math.max(snap, 1) : Math.min(snap, s);
 }
 
 export function blendMask(
@@ -246,8 +261,11 @@ export function confidenceToAlpha(c: number, contrast: number = MASK_CONTRAST): 
  *  person core and must be fully opaque so backdrop cannot bleed through
  *  pupils of the mask; anything this clear is fully room. Only the thin
  *  band between stays soft for anti-alias / hair. */
-export const HARDEN_OPAQUE = 220;
-export const HARDEN_CLEAR = 40;
+// Post-#18: dark halo was leftover room rim at mid-alpha. Raise the clear
+// floor and lower the opaque ceiling so the soft band is a hair thin — room
+// pixels go fully transparent, person core stays fully opaque.
+export const HARDEN_OPAQUE = 180;
+export const HARDEN_CLEAR = 90;
 
 /** Single-value harden — pure, for tests and for reasoning about the curve. */
 export function hardenAlpha(
@@ -555,11 +573,10 @@ export function edgeMean(mask: ArrayLike<number>, w: number, h: number): number 
 export function erodePx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
   if (h <= 0) return 1;
-  // Light erosion only: leftover room rim goes to background, but do not
-  // over-erode into the face. ~0.2% of height — 1px at 720p, 1px at 360p.
-  // Paired with a thinner feather so maskBlurPx stays a thin AA band, not a
-  // mushy silhouette glow.
-  return Math.max(1, Math.min(3, Math.round(h * 0.002)));
+  // Pull inside the selfie model's generous room rim. ~0.35% of height —
+  // 3px at 720p — enough to hand dark edge pixels to the backdrop without
+  // eating fingertips. Paired with a 1px feather so maskBlurPx stays thin.
+  return Math.max(1, Math.min(4, Math.round(h * 0.0035)));
 }
 
 /** The mask is blurred ONCE, by enough to carry both jobs: the erosion needs
@@ -574,7 +591,7 @@ export function maskBlurPx(outputHeight: number): number {
  *  a canvas can do it in n-1 self-composites with `source-in`. Guarded here
  *  because "shrink the silhouette" is a claim about a curve, and a curve can
  *  be checked without a camera. */
-export const ERODE_POWER = 2;
+export const ERODE_POWER = 3;
 
 export function alphaAfterGamma(alpha: number, power: number = ERODE_POWER): number {
   const raw = Number(alpha);
