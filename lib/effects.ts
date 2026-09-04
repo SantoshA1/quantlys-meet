@@ -722,6 +722,38 @@ export function needsInvert(p: Polarity): boolean {
   return p === "background";
 }
 
+// ── WebGL2 Meet-style compositor (v1) ─────────────────────────────────────
+//
+// Canvas2d hist/personFreeBlur left a waxy face and dark halo. The GL path
+// blurs background with (1-mask) weighting and composites sharp person at
+// full res. Probe is pure so Node tests can pass { webgl2: true|false }.
+
+/** True when the WebGL2 compositor should be preferred over canvas2d.
+ *  In the browser, omit probe to try OffscreenCanvas/canvas getContext.
+ *  In tests, pass { webgl2: boolean } explicitly. */
+export function webglCompositeReady(probe?: { webgl2?: boolean } | null): boolean {
+  if (probe && typeof probe.webgl2 === "boolean") return probe.webgl2;
+  try {
+    if (typeof OffscreenCanvas !== "undefined") {
+      const c = new OffscreenCanvas(1, 1);
+      const gl = c.getContext("webgl2");
+      if (gl) {
+        try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* ignore */ }
+        return true;
+      }
+    }
+    if (typeof document !== "undefined") {
+      const c = document.createElement("canvas");
+      const gl = c.getContext("webgl2");
+      if (gl) {
+        try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* ignore */ }
+        return true;
+      }
+    }
+  } catch { /* no GL in this environment */ }
+  return false;
+}
+
 // ── the three tweaks asked for alongside the backdrops ───────────────────
 
 /** THE DEFAULT BACKGROUND. Somebody who has never chosen gets plain video.
