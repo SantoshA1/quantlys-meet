@@ -73,12 +73,10 @@ export function featherPx(outputHeight: number): number {
   return 1;
 }
 
-/** Segmentation cadence. FIELD 2026-09-04 screenshots: a 30Hz mask under
- *  a ~60fps camera left a one-frame ghost silhouette beside a turning head -
- *  temporal lag the eye reads as motion smear. Segment every paint frame at
- *  60Hz so the edge can keep up; EMA + harden still kill crawl without
- *  needing a slower cadence as camouflage. */
-export const SEGMENT_HZ = 60;
+/** Segmentation cadence. After #22, full-res pixel readback is gone so 30Hz
+ *  has CPU headroom again. Paint keeps the last hard matte when briefly
+ *  stale (warmupPaint haveMask) — never Gaussian the face. */
+export const SEGMENT_HZ = 30;
 
 export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMENT_HZ): boolean {
   const rate = Number(hz) > 0 ? Number(hz) : SEGMENT_HZ;
