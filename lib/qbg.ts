@@ -33,7 +33,8 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, keepCenterPersonIsland, adaptiveSmoothAlpha,
+  confidenceToAlpha, hardenPersonMatte, keepCenterPersonIsland, torsoGateMask, suppressLowerRoom,
+  SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
 } from "./effects";
@@ -118,7 +119,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     // Local assets when this deployment ships them; the CDN otherwise. The
     // vendored copy is an optimisation, never a dependency — a missing file
     // must degrade to "slower first blur", not to "no blur".
-    const local = assetPaths({ wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"), model: await head("/mediapipe/selfie_segmenter.tflite") });
+    // Meet uses a landscape-variant selfie model; square mis-segments wide webcam scenes.
+    // Prefer local landscape tflite; if missing, fall back to CDN landscape (not square).
+    const local = assetPaths({ wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"), model: await head("/mediapipe/selfie_segmenter_landscape.tflite") });
     const fileSet = await vision.FilesetResolver.forVisionTasks(
       local?.tasksVisionFileSet ||
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
@@ -126,7 +129,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.seg = await vision.ImageSegmenter.createFromOptions(fileSet, {
       baseOptions: {
         modelAssetPath: local?.modelAssetPath ||
-          "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
+          SELFIE_LANDSCAPE_CDN,
         delegate: "GPU",
       },
       runningMode: "VIDEO",
@@ -362,6 +365,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // carries a hard person alpha — no full-res pixel readback later.
         hardenPersonMatte(this.smooth);
         keepCenterPersonIsland(this.smooth, mw, mh);
+        // Soft torso/head-shoulders gate kills chair->couch bridges island cannot cut.
+        torsoGateMask(this.smooth, mw, mh);
+        suppressLowerRoom(this.smooth, mw, mh);
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
@@ -618,10 +624,16 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
           ctx.save();
           ctx.globalCompositeOperation = "copy";
           ctx.filter = "none";
-          // Full-cover Y flip via setTransform — avoids 1px cyan gap at top
-          // from translate+scale leaving a subpixel uncovered row.
-          ctx.setTransform(1, 0, 0, -1, 0, H);
-          ctx.drawImage(this.gl.surface as any, 0, 0, W, H);
+          // Full-cover Y flip via setTransform. 1px overscan covers the cyan
+          // seam OffscreenCanvas WebGL leaves when H is odd / subpixel.
+          const Wi = Math.round(W), Hi = Math.round(H);
+          if (ctx.canvas.width !== Wi || ctx.canvas.height !== Hi) {
+            ctx.canvas.width = Wi;
+            ctx.canvas.height = Hi;
+          }
+          ctx.imageSmoothingEnabled = false;
+          ctx.setTransform(1, 0, 0, -1, 0, Hi);
+          ctx.drawImage(this.gl.surface as any, 0, -1, Wi, Hi + 2);
           ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.restore();
           return;

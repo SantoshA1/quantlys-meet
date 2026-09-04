@@ -5,11 +5,12 @@
 // Pipeline (Google Meet blog pattern):
 //   1. MediaPipe still produces a low-res confidence mask (CPU, in qbg.ts).
 //   2. Each frame: upload camera + mask to GPU textures.
-//   3. Separable Gaussian blur of the BACKGROUND only — samples weighted by
-//      (1.0 - personMask) and renormalized so person color cannot bleed into
+//   3. Joint bilateral refine (runJbf) aligns matte to image boundaries.
+//   4. Separable Gaussian blur of the BACKGROUND only — samples weighted by
+//      hard room exclusion and renormalized so person color cannot bleed into
 //      the blur plate (kills the dark halo from shirt / cap).
-//   4. Full-res composite: out = mix(bgOrBlur, sharpFrame, personAlpha).
-//   5. Blit the GL canvas into the processor's 2d canvas for VideoFrame.
+//   5. Full-res composite: out = mix(bgOrBlur, sharpFrame, refined personAlpha).
+//   6. Blit the GL canvas into the processor's 2d canvas for VideoFrame.
 //
 // One context per canvas: we own an OffscreenCanvas (or HTMLCanvasElement)
 // with webgl2. The LiveKit output canvas stays 2d; one drawImage blit per
@@ -102,6 +103,60 @@ void main() {
 `;
 
 /** Full-res composite: sharp person over blurred (or virtual) background. */
+/** Joint bilateral refine tunables (Meet-style edge align). Exported for tests. */
+export const JBF_RADIUS = 5;
+export const JBF_SIGMA_SPACE = 2.5;
+export const JBF_SIGMA_RANGE = 0.1;
+
+/**
+ * Joint bilateral filter on the person mask guided by frame luminance.
+ * Meet blog: joint bilateral aligns matte to image boundaries before composite.
+ */
+export const FRAG_JBF = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_mask;
+uniform sampler2D u_guide;
+uniform vec2 u_texel;
+uniform float u_radius;
+uniform float u_sigmaSpace;
+uniform float u_sigmaRange;
+
+float luma(vec3 c) {
+  return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+void main() {
+  float centerM = texture(u_mask, v_uv).r;
+  float centerL = luma(texture(u_guide, v_uv).rgb);
+  float sigmaS = max(0.5, u_sigmaSpace);
+  float sigmaR = max(0.01, u_sigmaRange);
+  float twoS = 2.0 * sigmaS * sigmaS;
+  float twoR = 2.0 * sigmaR * sigmaR;
+  float sum = 0.0;
+  float wsum = 0.0;
+  int R = int(clamp(u_radius, 1.0, 8.0));
+  for (int dy = -8; dy <= 8; dy++) {
+    if (dy < -R || dy > R) continue;
+    for (int dx = -8; dx <= 8; dx++) {
+      if (dx < -R || dx > R) continue;
+      vec2 off = vec2(float(dx), float(dy)) * u_texel;
+      vec2 uv = v_uv + off;
+      float m = texture(u_mask, uv).r;
+      float l = luma(texture(u_guide, uv).rgb);
+      float ds = float(dx * dx + dy * dy);
+      float dr = l - centerL;
+      float w = exp(-ds / twoS) * exp(-(dr * dr) / twoR);
+      sum += m * w;
+      wsum += w;
+    }
+  }
+  float outM = wsum > 1e-5 ? sum / wsum : centerM;
+  outColor = vec4(outM, outM, outM, 1.0);
+}
+`;
+
 export const FRAG_COMPOSITE = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -138,8 +193,16 @@ void main() {
   float wrap = clamp(u_softEdge, 0.0, 1.0) * edge * 0.18;
   float a = clamp(person - wrap, 0.0, 1.0);
 
+  // Light color decontamination at mid-alpha: if sharp is much darker than bg
+  // (dark clothing fringe), lean slightly toward bg without softening face core.
+  float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
+  float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
+  float mid = step(0.05, a) * step(a, 0.95);
+  float darkFringe = mid * step(sharpL + 0.08, bgL);
+  vec3 sharpUse = mix(sharp.rgb, mix(sharp.rgb, bg.rgb, 0.35), darkFringe);
+
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
-  outColor = mix(bg, sharp, a);
+  outColor = mix(bg, vec4(sharpUse, 1.0), a);
   outColor.a = 1.0;
 }
 `;
@@ -234,10 +297,13 @@ export class QbgGl {
   private blurH: WebGLProgram | null = null;
   private blurV: WebGLProgram | null = null;
   private composite: WebGLProgram | null = null;
+  private jbf: WebGLProgram | null = null;
 
   private frameTex: WebGLTexture | null = null;
   private maskTex: WebGLTexture | null = null;
   private bgTex: WebGLTexture | null = null;
+  private refinedMaskTex: WebGLTexture | null = null;
+  private jbfFbo: WebGLFramebuffer | null = null;
 
   private fboA: WebGLFramebuffer | null = null;
   private fboB: WebGLFramebuffer | null = null;
@@ -252,6 +318,8 @@ export class QbgGl {
   private maskH = 0;
   private maskBuf: Uint8Array | null = null;
   private readyFlag = false;
+  /** True after a successful runJbf this session/frame. */
+  private jbfLive = false;
 
   get isReady(): boolean { return this.readyFlag && !!this.gl; }
 
@@ -286,10 +354,13 @@ export class QbgGl {
       const blurH = link(gl, VERT_SRC, FRAG_BLUR_H);
       const blurV = link(gl, VERT_SRC, FRAG_BLUR_V);
       const composite = link(gl, VERT_SRC, FRAG_COMPOSITE);
+      // JBF is optional — if link fails, skip refine (current behavior).
+      const jbfProg = link(gl, VERT_SRC, FRAG_JBF);
       if (!blurH || !blurV || !composite) {
         if (blurH) gl.deleteProgram(blurH);
         if (blurV) gl.deleteProgram(blurV);
         if (composite) gl.deleteProgram(composite);
+        if (jbfProg) gl.deleteProgram(jbfProg);
         return false;
       }
 
@@ -313,9 +384,12 @@ export class QbgGl {
       this.blurH = blurH;
       this.blurV = blurV;
       this.composite = composite;
+      this.jbf = jbfProg;
       this.frameTex = this.createTexture();
       this.maskTex = this.createTexture();
       this.bgTex = this.createTexture();
+      this.refinedMaskTex = this.createTexture();
+      this.jbfFbo = gl.createFramebuffer();
       this.readyFlag = true;
       return true;
     } catch {
@@ -351,9 +425,12 @@ export class QbgGl {
         if (this.frameTex) gl.deleteTexture(this.frameTex);
         if (this.maskTex) gl.deleteTexture(this.maskTex);
         if (this.bgTex) gl.deleteTexture(this.bgTex);
+        if (this.refinedMaskTex) gl.deleteTexture(this.refinedMaskTex);
+        if (this.jbfFbo) gl.deleteFramebuffer(this.jbfFbo);
         if (this.blurH) gl.deleteProgram(this.blurH);
         if (this.blurV) gl.deleteProgram(this.blurV);
         if (this.composite) gl.deleteProgram(this.composite);
+        if (this.jbf) gl.deleteProgram(this.jbf);
         if (this.quad) gl.deleteBuffer(this.quad);
         if (this.vao) gl.deleteVertexArray(this.vao);
       } catch { /* teardown best-effort */ }
@@ -362,14 +439,16 @@ export class QbgGl {
     this.canvas = null;
     this.vao = null;
     this.quad = null;
-    this.blurH = this.blurV = this.composite = null;
-    this.frameTex = this.maskTex = this.bgTex = null;
+    this.blurH = this.blurV = this.composite = this.jbf = null;
+    this.frameTex = this.maskTex = this.bgTex = this.refinedMaskTex = null;
+    this.jbfFbo = null;
     this.fboA = this.fboB = null;
     this.texA = this.texB = null;
     this.w = this.h = this.halfW = this.halfH = 0;
     this.maskW = this.maskH = 0;
     this.maskBuf = null;
     this.readyFlag = false;
+    this.jbfLive = false;
   }
 
   /**
@@ -421,6 +500,7 @@ export class QbgGl {
     if (this.w < 1 || this.h < 1) return false;
     try {
       this.uploadFrame(frame);
+      this.runJbf();
       this.runBlurPasses(Math.max(1, Number(blurPx) || 1));
       this.runComposite(/* virtual */ false, null, 0);
       return true;
@@ -443,6 +523,7 @@ export class QbgGl {
     try {
       this.uploadFrame(frame);
       this.uploadBg(bg);
+      this.runJbf();
       this.runComposite(/* virtual */ true, bg, softEdge);
       return true;
     } catch {
@@ -451,6 +532,60 @@ export class QbgGl {
   }
 
   // ── internals ──────────────────────────────────────────────────────────
+
+  /** Prefer refined matte when JBF succeeded this frame; else raw maskTex. */
+  private activePersonMask(): WebGLTexture {
+    return (this.jbfLive && this.refinedMaskTex) ? this.refinedMaskTex! : this.maskTex!;
+  }
+
+  /**
+   * Meet-style joint bilateral refine: guided by full-res RGB luminance,
+   * write refined mask into refinedMaskTex FBO. No-op if JBF program missing.
+   */
+  private runJbf(): void {
+    const gl = this.gl;
+    this.jbfLive = false;
+    if (!gl || !this.jbf || !this.refinedMaskTex || !this.jbfFbo || !this.maskTex || !this.frameTex) return;
+    if (this.w < 1 || this.h < 1) return;
+    const W = this.w, H = this.h;
+
+    gl.bindTexture(gl.TEXTURE_2D, this.refinedMaskTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.jbfFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.refinedMaskTex, 0);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.jbf);
+
+    const locMask = gl.getUniformLocation(this.jbf, "u_mask");
+    const locGuide = gl.getUniformLocation(this.jbf, "u_guide");
+    const locTexel = gl.getUniformLocation(this.jbf, "u_texel");
+    const locR = gl.getUniformLocation(this.jbf, "u_radius");
+    const locSS = gl.getUniformLocation(this.jbf, "u_sigmaSpace");
+    const locSR = gl.getUniformLocation(this.jbf, "u_sigmaRange");
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
+    gl.uniform1i(locMask, 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
+    gl.uniform1i(locGuide, 1);
+
+    gl.uniform2f(locTexel, 1 / Math.max(1, W), 1 / Math.max(1, H));
+    gl.uniform1f(locR, JBF_RADIUS);
+    gl.uniform1f(locSS, JBF_SIGMA_SPACE);
+    gl.uniform1f(locSR, JBF_SIGMA_RANGE);
+
+    this.drawQuad();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.jbfLive = true;
+  }
+
 
   private createTexture(): WebGLTexture | null {
     const gl = this.gl!;
@@ -560,7 +695,7 @@ export class QbgGl {
     gl.uniform1i(locFrame, 0);
 
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
+    gl.bindTexture(gl.TEXTURE_2D, this.activePersonMask());
     gl.uniform1i(locMask, 1);
 
     gl.uniform2f(locTexel, texelX, texelY);
@@ -599,7 +734,7 @@ export class QbgGl {
     gl.uniform1i(locBg, 1);
 
     gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
+    gl.bindTexture(gl.TEXTURE_2D, this.activePersonMask());
     gl.uniform1i(locMask, 2);
 
     gl.uniform1f(locUse, virtual ? 1 : 0);
