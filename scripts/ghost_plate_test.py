@@ -31,7 +31,7 @@ PERSON = (20, 20, 40)
 R = 35
 POS_A = (80, 90)
 POS_B = (200, 90)
-DILATE = 16
+DILATE = 20  # match generous HIST_DILATE exclusion
 FILL = (12, 7)
 BLUR = 8
 # Smear band just outside the sharp person at B (left of head).
@@ -151,15 +151,34 @@ def main() -> int:
     )
     # Old path must be visibly darker / less blue in the smear band.
     old_worse = old_ghost < new_ghost - 8 or old_blue < new_blue - 25
-    ok = new_ok and old_worse
+
+    # Sharpness: hard person paste must leave core pixels identical to source.
+    hard = circle_mask(POS_B[0], POS_B[1], R - 4)  # well inside hard core
+    px_src = frame_b.load()
+    px_new = new.load()
+    max_diff = 0
+    for y in range(H):
+        for x in range(W):
+            if hard.getpixel((x, y)) < 255:
+                continue
+            a = px_src[x, y]
+            b = px_new[x, y]
+            for c in range(3):
+                d = abs(a[c] - b[c])
+                if d > max_diff:
+                    max_diff = d
+    sharp_ok = max_diff <= 2
+    print(f"person-core max abs diff vs source = {max_diff} (need <= 2)")
+
+    ok = new_ok and old_worse and sharp_ok
     if ok:
-        print("PASS: temporal hist suppresses dark self-ghost (old pose + smear band)")
+        print("PASS: temporal hist suppresses dark self-ghost + hard person stays sharp")
         return 0
     print(
         f"FAIL: new_ghost={new_ghost:.2f} old_ghost={old_ghost:.2f} "
         f"new_blue={new_blue:.2f} old_blue={old_blue:.2f} "
-        f"oldpose_luma={new_oldpose:.2f} "
-        f"(need new near blue {bg_luma:.2f} and old darker in smear band)"
+        f"oldpose_luma={new_oldpose:.2f} sharp_diff={max_diff} "
+        f"(need new near blue {bg_luma:.2f}, old darker, person core == source)"
     )
     return 1
 
