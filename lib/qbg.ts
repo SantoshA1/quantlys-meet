@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, keepCenterPersonIsland, torsoGateMask, suppressLowerRoom,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland,
   SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
@@ -364,10 +364,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // Near-binary harden at SEGMENT RES (cheap). maskCanvas then already
         // carries a hard person alpha — no full-res pixel readback later.
         hardenPersonMatte(this.smooth);
+        // Morphological open breaks thin chair→couch bridges without the
+        // TORSO_GATE ellipse that clipped shoulders (floating-head hotfix).
+        openPersonMask(this.smooth, mw, mh);
         keepCenterPersonIsland(this.smooth, mw, mh);
-        // Soft torso/head-shoulders gate kills chair->couch bridges island cannot cut.
-        torsoGateMask(this.smooth, mw, mh);
-        suppressLowerRoom(this.smooth, mw, mh);
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);

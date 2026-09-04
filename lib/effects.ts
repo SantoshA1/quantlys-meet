@@ -653,8 +653,79 @@ export function keepCenterPersonIsland(
 }
 
 
-/** Soft upper-body gate defaults (normalized). Wider than CENTER_BOX so arms
- *  stay; bottom stops short of full frame so a couch bridge cannot survive. */
+/** Morphological open radius at segment resolution. Small disk/square breaks
+ *  thin chair→couch bridges without shaving wide shoulders (floating-head fix). */
+export const OPEN_RADIUS_PX = 2;
+
+/** Morphological opening on the person matte: binary threshold → erode →
+ *  dilate, then zero person pixels that the open removed (bridges / thin
+ *  islands). Restores original alpha for survivors. Call before
+ *  keepCenterPersonIsland. Mutates and returns the same buffer. */
+export function openPersonMask(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  radiusPx: number = OPEN_RADIUS_PX,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const r = Math.max(0, Math.min(8, Math.floor(Number(radiusPx)) || 0));
+  const thresh = HARDEN_PERSON_CLEAR;
+  if (r === 0) {
+    // Still useful as a no-op identity for tests / radius override.
+    return mask;
+  }
+  const bin = new Uint8Array(n);
+  for (let i = 0; i < n; i++) bin[i] = (mask[i] as number) >= thresh ? 1 : 0;
+
+  // Erode with square SE of radius r (pixel stays only if full window is set).
+  const eroded = new Uint8Array(n);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let keep = 1;
+      for (let dy = -r; dy <= r && keep; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= H) { keep = 0; break; }
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= W || !bin[yy * W + xx]) { keep = 0; break; }
+        }
+      }
+      eroded[y * W + x] = keep;
+    }
+  }
+
+  // Dilate eroded with same SE.
+  const opened = new Uint8Array(n);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let any = 0;
+      for (let dy = -r; dy <= r && !any; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= H) continue;
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= W) continue;
+          if (eroded[yy * W + xx]) { any = 1; break; }
+        }
+      }
+      opened[y * W + x] = any;
+    }
+  }
+
+  // Zero person pixels that opening removed (bridges / thin protrusions).
+  for (let i = 0; i < n; i++) {
+    if ((mask[i] as number) >= thresh && !opened[i]) mask[i] = 0;
+  }
+  return mask;
+}
+
+/** @deprecated Not wired in qbg — width=0.55 ellipse caused floating-head
+ *  (shoulders clipped). Prefer openPersonMask + keepCenterPersonIsland.
+ *  Kept for unit tests / rollback. Soft upper-body gate defaults (normalized). */
 export const TORSO_GATE = {
   cx: 0.5,
   top: 0.02,
@@ -672,9 +743,8 @@ export type TorsoGateOpts = {
   falloff?: number;
 };
 
-/** Soft vertical stadium / ellipse gate: multiply person alphas so only the
- *  head–shoulders–torso band survives. Kills office-chair→couch bridges that
- *  keepCenterPersonIsland cannot cut (one connected component). Mutates. */
+/** @deprecated Not wired in qbg (floating-head from TORSO_GATE.width=0.55).
+ *  Soft vertical stadium / ellipse gate — kept for tests only. Mutates. */
 export function torsoGateMask(
   mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
   mw: number,
@@ -717,10 +787,8 @@ export function torsoGateMask(
   return mask;
 }
 
-/** Stronger zeroing for lower furniture bands (couches). Prefer after island
- *  + torsoGate: only clears residual person pixels in bottom corners / y>0.82
- *  that the soft ellipse already attenuated. Does not aggressively shave
- *  seated legs inside the torso core. Mutates. */
+/** @deprecated Not wired in qbg — worsened floating-head with torsoGate.
+ *  Stronger zeroing for lower furniture bands; kept for tests only. Mutates. */
 export function suppressLowerRoom(
   mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
   mw: number,
