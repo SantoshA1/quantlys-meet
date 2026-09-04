@@ -49,7 +49,10 @@ void main() {
     float off = fi * (u_radius / 8.0);
     vec2 uv = v_uv + vec2(off * u_texel.x, off * u_texel.y);
     float m = texture(u_mask, uv).r;
-    float w = exp(-(off * off) / twoSigma2) * (1.0 - m);
+    // Harder room exclusion: mid-mask near person contributes almost nothing
+    // to the blur plate (kills dark clothing fringe into blur).
+    float room = 1.0 - smoothstep(0.15, 0.45, m);
+    float w = exp(-(off * off) / twoSigma2) * room;
     sum += texture(u_frame, uv) * w;
     wsum += w;
   }
@@ -82,7 +85,10 @@ void main() {
     float off = fi * (u_radius / 8.0);
     vec2 uv = v_uv + vec2(off * u_texel.x, off * u_texel.y);
     float m = texture(u_mask, uv).r;
-    float w = exp(-(off * off) / twoSigma2) * (1.0 - m);
+    // Harder room exclusion: mid-mask near person contributes almost nothing
+    // to the blur plate (kills dark clothing fringe into blur).
+    float room = 1.0 - smoothstep(0.15, 0.45, m);
+    float w = exp(-(off * off) / twoSigma2) * room;
     sum += texture(u_frame, uv) * w;
     wsum += w;
   }
@@ -117,7 +123,7 @@ void main() {
   vec4 sharp = texture(u_sharp, uv);
   float mask = texture(u_mask, uv).r;
   // Hardened matte with a thin AA band around 0.5.
-  float person = smoothstep(0.38, 0.62, mask);
+  float person = smoothstep(0.42, 0.58, mask);
 
   vec4 bg;
   if (u_useVirtual > 0.5) {
@@ -430,7 +436,7 @@ export class QbgGl {
   drawImageBg(
     frame: CanvasImageSource,
     bg: CanvasImageSource,
-    softEdge: number = 0.35,
+    softEdge: number = 0.12,
   ): boolean {
     if (!this.isReady || !this.gl || !this.canvas) return false;
     if (this.w < 1 || this.h < 1) return false;

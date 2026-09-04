@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, adaptiveSmoothAlpha,
+  confidenceToAlpha, hardenPersonMatte, keepCenterPersonIsland, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
 } from "./effects";
@@ -361,6 +361,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // Near-binary harden at SEGMENT RES (cheap). maskCanvas then already
         // carries a hard person alpha — no full-res pixel readback later.
         hardenPersonMatte(this.smooth);
+        keepCenterPersonIsland(this.smooth, mw, mh);
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
@@ -606,7 +607,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         let ok = false;
         if ((this.opts.kind === "image" || this.opts.kind === "video") && (this.bg || this.bgVideo)) {
           const src: any = this.bgVideo && this.bgVideo.readyState >= 2 ? this.bgVideo : this.bg;
-          if (src) ok = this.gl.drawImageBg(frame as any, src, 0.35);
+          if (src) ok = this.gl.drawImageBg(frame as any, src, 0.12);
         } else {
           ok = this.gl.drawBlur(frame as any, this.opts.blurRadius || BLUR_PX);
         }
@@ -617,9 +618,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
           ctx.save();
           ctx.globalCompositeOperation = "copy";
           ctx.filter = "none";
-          ctx.translate(0, H);
-          ctx.scale(1, -1);
+          // Full-cover Y flip via setTransform — avoids 1px cyan gap at top
+          // from translate+scale leaving a subpixel uncovered row.
+          ctx.setTransform(1, 0, 0, -1, 0, H);
           ctx.drawImage(this.gl.surface as any, 0, 0, W, H);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.restore();
           return;
         }
