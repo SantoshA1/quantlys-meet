@@ -66,27 +66,21 @@ export const IMAGE_UNDERBLUR_PX = 0;
  *  library. ~1.1% of height: 8px at 720p, 4px at 360p. */
 export function featherPx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
-  if (h <= 0) return 2;
-  // FIELD 2026-08-24, from two screenshots: "the backgrounds and the blur
-  // quality is really bad". The old value was 1.1% of height — 8px at 720p,
-  // and 14px once erosion was added on top. That much softness was never a
-  // choice about how an edge should look; it was camouflage for a BINARY
-  // mask at 384x216 upscaled 3.3x, whose staircase had to be hidden. A hat
-  // brim dissolving over thirty pixels is what camouflage costs.
-  //
-  // The mask is a confidence mask now (see confidenceToAlpha) — it arrives
-  // soft, with real values in the hair — so the feather goes back to being
-  // what it says it is: the last touch that stops a boundary reading as a
-  // cut line. ~0.4% of height: 3px at 720p, 2px at 360p.
-  return Math.max(1, Math.min(6, Math.round(h * 0.004)));
+  if (h <= 0) return 1;
+  // FIELD 2026-08-24: cut 1.1% camouflage feather down to ~0.4% once the
+  // mask carried its own gradient. FIELD 2026-09-04 screenshots: even that
+  // left a thick soft glow / sticker halo around hat and shoulders on blur
+  // and stills. Narrow again to a thin anti-aliased band — ~0.22% of height:
+  // 2px at 720p, 1px at 360p — not a 20px dissolve.
+  return Math.max(1, Math.min(3, Math.round(h * 0.0022)));
 }
 
-/** Segmentation is the expensive half; the video is not. Running the model
- *  at every frame of a 30fps stream buys nothing an eye can see and is what
- *  makes a modest laptop drop frames — which is the OTHER way this feature
- *  strobes. 20Hz of mask under 30fps of video is invisible once the mask is
- *  smoothed, and gives back a third of the CPU. */
-export const SEGMENT_HZ = 20;
+/** Segmentation cadence. FIELD 2026-09-04 screenshots: a 20Hz mask under
+ *  30fps video left a translucent ghost of the head/ear beside a turning
+ *  person — temporal lag the eye reads as motion smear. Mask every frame at
+ *  30fps so the edge can keep up; EMA + harden still kill crawl without
+ *  needing a slower cadence as camouflage. */
+export const SEGMENT_HZ = 30;
 
 export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMENT_HZ): boolean {
   const rate = Number(hz) > 0 ? Number(hz) : SEGMENT_HZ;
@@ -100,14 +94,53 @@ export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMEN
  *  THE POINT: a per-frame mask is independent of the frame before it, so the
  *  boundary jitters and the eye reads "computer". Mixing a new mask into the
  *  old one with a fixed weight gives the edge memory. Too much memory and a
- *  moving hand smears; too little and the crawl comes back. 0.6 tracks a
- *  gesture within ~2-3 frames while removing the shimmer of a still head.
-  Retuned 2026-09-03 from 0.6 to 0.72 so a head turn does not smear; hair
-  softness still comes from confidence alpha, not from temporal lag.
+ *  moving hand smears; too little and the crawl comes back.
+ *
+ *  Retuned 2026-09-03 from 0.6 to 0.72. Retuned again 2026-09-04 from 0.72
+ *  to 0.90 after screenshots showed a translucent duplicate of head/ear
+ *  beside a turning person — the edge was remembering too long. Hair
+ *  softness still comes from confidence alpha + a thin feather, not lag.
+ *  On a large mean-abs delta (head turn), adaptiveSmoothAlpha bumps one
+ *  frame to MASK_SMOOTHING_FAST so trails do not linger.
  *
  *  Written as a mutation of `prev` and returning it, because this runs on
  *  every frame at 921,600 subpixels and allocation is the enemy. */
-export const MASK_SMOOTHING = 0.72;
+export const MASK_SMOOTHING = 0.90;
+
+/** One-frame burst weight when the mask jumps (head turn / gesture). */
+export const MASK_SMOOTHING_FAST = 0.95;
+
+/** Mean |Δ| across the mask (0..255) that counts as a large motion. */
+export const MASK_DELTA_FAST = 28;
+
+/** Mean absolute per-pixel difference between two masks. Pure helper. */
+export function maskMeanAbsDelta(
+  prev: ArrayLike<number> | null | undefined,
+  next: ArrayLike<number> | null | undefined,
+): number {
+  if (!next || !next.length) return 0;
+  if (!prev || prev.length !== next.length) return 255;
+  let sum = 0;
+  const n = next.length;
+  for (let i = 0; i < n; i++) sum += Math.abs((next[i] as number) - (prev[i] as number));
+  return sum / n;
+}
+
+/** Which EMA weight to use this frame. Large mask motion → fast; else base. */
+export function adaptiveSmoothAlpha(
+  prev: ArrayLike<number> | null | undefined,
+  next: ArrayLike<number> | null | undefined,
+  base: number = MASK_SMOOTHING,
+  fast: number = MASK_SMOOTHING_FAST,
+  threshold: number = MASK_DELTA_FAST,
+): number {
+  if (!prev || !next || prev.length !== next.length) return 1;
+  const d = maskMeanAbsDelta(prev, next);
+  const b = Math.min(1, Math.max(0, Number(base)));
+  const f = Math.min(1, Math.max(0, Number(fast)));
+  const t = Math.max(0, Number(threshold) || 0);
+  return d >= t ? Math.max(b, f) : b;
+}
 
 export function blendMask(
   prev: Uint8ClampedArray | Uint8Array | number[] | null,
@@ -185,9 +218,13 @@ export function segmentSize(w: number, h: number): { w: number; h: number } {
  *  a linear map turns them into a wide grey band, which is the same smear
  *  the old feather produced, just earlier in the pipeline. An S-curve leaves
  *  the confident pixels alone and pulls the uncertain ones toward whichever
- *  side they were already leaning. 6 is firm enough to give a clean edge and
- *  soft enough to keep the strands of hair that are the whole point. */
-export const MASK_CONTRAST = 6;
+ *  side they were already leaning.
+ *
+ *  Retuned 2026-09-04 from 6 to 11: city window lights were visible ON the
+ *  baseball cap / forehead / cheeks because mid-confidence became a grey
+ *  veil and destination-over showed the backdrop through the face. Steeper
+ *  contrast + hardenMaskAlpha (below) make the person core fully opaque. */
+export const MASK_CONTRAST = 11;
 
 /** Float32 confidence (0..1) -> alpha byte (0..255), through the S-curve.
  *  Pure, because "the edge is mushy" is a claim about a curve. */
@@ -202,6 +239,42 @@ export function confidenceToAlpha(c: number, contrast: number = MASK_CONTRAST): 
   const f = (t: number) => 1 / (1 + Math.exp(-k * (t - 0.5)));
   const lo = f(0), hi = f(1);
   return Math.round(255 * Math.max(0, Math.min(1, (f(x) - lo) / (hi - lo))));
+}
+
+/** Core-harden thresholds (alpha bytes). After confidence→alpha and after
+ *  temporal blend, before silhouette blur: anything this opaque is the
+ *  person core and must be fully opaque so backdrop cannot bleed through
+ *  pupils of the mask; anything this clear is fully room. Only the thin
+ *  band between stays soft for anti-alias / hair. */
+export const HARDEN_OPAQUE = 220;
+export const HARDEN_CLEAR = 40;
+
+/** Single-value harden — pure, for tests and for reasoning about the curve. */
+export function hardenAlpha(
+  v: number,
+  opaque: number = HARDEN_OPAQUE,
+  clear: number = HARDEN_CLEAR,
+): number {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return 0;
+  const hi = Math.max(0, Math.min(255, Number(opaque)));
+  const lo = Math.max(0, Math.min(255, Number(clear)));
+  if (x >= hi) return 255;
+  if (x <= lo) return 0;
+  return Math.round(Math.max(0, Math.min(255, x)));
+}
+
+/** In-place harden of a whole mask buffer. Returns the same array. */
+export function hardenMaskAlpha(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  opaque: number = HARDEN_OPAQUE,
+  clear: number = HARDEN_CLEAR,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask) return mask;
+  for (let i = 0; i < mask.length; i++) {
+    mask[i] = hardenAlpha(mask[i] as number, opaque, clear);
+  }
+  return mask;
 }
 
 // ── the blur, and the dark frame nobody ordered ──────────────────────────
@@ -481,12 +554,12 @@ export function edgeMean(mask: ArrayLike<number>, w: number, h: number): number 
  *  fingers and the tips of hair. */
 export function erodePx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
-  if (h <= 0) return 2;
-  // Same correction as the feather. Erosion still earns its place — the
-  // selfie model keeps a rim of real room around a person and that rim must
-  // be pulled into the blur — but it needs a ramp of two or three pixels to
-  // bite on, not six. ~0.3% of height.
-  return Math.max(1, Math.min(5, Math.round(h * 0.003)));
+  if (h <= 0) return 1;
+  // Light erosion only: leftover room rim goes to background, but do not
+  // over-erode into the face. ~0.2% of height — 1px at 720p, 1px at 360p.
+  // Paired with a thinner feather so maskBlurPx stays a thin AA band, not a
+  // mushy silhouette glow.
+  return Math.max(1, Math.min(3, Math.round(h * 0.002)));
 }
 
 /** The mask is blurred ONCE, by enough to carry both jobs: the erosion needs

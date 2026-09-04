@@ -33,7 +33,8 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   maskBlurPx, ERODE_POWER, needsInvert,
-  confidenceToAlpha, overscanRect, bokehPass,
+  confidenceToAlpha, hardenMaskAlpha, adaptiveSmoothAlpha,
+  overscanRect, bokehPass,
 } from "./effects";
 
 export type QbgOptions = {
@@ -253,7 +254,14 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         } else {
           raw = cat.getAsUint8Array() as any;
         }
-        this.smooth = blendMask(this.smooth, raw as any) as Uint8ClampedArray;
+        // Adaptive EMA: head turns get a one-frame fast blend so a ghost of
+        // the previous pose cannot linger beside the new one.
+        const mix = adaptiveSmoothAlpha(this.smooth, raw as any);
+        this.smooth = blendMask(this.smooth, raw as any, mix) as Uint8ClampedArray;
+        // Harden AFTER temporal blend, BEFORE silhouette blur: face/hat/torso
+        // become fully opaque so destination-over cannot show city lights
+        // through the person. Soft band stays only at the thin boundary.
+        hardenMaskAlpha(this.smooth);
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
