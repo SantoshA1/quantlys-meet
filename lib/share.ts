@@ -1,33 +1,24 @@
-// Local screen-share preview: when to cover it so the meeting does not nest.
+// Local screen-share preview: always show the real tile.
 //
 // FIELD 2026-08-30 / PR #9 covered EVERY local share with "You're sharing this
-// window". That was meant only for capturing this meeting's own browser
-// surface (a hall of mirrors). Chromium can exclude the current tab from the
-// picker (`selfBrowserSurface: "exclude"`), so most shares are a window, a
-// monitor, or another tab — and blanking those hides a legitimate preview.
-// Remotes are unaffected either way: the class is local-only and the published
-// track is never touched.
+// window". PR #16 narrowed that to browser surfaces. Hosts still got a blank
+// cover and thought sharing was broken — so the cover is gone entirely.
+// Hall-of-mirrors prevention stays in the picker: selfBrowserSurface exclude
+// where supported. Remotes are unaffected; the published track is never touched.
 
 export type SharePreviewSettings = {
   displaySurface?: string;
 };
 
 /**
- * Cover the local preview only when the shared surface would recurse into a
- * browser tab/surface. Window and monitor shares show the real video.
- * Unknown / missing displaySurface → show the preview (selfBrowserSurface
- * exclude already keeps this tab out of the picker where supported).
+ * Always false. Host/local sharer must see the real screen-share video tile.
+ * Kept as a named helper so callers and tests stay explicit.
  */
 export function shouldCoverLocalSharePreview(
-  settings: SharePreviewSettings | null | undefined
+  _settings?: SharePreviewSettings | null
 ): boolean {
-  const surface = String(settings?.displaySurface || "").toLowerCase();
-  return surface === "browser";
+  return false;
 }
-
-/** Soft cover copy — "tab", not "window", because browser surfaces are tabs. */
-export const LOCAL_SHARE_COVER_COPY =
-  "You're sharing this tab — others still see it";
 
 /**
  * Chromium accepts selfBrowserSurface on getDisplayMedia; other browsers
