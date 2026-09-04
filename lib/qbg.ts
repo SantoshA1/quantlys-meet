@@ -27,14 +27,15 @@
 // caller checks effectSupport() first.
 
 import { ProcessorWrapper, VideoTransformer } from "@livekit/track-processors";
-import type { ImageSegmenter } from "@mediapipe/tasks-vision";
+import type { ImageSegmenter, FaceDetector } from "@mediapipe/tasks-vision";
 import {
   BLUR_PX, BACKDROP_DOF_PX, blendMask,
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask, suppressCrownProtrusions, suppressLeafLeaks,
-  SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, applyFaceHullMask, expandFaceHull, lateralPersonGate, despecklePersonMask, suppressCrownProtrusions, suppressLeafLeaks,
+  SELFIE_LANDSCAPE_CDN, BLAZE_FACE_CDN, FACE_HULL, FACE_HULL_HOLD_MS, adaptiveSmoothAlpha,
+  type FaceHull,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
 } from "./effects";
@@ -52,6 +53,11 @@ export type QbgOptions = {
 class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private opts: QbgOptions;
   private seg?: ImageSegmenter;
+  /** FaceDetector constrains the person matte to an expanded face→shoulders hull. */
+  private face?: FaceDetector;
+  /** Last good expanded hull (normalized); held briefly across missed detections. */
+  private lastFaceHull: FaceHull | null = null;
+  private lastFaceAt = 0;
   private bg: ImageBitmap | null = null;
   /** living loop element; drawn each paint when kind === "video" */
   private bgVideo: HTMLVideoElement | null = null;
@@ -141,6 +147,27 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       outputCategoryMask: true,
       outputConfidenceMasks: true,
     });
+    // FaceDetector (Chrome/WebGL path): intersect person matte with expanded
+    // face→shoulders hull so plant-on-cap / chair bits outside the hull die.
+    // Prefer local public/mediapipe/; CDN otherwise. Failure is non-fatal —
+    // existing open/island/lateral/despeckle/crown/leaf still run.
+    this.face = undefined;
+    this.lastFaceHull = null;
+    this.lastFaceAt = 0;
+    try {
+      const faceLocal = await head("/mediapipe/blaze_face_short_range.tflite");
+      this.face = await vision.FaceDetector.createFromOptions(fileSet, {
+        baseOptions: {
+          modelAssetPath: faceLocal
+            ? "/mediapipe/blaze_face_short_range.tflite"
+            : BLAZE_FACE_CDN,
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+      });
+    } catch {
+      this.face = undefined;
+    }
     if (this.opts.kind === "video" && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
     else if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
 
@@ -162,6 +189,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     await super.destroy();
     try { await this.seg?.close(); } catch { /* closing twice is not an error worth surfacing */ }
     this.seg = undefined;
+    try { await this.face?.close(); } catch { /* teardown best-effort */ }
+    this.face = undefined;
+    this.lastFaceHull = null;
+    this.lastFaceAt = 0;
     this.bg = null;
     this.teardownVideo();
     this.smooth = null;
@@ -368,6 +399,48 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // TORSO_GATE ellipse that clipped shoulders (floating-head hotfix).
         openPersonMask(this.smooth, mw, mh);
         keepCenterPersonIsland(this.smooth, mw, mh);
+        // Face→shoulders hull BEFORE lateral so we constrain plant/chair
+        // attached to the cap without fighting the side gate; lateral still
+        // helps when the face box widens into furniture.
+        {
+          let hull: FaceHull | null = null;
+          if (this.face && this.smallCanvas) {
+            try {
+              const det = this.face.detectForVideo(this.smallCanvas as any, now);
+              const list = (det as any)?.detections || [];
+              let best: any = null;
+              let bestScore = -1;
+              for (let di = 0; di < list.length; di++) {
+                const d = list[di];
+                const score = Number(d?.categories?.[0]?.score ?? 0);
+                if (d?.boundingBox && score > bestScore) {
+                  bestScore = score;
+                  best = d.boundingBox;
+                }
+              }
+              if (best) {
+                const bw = Number(best.width) || 0;
+                const bh = Number(best.height) || 0;
+                // Normalize vs mask size (same mw×mh as smallCanvas for segment).
+                hull = expandFaceHull({
+                  x: (Number(best.originX) || 0) / mw,
+                  y: (Number(best.originY) || 0) / mh,
+                  w: bw / mw,
+                  h: bh / mh,
+                });
+                if (hull) {
+                  this.lastFaceHull = hull;
+                  this.lastFaceAt = now;
+                }
+              }
+            } catch { /* face detect failed this frame — hold/skip below */ }
+          }
+          if (!hull && this.lastFaceHull && (now - this.lastFaceAt) <= FACE_HULL_HOLD_MS) {
+            hull = this.lastFaceHull;
+          }
+          // No face (and hold expired): skip constraint — do not blank person.
+          if (hull) applyFaceHullMask(this.smooth, mw, mh, hull, FACE_HULL.falloff);
+        }
         // Full-height side gate: kill plant/furniture columns without vertical torso cut.
         lateralPersonGate(this.smooth, mw, mh);
         // Drop tiny flecks that somehow survive open+island+lateral.

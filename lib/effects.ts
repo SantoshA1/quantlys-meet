@@ -959,6 +959,102 @@ export function suppressLeafLeaks(
   return mask;
 }
 
+/** MediaPipe BlazeFace short-range — CDN when public/mediapipe/ is absent. */
+export const BLAZE_FACE_CDN =
+  "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite";
+
+/** How long to reuse the last good face hull when a frame misses detection.
+ *  Short enough that a walk-off does not keep a stale box; long enough that
+ *  a blink of the detector does not drop the constraint. */
+export const FACE_HULL_HOLD_MS = 400;
+
+/** Expand a normalized face box (x,y,w,h in 0..1) into a seated person hull:
+ *  cap room above, shoulders/torso below, shoulder width each side. */
+export const FACE_HULL = {
+  /** Extend upward as a fraction of face height (cap / hair room). */
+  top: 0.55,
+  /** Extend downward as a multiple of face height (shoulders + seated torso). */
+  bottom: 2.2,
+  /** Extend left/right as a fraction of face width each side. */
+  side: 0.55,
+  /** Soft alpha falloff outside the hard hull, as a fraction of frame size. */
+  falloff: 0.04,
+};
+
+export type FaceBoxNorm = { x: number; y: number; w: number; h: number };
+export type FaceHull = { x0: number; y0: number; x1: number; y1: number };
+
+export type FaceHullOpts = {
+  top?: number;
+  bottom?: number;
+  side?: number;
+};
+
+/** Expand a normalized face bounding box into a hard person hull (0..1).
+ *  Returns null when the box is unusable — callers then skip the constraint
+ *  rather than blanking the person. */
+export function expandFaceHull(
+  box: FaceBoxNorm | null | undefined,
+  opts?: FaceHullOpts,
+): FaceHull | null {
+  if (!box) return null;
+  const fx = Number(box.x), fy = Number(box.y);
+  const fw = Number(box.w), fh = Number(box.h);
+  if (!(fw > 0 && fh > 0) || !Number.isFinite(fx) || !Number.isFinite(fy)) return null;
+  const top = Number(opts?.top ?? FACE_HULL.top);
+  const bottom = Number(opts?.bottom ?? FACE_HULL.bottom);
+  const side = Number(opts?.side ?? FACE_HULL.side);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom) || !Number.isFinite(side)) return null;
+  const x0 = Math.max(0, Math.min(1, fx - side * fw));
+  const x1 = Math.max(0, Math.min(1, fx + fw + side * fw));
+  const y0 = Math.max(0, Math.min(1, fy - top * fh));
+  const y1 = Math.max(0, Math.min(1, fy + fh + bottom * fh));
+  if (!(x1 > x0) || !(y1 > y0)) return null;
+  return { x0, y0, x1, y1 };
+}
+
+/** Intersect the person matte with an expanded face→shoulders hull.
+ *  Hard-zeros outside; soft-multiplies alpha in a falloff band (~0.04 frame).
+ *  When hull is null/undefined the mask is LEFT UNCHANGED — never wipe the
+ *  person just because the face detector blinked. Mutates and returns mask. */
+export function applyFaceHullMask(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  hull: FaceHull | null | undefined,
+  falloff?: number,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh || !hull) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const x0 = Number(hull.x0), y0 = Number(hull.y0);
+  const x1 = Number(hull.x1), y1 = Number(hull.y1);
+  if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) return mask;
+  const fo = Math.max(0, Number(falloff ?? FACE_HULL.falloff));
+  for (let y = 0; y < H; y++) {
+    const ny = (y + 0.5) / H;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const a = mask[i] as number;
+      if (a <= 0) continue;
+      const nx = (x + 0.5) / W;
+      const ox = nx < x0 ? x0 - nx : nx > x1 ? nx - x1 : 0;
+      const oy = ny < y0 ? y0 - ny : ny > y1 ? ny - y1 : 0;
+      if (ox === 0 && oy === 0) continue; // inside hard hull
+      const d = Math.hypot(ox, oy);
+      if (fo <= 0 || d >= fo) {
+        mask[i] = 0;
+      } else {
+        const g = 1 - d / fo;
+        mask[i] = Math.round(a * g);
+      }
+    }
+  }
+  return mask;
+}
+
 /** @deprecated Not wired in qbg — width=0.55 ellipse caused floating-head
  *  (shoulders clipped). Prefer openPersonMask + keepCenterPersonIsland.
  *  Kept for unit tests / rollback. Soft upper-body gate defaults (normalized). */
