@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, applyFaceHullMask, expandFaceHull, lateralPersonGate, despecklePersonMask, suppressCrownProtrusions, suppressLeafLeaks,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, applyFaceHullMask, expandFaceHull, lateralPersonGate, despecklePersonMask, suppressLeafLeaks,
   SELFIE_LANDSCAPE_CDN, BLAZE_FACE_CDN, FACE_HULL, FACE_HULL_HOLD_MS, adaptiveSmoothAlpha,
   type FaceHull,
   overscanRect, bokehPass, maskIsFresh,
@@ -457,8 +457,6 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         lateralPersonGate(this.smooth, mw, mh);
         // Drop tiny flecks that somehow survive open+island+lateral.
         despecklePersonMask(this.smooth, mw, mh);
-        // Kill plant spike / blur rectangle above the compact head mass.
-        suppressCrownProtrusions(this.smooth, mw, mh);
         // Leaf-green leaks. Scale smallCanvas to mask size when they differ.
         if (this.smallCtx && this.smallCanvas) {
           try {
