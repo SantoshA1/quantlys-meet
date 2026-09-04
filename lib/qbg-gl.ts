@@ -20,7 +20,10 @@ export const VERT_SRC = `#version 300 es
 in vec2 a_pos;
 out vec2 v_uv;
 void main() {
-  v_uv = a_pos * 0.5 + 0.5;
+  // Canvas2d blit expects top-left origin; WebGL FB is bottom-left.
+  // Flip V so Blur is upright (FIELD 2026-09-04: Blur turned the room upside down).
+  vec2 p = a_pos * 0.5 + 0.5;
+  v_uv = vec2(p.x, 1.0 - p.y);
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }
 `;
