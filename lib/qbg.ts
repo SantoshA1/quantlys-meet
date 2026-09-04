@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask, suppressLeafLeaks,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask, suppressCrownProtrusions, suppressLeafLeaks,
   SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
@@ -372,7 +372,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         lateralPersonGate(this.smooth, mw, mh);
         // Drop tiny flecks that somehow survive open+island+lateral.
         despecklePersonMask(this.smooth, mw, mh);
-        // Leaf-green leaks outside head box (only when smallCanvas aligns 1:1 with mask).
+        // Kill plant spike / blur rectangle above the compact head mass.
+        suppressCrownProtrusions(this.smooth, mw, mh);
+        // Leaf-green leaks (crown band never protected; only when smallCanvas 1:1).
         if (
           this.smallCtx && this.smallCanvas &&
           this.smallCanvas.width === mw && this.smallCanvas.height === mh
@@ -380,7 +382,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
           try {
             const id = this.smallCtx.getImageData(0, 0, mw, mh);
             suppressLeafLeaks(this.smooth, id.data, mw, mh);
-          } catch { /* getImageData unavailable — lateral+despeckle still apply */ }
+          } catch { /* getImageData unavailable — crown+lateral+despeckle still apply */ }
         }
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
