@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask,
   SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
@@ -368,6 +368,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // TORSO_GATE ellipse that clipped shoulders (floating-head hotfix).
         openPersonMask(this.smooth, mw, mh);
         keepCenterPersonIsland(this.smooth, mw, mh);
+        // Full-height side gate: kill plant/furniture columns without vertical torso cut.
+        lateralPersonGate(this.smooth, mw, mh);
+        // Drop tiny flecks that somehow survive open+island+lateral.
+        despecklePersonMask(this.smooth, mw, mh);
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
