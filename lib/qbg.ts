@@ -35,8 +35,9 @@ import {
   needsInvert, featherPx, shouldSegment,
   confidenceToAlpha, hardenPersonMatte, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
-  plateDilatePx,
+  plateDilatePx, webglCompositeReady,
 } from "./effects";
+import { QbgGl } from "./qbg-gl";
 
 export type QbgOptions = {
   kind: "blur" | "image" | "video";
@@ -100,6 +101,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   /** Which class the mask paints opaque. MEASURED, never assumed — see the
    *  post-mortem above maskPolarity() in lib/effects.ts. */
   private polarity: Polarity | null = null;
+  /** Meet-style WebGL2 compositor. Null when WebGL2 unavailable — canvas2d
+   *  hist path remains the fallback (never hard-crash). */
+  private gl: QbgGl | null = null;
+  /** True when GL init succeeded; paintMasked prefers GL then falls back. */
+  private useGl = false;
 
   constructor(opts: QbgOptions) {
     super();
@@ -134,6 +140,19 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     });
     if (this.opts.kind === "video" && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
     else if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
+
+    // Prefer WebGL2 Meet-style compositor. Keep the LiveKit output canvas as
+    // 2d (VideoFrame + one-context rule); GL renders to its own OffscreenCanvas
+    // and we blit once per frame with drawImage — never getImageData.
+    this.useGl = false;
+    this.gl = null;
+    if (webglCompositeReady()) {
+      const g = new QbgGl();
+      if (g.init(this.canvas as any)) {
+        this.gl = g;
+        this.useGl = true;
+      }
+    }
   }
 
   async destroy(): Promise<void> {
@@ -146,6 +165,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.haveMask = false;
     this.maskAt = 0;
     this.resetHist();
+    try { this.gl?.destroy(); } catch { /* GL teardown best-effort */ }
+    this.gl = null;
+    this.useGl = false;
   }
 
   /** Drop the temporal plate so a fresh session / resolution does not smear
@@ -233,6 +255,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         this.canvas.width = fw;
         this.canvas.height = fh;
         this.resetHist();
+        if (this.useGl && this.gl) this.gl.resize(fw, fh);
       }
       const W = this.canvas.width, H = this.canvas.height;
 
@@ -570,7 +593,38 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
    *  matte was the dark halo around hat and shoulders. */
   private paintMasked(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
+    // WebGL2 path: weighted bg blur + sharp person mix. One blit to 2d canvas.
+    if (this.useGl && this.gl && this.gl.isReady && this.smooth && this.maskCanvas) {
+      try {
+        this.gl.resize(W, H);
+        this.gl.setMask(
+          this.smooth,
+          this.maskCanvas.width,
+          this.maskCanvas.height,
+          needsInvert(this.polarity || "background"),
+        );
+        let ok = false;
+        if ((this.opts.kind === "image" || this.opts.kind === "video") && (this.bg || this.bgVideo)) {
+          const src: any = this.bgVideo && this.bgVideo.readyState >= 2 ? this.bgVideo : this.bg;
+          if (src) ok = this.gl.drawImageBg(frame as any, src, 0.35);
+        } else {
+          ok = this.gl.drawBlur(frame as any, this.opts.blurRadius || BLUR_PX);
+        }
+        if (ok && this.gl.surface) {
+          ctx.save();
+          ctx.globalCompositeOperation = "copy";
+          ctx.filter = "none";
+          ctx.drawImage(this.gl.surface as any, 0, 0, W, H);
+          ctx.restore();
+          return;
+        }
+      } catch {
+        // Fall through to canvas2d — never hard-crash on a bad GL frame.
+      }
+    }
+
     // Hard matte for the person punch — soft sil was dissolving the face.
+    // (canvas2d fallback when WebGL2 unavailable or a GL draw failed)
     const sil = this.personMatte(W, H);
     if (!sil) {
       // Never Gaussian the subject. Sharp passthrough until a matte exists.
