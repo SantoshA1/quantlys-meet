@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-"""Visual regression: person-free blur plate kills self-ghost.
+"""Visual regression: temporal background hist kills dark self-ghost.
 
-Scene (320x180): blue background (0,0,200), red circle person r=40 at (100,90).
+Scene (320x180): blue background (0,0,200), DARK circle person (cap-like)
+r=35. Frame A at x=80, Frame B at x=200 (person moved far enough that the
+old pose sits outside the dilated current silhouette).
 
-Old algorithm (the bug):
-  blur(full frame) keeps a smeared red double of the person; composite the
-  sharp person with the CURRENT mask. Pixels just outside the matte show that
-  smear as ghost/halo.
+Old bug path (post-PR#20 lowres stamp):
+  Downscale FULL frame B (including the dark person) and stamp that mush
+  over the dilated person region. At the person location the tiny image is
+  mostly the subject - so the plate still contains a dark self-blob that
+  blur smears into a ghost beside the head.
 
-New algorithm (the fix):
-  Build a plate by replacing the dilated person region (r+12) with a mush
-  color taken from a 12x7 lowres of the frame (collapsed to one average so
-  the tiny fill is room-dominated color, not a second soft portrait), blur
-  that plate, composite sharp person with the current mask.
-
-Also paints a lagged-mask variant of the old path into the PNG so the
-temporal ghost story is visible: blur where lagged mask (circle at x=70)
-is clear.
+New path (temporal hist):
+  hist starts as frame A (blue under where B will stand); update hist with
+  frame B only OUTSIDE the dilated person at x=200; blur hist; composite
+  sharp person from B. Probe beside current head AND at old pose x=80:
+  mean should be near blue (no dark ghost).
 """
 from __future__ import annotations
 
@@ -27,15 +26,18 @@ from PIL import Image, ImageDraw, ImageFilter
 
 W, H = 320, 180
 BG = (0, 0, 200)
-PERSON = (220, 0, 0)
-R = 40
-CUR = (100, 90)
-OLD = (70, 90)
-DILATE = 12
+# Dark cap-like subject - the real failure mode (not bright red on blue).
+PERSON = (20, 20, 40)
+R = 35
+POS_A = (80, 90)
+POS_B = (200, 90)
+DILATE = 16
 FILL = (12, 7)
 BLUR = 8
-# Just outside the current person (left edge at x=60), in the smear band.
-BOX = (50, 70, 58, 110)
+# Smear band just outside the sharp person at B (left of head).
+GHOST_BOX = (150, 70, 162, 110)
+# Old pose after the person moved - must stay blue on the hist path.
+OLD_BOX = (60, 70, 78, 110)
 
 
 def circle_mask(cx: int, cy: int, radius: int) -> Image.Image:
@@ -46,7 +48,15 @@ def circle_mask(cx: int, cy: int, radius: int) -> Image.Image:
     return m
 
 
-def mean_red(img: Image.Image, box=BOX) -> float:
+def make_frame(cx: int, cy: int) -> Image.Image:
+    im = Image.new("RGB", (W, H), BG)
+    ImageDraw.Draw(im).ellipse(
+        (cx - R, cy - R, cx + R, cy + R), fill=PERSON
+    )
+    return im
+
+
+def mean_channel(img: Image.Image, ch: int, box) -> float:
     crop = img.crop(box)
     px = crop.load()
     tw, th = crop.size
@@ -54,53 +64,47 @@ def mean_red(img: Image.Image, box=BOX) -> float:
     n = 0
     for y in range(th):
         for x in range(tw):
-            s += px[x, y][0]
+            s += px[x, y][ch]
             n += 1
     return s / n if n else float("nan")
 
 
-def make_frame() -> Image.Image:
-    im = Image.new("RGB", (W, H), BG)
-    ImageDraw.Draw(im).ellipse(
-        (CUR[0] - R, CUR[1] - R, CUR[0] + R, CUR[1] + R), fill=PERSON
-    )
-    return im
+def mean_luma(img: Image.Image, box) -> float:
+    crop = img.crop(box)
+    px = crop.load()
+    tw, th = crop.size
+    s = 0.0
+    n = 0
+    for y in range(th):
+        for x in range(tw):
+            r, g, b = px[x, y][:3]
+            s += 0.299 * r + 0.587 * g + 0.114 * b
+            n += 1
+    return s / n if n else float("nan")
 
 
-def old_algorithm(frame: Image.Image) -> Image.Image:
-    """Blur full frame (keeps person smear), paste sharp person on top.
-
-    The saved PNG also encodes the lagged-mask story: where the lagged
-    silhouette (center OLD) is clear, the blurred plate shows through -
-    that is the red smear beside a turning head.
-    """
-    blurred = frame.filter(ImageFilter.BoxBlur(BLUR))
-    # Metric image: classic blur-under-current-matte bug.
+def old_algorithm(frame_b: Image.Image) -> Image.Image:
+    """Lowres stamp of FULL frame B over dilated person - keeps dark self-blob."""
+    dil = circle_mask(POS_B[0], POS_B[1], R + DILATE)
+    tiny = frame_b.resize(FILL, Image.Resampling.BOX)
+    mush = tiny.resize((W, H), Image.Resampling.BILINEAR)
+    plate = frame_b.copy()
+    plate.paste(mush, mask=dil)
+    blurred = plate.filter(ImageFilter.BoxBlur(BLUR))
     out = blurred.copy()
-    out.paste(frame, mask=circle_mask(CUR[0], CUR[1], R))
+    out.paste(frame_b, mask=circle_mask(POS_B[0], POS_B[1], R))
     return out
 
 
-def new_algorithm(frame: Image.Image) -> Image.Image:
-    """Person-free plate: dilate sil, stamp 12x7-derived mush, blur, composite."""
-    dil = circle_mask(CUR[0], CUR[1], R + DILATE)
-    tiny = frame.resize(FILL, Image.Resampling.BOX)
-    # Room-dominated mush from the 12x7 lowres: average the four corner
-    # samples (person sits mid-frame, so corners stay blue). This is the
-    # plateFillSize intent - color mush, not a second soft portrait.
-    tw, th = tiny.size
-    corners = [
-        tiny.getpixel((0, 0)),
-        tiny.getpixel((tw - 1, 0)),
-        tiny.getpixel((0, th - 1)),
-        tiny.getpixel((tw - 1, th - 1)),
-    ]
-    mush_color = tuple(sum(c[i] for c in corners) // 4 for i in range(3))
-    plate = frame.copy()
-    plate.paste(mush_color, mask=dil)
-    blurred = plate.filter(ImageFilter.BoxBlur(BLUR))
+def new_algorithm(frame_a: Image.Image, frame_b: Image.Image) -> Image.Image:
+    """Temporal hist: seed with A, update with B only outside dilated person."""
+    dil = circle_mask(POS_B[0], POS_B[1], R + DILATE)
+    room = Image.eval(dil, lambda v: 255 - v)
+    hist = frame_a.copy()
+    hist.paste(frame_b, mask=room)
+    blurred = hist.filter(ImageFilter.BoxBlur(BLUR))
     out = blurred.copy()
-    out.paste(frame, mask=circle_mask(CUR[0], CUR[1], R))
+    out.paste(frame_b, mask=circle_mask(POS_B[0], POS_B[1], R))
     return out
 
 
@@ -110,37 +114,52 @@ def main() -> int:
     out_dir.mkdir(exist_ok=True)
     tmp = Path("/tmp")
 
-    frame = make_frame()
-    old = old_algorithm(frame)
-    new = new_algorithm(frame)
+    frame_a = make_frame(*POS_A)
+    frame_b = make_frame(*POS_B)
+    old = old_algorithm(frame_b)
+    new = new_algorithm(frame_a, frame_b)
 
-    old_path = tmp / "ghost-plate-old.png"
-    new_path = tmp / "ghost-plate-new.png"
+    old_path = out_dir / "ghost-hist-old.png"
+    new_path = out_dir / "ghost-hist-new.png"
     old.save(old_path)
     new.save(new_path)
-    old.save(out_dir / "ghost-plate-old.png")
-    new.save(out_dir / "ghost-plate-new.png")
+    old.save(tmp / "ghost-hist-old.png")
+    new.save(tmp / "ghost-hist-new.png")
 
-    old_red = mean_red(old)
-    new_red = mean_red(new)
+    bg_luma = 0.299 * BG[0] + 0.587 * BG[1] + 0.114 * BG[2]
+    old_ghost = mean_luma(old, GHOST_BOX)
+    new_ghost = mean_luma(new, GHOST_BOX)
+    old_blue = mean_channel(old, 2, GHOST_BOX)
+    new_blue = mean_channel(new, 2, GHOST_BOX)
+    new_oldpose = mean_luma(new, OLD_BOX)
+    new_oldpose_blue = mean_channel(new, 2, OLD_BOX)
 
-    print(f"old_red_mean (ghost box around x~{OLD[0]}) = {old_red:.2f}")
-    print(f"new_red_mean (ghost box around x~{OLD[0]}) = {new_red:.2f}")
+    print(f"ghost box beside current head @x~{POS_B[0]}: {GHOST_BOX}")
+    print(f"old_luma (dark mush ghost) = {old_ghost:.2f}")
+    print(f"new_luma (near blue {bg_luma:.2f}) = {new_ghost:.2f}")
+    print(f"old_blue = {old_blue:.2f}  new_blue = {new_blue:.2f}")
+    print(f"old-pose box @x~{POS_A[0]}: new_luma={new_oldpose:.2f} new_blue={new_oldpose_blue:.2f}")
     print(f"wrote {old_path}")
     print(f"wrote {new_path}")
 
-    ratio_ok = old_red > 1 and new_red < old_red * 0.4
-    abs_ok = new_red < 40
-    ok = ratio_ok or abs_ok
-    # Guard against a vacuous pass where old also has no smear.
-    if ok and old_red < 5 and new_red >= old_red:
-        ok = False
+    # New path near current head and at old pose must stay near blue.
+    new_ok = (
+        abs(new_ghost - bg_luma) < 30
+        and new_blue > 140
+        and abs(new_oldpose - bg_luma) < 30
+        and new_oldpose_blue > 140
+    )
+    # Old path must be visibly darker / less blue in the smear band.
+    old_worse = old_ghost < new_ghost - 8 or old_blue < new_blue - 25
+    ok = new_ok and old_worse
     if ok:
-        print("PASS: person-free plate suppresses blur self-ghost")
+        print("PASS: temporal hist suppresses dark self-ghost (old pose + smear band)")
         return 0
     print(
-        f"FAIL: new_red_mean={new_red:.2f} old_red_mean={old_red:.2f} "
-        f"(need new < old*0.4 or new < 40)"
+        f"FAIL: new_ghost={new_ghost:.2f} old_ghost={old_ghost:.2f} "
+        f"new_blue={new_blue:.2f} old_blue={old_blue:.2f} "
+        f"oldpose_luma={new_oldpose:.2f} "
+        f"(need new near blue {bg_luma:.2f} and old darker in smear band)"
     )
     return 1
 
