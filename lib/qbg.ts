@@ -74,6 +74,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   /** the downscaled copy handed to the segmenter */
   private smallCanvas?: OffscreenCanvas;
   private smallCtx?: OffscreenCanvasRenderingContext2D | null;
+  /** Scratch for leaf suppress when mask size != smallCanvas. */
+  private leafCanvas?: OffscreenCanvas;
+  private leafCtx?: OffscreenCanvasRenderingContext2D | null;
   /** reused Float32 -> alpha scratch, so a 110k-pixel mask is not a fresh
    *  allocation twenty times a second */
   private alphaBuf: Uint8ClampedArray | null = null;
@@ -156,15 +159,20 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.lastFaceAt = 0;
     try {
       const faceLocal = await head("/mediapipe/blaze_face_short_range.tflite");
-      this.face = await vision.FaceDetector.createFromOptions(fileSet, {
-        baseOptions: {
-          modelAssetPath: faceLocal
-            ? "/mediapipe/blaze_face_short_range.tflite"
-            : BLAZE_FACE_CDN,
-          delegate: "GPU",
-        },
-        runningMode: "VIDEO",
-      });
+      const facePath = faceLocal
+        ? "/mediapipe/blaze_face_short_range.tflite"
+        : BLAZE_FACE_CDN;
+      try {
+        this.face = await vision.FaceDetector.createFromOptions(fileSet, {
+          baseOptions: { modelAssetPath: facePath, delegate: "GPU" },
+          runningMode: "VIDEO",
+        });
+      } catch {
+        this.face = await vision.FaceDetector.createFromOptions(fileSet, {
+          baseOptions: { modelAssetPath: facePath, delegate: "CPU" },
+          runningMode: "VIDEO",
+        });
+      }
     } catch {
       this.face = undefined;
     }
@@ -419,14 +427,18 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
                 }
               }
               if (best) {
-                const bw = Number(best.width) || 0;
-                const bh = Number(best.height) || 0;
-                // Normalize vs mask size (same mw×mh as smallCanvas for segment).
+                // detectForVideo uses smallCanvas; mask mw×mh often differs (landscape model).
+                const sw = Math.max(1, this.smallCanvas!.width);
+                const sh = Math.max(1, this.smallCanvas!.height);
+                const ox = Number(best.originX ?? best.xMin ?? 0) || 0;
+                const oy = Number(best.originY ?? best.yMin ?? 0) || 0;
+                const bw = Number(best.width) || Math.max(0, (Number(best.xMax) || 0) - ox);
+                const bh = Number(best.height) || Math.max(0, (Number(best.yMax) || 0) - oy);
                 hull = expandFaceHull({
-                  x: (Number(best.originX) || 0) / mw,
-                  y: (Number(best.originY) || 0) / mh,
-                  w: bw / mw,
-                  h: bh / mh,
+                  x: ox / sw,
+                  y: oy / sh,
+                  w: bw / sw,
+                  h: bh / sh,
                 });
                 if (hull) {
                   this.lastFaceHull = hull;
@@ -447,15 +459,24 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         despecklePersonMask(this.smooth, mw, mh);
         // Kill plant spike / blur rectangle above the compact head mass.
         suppressCrownProtrusions(this.smooth, mw, mh);
-        // Leaf-green leaks (crown band never protected; only when smallCanvas 1:1).
-        if (
-          this.smallCtx && this.smallCanvas &&
-          this.smallCanvas.width === mw && this.smallCanvas.height === mh
-        ) {
+        // Leaf-green leaks. Scale smallCanvas to mask size when they differ.
+        if (this.smallCtx && this.smallCanvas) {
           try {
-            const id = this.smallCtx.getImageData(0, 0, mw, mh);
-            suppressLeafLeaks(this.smooth, id.data, mw, mh);
-          } catch { /* getImageData unavailable — crown+lateral+despeckle still apply */ }
+            let id: ImageData | null = null;
+            if (this.smallCanvas.width === mw && this.smallCanvas.height === mh) {
+              id = this.smallCtx.getImageData(0, 0, mw, mh);
+            } else {
+              if (!this.leafCanvas || this.leafCanvas.width !== mw || this.leafCanvas.height !== mh) {
+                this.leafCanvas = new OffscreenCanvas(mw, mh);
+                this.leafCtx = this.leafCanvas.getContext("2d", { willReadFrequently: true });
+              }
+              if (this.leafCtx) {
+                this.leafCtx.drawImage(this.smallCanvas as any, 0, 0, mw, mh);
+                id = this.leafCtx.getImageData(0, 0, mw, mh);
+              }
+            }
+            if (id) suppressLeafLeaks(this.smooth, id.data, mw, mh);
+          } catch { /* getImageData unavailable */ }
         }
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
