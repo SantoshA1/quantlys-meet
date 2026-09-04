@@ -12,6 +12,7 @@ import Search from "./Search";
 import Intelligence from "./Intelligence";
 import Prd, { PRD_CSS } from "./Prd";
 import { nextUp, inWords, stillOpen } from "@/lib/intelligence";
+import { newRoomId } from "@/lib/ids";
 
 type Meeting = {
   id: string;
@@ -375,69 +376,81 @@ export default function HostConsole() {
     if (!user || busy) return;
     setBusy(true);
     setNote("");
-    const room = "qm-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const { error } = await db().from("meetings").insert({
-      room_name: room,
-      title: title.trim() || "Quantlys Meeting",
-      created_by: user.id,
-      project: project.trim() || null,
-    });
-    setBusy(false);
-    if (error) {
-      setNote(`Could not start the meeting: ${error.message}`);
-      return;
-    }
     try {
-      await navigator.clipboard.writeText(inviteLink(room));
-    } catch {
-      /* clipboard is a nicety, never a blocker */
-    }
-    // Starting now and inviting people are the same act. Send first, THEN walk
-    // into the room — pushing the route first unmounts this page mid-request
-    // and the invitations quietly never leave.
-    if (guests.trim()) {
-      const said = await sendInvites(room, guests, new Date().toISOString());
-      if (said && !said.startsWith("Invitation sent")) {
-        setNote(`${said} The meeting is open at ${inviteLink(room)} — open it when you're ready.`);
+      // newRoomId — not crypto.randomUUID bare. Older Safari throws here and
+      // leaves the button stuck on STARTING… with the host still on /host.
+      const room = newRoomId();
+      const { error } = await db().from("meetings").insert({
+        room_name: room,
+        title: title.trim() || "Quantlys Meeting",
+        created_by: user.id,
+        project: project.trim() || null,
+      });
+      if (error) {
+        setNote(`Could not start the meeting: ${error.message}`);
         return;
       }
-      setGuests("");
+      try {
+        await navigator.clipboard.writeText(inviteLink(room));
+      } catch {
+        /* clipboard is a nicety, never a blocker */
+      }
+      // Starting now and inviting people are the same act. Send first, THEN walk
+      // into the room — pushing the route first unmounts this page mid-request
+      // and the invitations quietly never leave.
+      if (guests.trim()) {
+        const said = await sendInvites(room, guests, new Date().toISOString());
+        if (said && !said.startsWith("Invitation sent")) {
+          setNote(`${said} The meeting is open at ${inviteLink(room)} — open it when you're ready.`);
+          return;
+        }
+        setGuests("");
+      }
+      setTitle("");
+      router.push(`/room/${room}`);
+    } catch (e: any) {
+      setNote(`Could not start the meeting: ${e?.message || "Something went wrong."}`);
+    } finally {
+      setBusy(false);
     }
-    setTitle("");
-    router.push(`/room/${room}`);
   }
 
   async function startSpecSession() {
     if (!user || busy) return;
     setBusy(true);
     setNote("");
-    const room = "qm-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const { error } = await db().from("meetings").insert({
-      room_name: room,
-      title: title.trim() || "Spec session",
-      created_by: user.id,
-      project: project.trim() || title.trim() || "spec",
-    });
-    setBusy(false);
-    if (error) {
-      setNote(`Could not start the spec session: ${error.message}`);
-      return;
-    }
     try {
-      await navigator.clipboard.writeText(inviteLink(room));
-    } catch {
-      /* clipboard is a nicety, never a blocker */
-    }
-    if (guests.trim()) {
-      const said = await sendInvites(room, guests, new Date().toISOString());
-      if (said && !said.startsWith("Invitation sent")) {
-        setNote(`${said} The spec session is open at ${inviteLink(room)} — open it when you're ready.`);
+      const room = newRoomId();
+      const { error } = await db().from("meetings").insert({
+        room_name: room,
+        title: title.trim() || "Spec session",
+        created_by: user.id,
+        project: project.trim() || title.trim() || "spec",
+      });
+      if (error) {
+        setNote(`Could not start the spec session: ${error.message}`);
         return;
       }
-      setGuests("");
+      try {
+        await navigator.clipboard.writeText(inviteLink(room));
+      } catch {
+        /* clipboard is a nicety, never a blocker */
+      }
+      if (guests.trim()) {
+        const said = await sendInvites(room, guests, new Date().toISOString());
+        if (said && !said.startsWith("Invitation sent")) {
+          setNote(`${said} The spec session is open at ${inviteLink(room)} — open it when you're ready.`);
+          return;
+        }
+        setGuests("");
+      }
+      setTitle("");
+      router.push(`/room/${room}?spec=1`);
+    } catch (e: any) {
+      setNote(`Could not start the spec session: ${e?.message || "Something went wrong."}`);
+    } finally {
+      setBusy(false);
     }
-    setTitle("");
-    router.push(`/room/${room}?spec=1`);
   }
 
   // Scheduling, the small honest version: the link exists NOW and works
@@ -454,48 +467,53 @@ export default function HostConsole() {
     const iso = new Date(startAt).toISOString();
     setBusy(true);
     setNote("");
-    const room = "qm-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const name = title.trim() || "Quantlys Meeting";
-    const { error } = await db().from("meetings").insert({
-      room_name: room,
-      title: name,
-      created_by: user.id,
-      project: project.trim() || null,
-      scheduled_at: iso,
-    });
-    setBusy(false);
-    if (error) {
-      setNote(
-        error.message.includes("scheduled_at")
-          ? "Scheduling needs one more line of SQL — run the meet-sched-0-sql step, then try again."
-          : `Could not schedule: ${error.message}`
-      );
-      return;
-    }
     try {
-      await navigator.clipboard.writeText(inviteLink(room));
-    } catch {
-      /* not a blocker */
+      const room = newRoomId();
+      const name = title.trim() || "Quantlys Meeting";
+      const { error } = await db().from("meetings").insert({
+        room_name: room,
+        title: name,
+        created_by: user.id,
+        project: project.trim() || null,
+        scheduled_at: iso,
+      });
+      if (error) {
+        setNote(
+          error.message.includes("scheduled_at")
+            ? "Scheduling needs one more line of SQL — run the meet-sched-0-sql step, then try again."
+            : `Could not schedule: ${error.message}`
+        );
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(inviteLink(room));
+      } catch {
+        /* not a blocker */
+      }
+      const rule = repeat
+        ? {
+            freq: repeat === "BIWEEKLY" ? "WEEKLY" : repeat,
+            interval: repeat === "BIWEEKLY" ? 2 : 1,
+            count: Number(ends) > 0 ? Number(ends) : undefined,
+          }
+        : undefined;
+      const said = guests.trim() ? await sendInvites(room, guests, iso, rule) : "";
+      if (!said) downloadIcs(name, iso, inviteLink(room));   // no guests → you're sending it yourself
+      setTitle("");
+      setStartAt("");
+      if (said.startsWith("Invitation sent")) setGuests("");
+      setNote(
+        said
+          ? `Scheduled. ${said} The link stays good after a session, so nobody arrives to a locked door. Delete the meeting if you want the link gone.`
+          : "Scheduled. The invite link is on your clipboard and the calendar file is in your " +
+            "Downloads — send both. The link stays good after a session, so nobody arrives to a locked door. Delete the meeting if you want the link gone."
+      );
+      loadMine();
+    } catch (e: any) {
+      setNote(`Could not schedule: ${e?.message || "Something went wrong."}`);
+    } finally {
+      setBusy(false);
     }
-    const rule = repeat
-      ? {
-          freq: repeat === "BIWEEKLY" ? "WEEKLY" : repeat,
-          interval: repeat === "BIWEEKLY" ? 2 : 1,
-          count: Number(ends) > 0 ? Number(ends) : undefined,
-        }
-      : undefined;
-    const said = guests.trim() ? await sendInvites(room, guests, iso, rule) : "";
-    if (!said) downloadIcs(name, iso, inviteLink(room));   // no guests → you're sending it yourself
-    setTitle("");
-    setStartAt("");
-    if (said.startsWith("Invitation sent")) setGuests("");
-    setNote(
-      said
-        ? `Scheduled. ${said} The link stays good after a session, so nobody arrives to a locked door. Delete the meeting if you want the link gone.`
-        : "Scheduled. The invite link is on your clipboard and the calendar file is in your " +
-          "Downloads — send both. The link stays good after a session, so nobody arrives to a locked door. Delete the meeting if you want the link gone."
-    );
-    loadMine();
   }
 
   // "Will my next meeting actually produce notes in my inbox?" — asked before
@@ -1062,7 +1080,9 @@ const QH = `
   padding: 22px 26px; margin-bottom: 20px; }
 .qh-panel::before { content: ""; position: absolute; top: -1px; left: -1px; width: 14px; height: 14px;
   border-top: 2px solid var(--accent, #00A99D); border-left: 2px solid var(--accent, #00A99D); }
-.qh-launch { padding: 26px 30px 24px; }
+.qh-launch { padding: 26px 30px 24px; position: sticky; top: 56px; z-index: 20;
+  /* Stay visible while scrolling the PRD / meetings below — the Launch CTAs
+     are the way into a room; burying them under Prd reads as "can't host". */ }
 .qh-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .24em;
   color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
 .qh-h1 { font-size: 30px; font-weight: 600; margin: 2px 0 8px; letter-spacing: -0.01em; }

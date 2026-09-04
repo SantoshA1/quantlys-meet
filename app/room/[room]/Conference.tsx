@@ -33,6 +33,7 @@ import { BAR, dockAnchor } from "@/lib/dock";
 import { surfaceFor, penLabel } from "@/lib/draw";
 import { getBoardStrokes } from "@/lib/boardshare";
 import { toWorkflow } from "@/lib/workflow";
+import { screenShareCaptureDefaults } from "@/lib/share";
 import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
@@ -472,13 +473,14 @@ export default function Conference({ room, spec = false }: { room: string; spec?
             deviceId: choice.camId || undefined,
             resolution: VideoPresets.h720.resolution,
           },
-          // Sharing this meeting window plays the share back into itself.
-          // Exclude the current tab from the picker; the local preview is
-          // also covered (ConferenceStage) so a window/screen share of this
-          // meeting cannot nest.
-          screenShareCaptureDefaults: {
-            selfBrowserSurface: "exclude",
-          },
+          // Sharing this meeting tab plays the share back into itself.
+          // Exclude the current tab from the picker where supported.
+          // Other browsers ignore unknown dictionary members — do not
+          // UA-gate. Local preview is never covered; host always sees the share.
+          ...((() => {
+            const d = screenShareCaptureDefaults();
+            return d ? { screenShareCaptureDefaults: d } : ({} as Record<string, never>);
+          })()),
         }}
         onError={(e) => {
           const err = e as any;
@@ -542,12 +544,12 @@ function MediaFailBanner({
   );
 }
 
-/** Cover the local screen-share tile so sharing this window cannot nest.
- *  The published track is unchanged — everyone else still sees the real share. */
+/** Stage wrapper. Local screen-share preview is never covered — the host
+ *  must see what is being shared. Hall-of-mirrors prevention is the picker
+ *  exclude (screenShareCaptureDefaults), not a blank tile. */
 function ConferenceStage() {
-  const { isScreenShareEnabled } = useLocalParticipant();
   return (
-    <div className={isScreenShareEnabled ? "qmr-conf qmr-self-share" : "qmr-conf"}>
+    <div className="qmr-conf">
       <VideoConference />
       <Drawing />
     </div>
@@ -2494,25 +2496,6 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
   .qmr-bar { padding: 6px 10px; }
 }
 .qmr-conf { flex: 1 1 auto; min-height: 0; min-width: 0; position: relative; }
-/* FIELD 2026-08-30: sharing this meeting window captured its own preview
-   (a hall of mirrors). Cover only the local screen-share tile; the camera
-   strip stays. The published track is untouched. */
-.qmr-self-share .lk-focus-layout > .lk-participant-tile,
-.qmr-self-share .lk-participant-tile[data-lk-local-participant="true"][data-lk-source="screen_share"] {
-  position: relative;
-}
-.qmr-self-share .lk-focus-layout > .lk-participant-tile video,
-.qmr-self-share .lk-participant-tile[data-lk-local-participant="true"][data-lk-source="screen_share"] video {
-  opacity: 0;
-}
-.qmr-self-share .lk-focus-layout > .lk-participant-tile::after,
-.qmr-self-share .lk-participant-tile[data-lk-local-participant="true"][data-lk-source="screen_share"]::after {
-  content: "You're sharing this window";
-  position: absolute; inset: 0; z-index: 3;
-  display: flex; align-items: center; justify-content: center;
-  background: #0b0d13; color: #cfd6e4; font-size: 15px;
-  letter-spacing: .02em;
-}
 /* Both of these used to be "flex-basis: 100%" inside the header, so opening
    "Manage people" made the header a second row tall and pushed the video down
    — the meeting itself got smaller because you asked who was in it. They
