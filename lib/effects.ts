@@ -73,12 +73,12 @@ export function featherPx(outputHeight: number): number {
   return Math.max(1, Math.min(2, Math.round(h * 0.0014)));
 }
 
-/** Segmentation cadence. FIELD 2026-09-04 screenshots: a 20Hz mask under
- *  30fps video left a translucent ghost of the head/ear beside a turning
- *  person — temporal lag the eye reads as motion smear. Mask every frame at
- *  30fps so the edge can keep up; EMA + harden still kill crawl without
+/** Segmentation cadence. FIELD 2026-09-04 screenshots: a 30Hz mask under
+ *  a ~60fps camera left a one-frame ghost silhouette beside a turning head -
+ *  temporal lag the eye reads as motion smear. Segment every paint frame at
+ *  60Hz so the edge can keep up; EMA + harden still kill crawl without
  *  needing a slower cadence as camouflage. */
-export const SEGMENT_HZ = 30;
+export const SEGMENT_HZ = 60;
 
 export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMENT_HZ): boolean {
   const rate = Number(hz) > 0 ? Number(hz) : SEGMENT_HZ;
@@ -90,12 +90,63 @@ export function shouldSegment(nowMs: number, lastMs: number, hz: number = SEGMEN
 /** How old a mask may be (ms) before paintMasked is unsafe — painting a
  *  live VideoFrame with a silhouette from two poses ago is the ghost trail
  *  beside a turning head. Past this, prefer blur-all over a wrong matte. */
-export const MASK_MAX_AGE_MS = 66;
+export const MASK_MAX_AGE_MS = 50;
 
 export function maskIsFresh(nowMs: number, maskAtMs: number, maxAgeMs: number = MASK_MAX_AGE_MS): boolean {
   if (!Number.isFinite(nowMs) || !Number.isFinite(maskAtMs) || maskAtMs <= 0) return false;
   return nowMs - maskAtMs <= Math.max(0, Number(maxAgeMs) || 0);
 }
+
+/** Fraction of output height used to dilate the person silhouette before
+ *  scrubbing them from the blur plate. Dilate so soft matte edges do not
+ *  leave a rim of person color that the blur then smears as a ghost/halo. */
+export const PLATE_DILATE_FRAC = 0.012;
+
+export function plateDilatePx(outputHeight: number): number {
+  const h = Number(outputHeight) || 0;
+  if (h <= 0) return 4;
+  return Math.max(4, Math.min(16, Math.round(h * PLATE_DILATE_FRAC)));
+}
+
+/** Tiny sample size for the person-fill mush: downscale the full frame,
+ *  then upscale back under the dilated silhouette so the blur plate has
+ *  room-colored pixels where the person was, not a smeared double. */
+export function plateFillSize(W: number, H: number): { w: number; h: number } {
+  const w = Number(W) || 0, h = Number(H) || 0;
+  if (w <= 0 || h <= 0) return { w: 16, h: 16 };
+  const tw = Math.max(12, Math.min(48, Math.round(w / 28)));
+  const th = Math.max(12, Math.round(tw * (h / w)));
+  return { w: tw, h: th };
+}
+
+/** Mean luma (0.299R + 0.587G + 0.114B) inside a pixel box of an RGBA buffer.
+ *  Returns NaN if the box is empty or inputs are unusable. */
+export function boxMeanLuma(
+  rgba: ArrayLike<number> | null | undefined,
+  W: number,
+  H: number,
+  box: { x: number; y: number; w: number; h: number },
+): number {
+  const width = Number(W) || 0, height = Number(H) || 0;
+  if (!rgba || width <= 0 || height <= 0) return NaN;
+  const x0 = Math.max(0, Math.floor(Number(box?.x) || 0));
+  const y0 = Math.max(0, Math.floor(Number(box?.y) || 0));
+  const x1 = Math.min(width, Math.ceil(x0 + (Number(box?.w) || 0)));
+  const y1 = Math.min(height, Math.ceil(y0 + (Number(box?.h) || 0)));
+  if (x1 <= x0 || y1 <= y0) return NaN;
+  let sum = 0, n = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * width + x) * 4;
+      const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+      if (r == null || g == null || b == null) continue;
+      sum += 0.299 * (r as number) + 0.587 * (g as number) + 0.114 * (b as number);
+      n++;
+    }
+  }
+  return n ? sum / n : NaN;
+}
+
 
 /** Temporal smoothing: this frame's mask, mixed into the last one.
  *

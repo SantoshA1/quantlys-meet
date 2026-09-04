@@ -16,7 +16,7 @@
 //      this is what removes the crawling shimmer around hair and shoulders.
 //   3. The mask is feathered proportionally to the output, not by a fixed
 //      3px that is a hard line at 720p.
-//   4. Segmentation runs at 20Hz under 30fps of video, with buffers reused
+//   4. Segmentation runs every paint frame (coalesce under 8ms), with buffers reused
 //      and zero per-frame allocation of ImageBitmaps.
 //   5. Frames that arrive while one is in flight are dropped, not queued —
 //      a queue on live video is latency that compounds.
@@ -29,12 +29,13 @@
 import { ProcessorWrapper, VideoTransformer } from "@livekit/track-processors";
 import type { ImageSegmenter } from "@mediapipe/tasks-vision";
 import {
-  BLUR_PX, BACKDROP_DOF_PX, shouldSegment, blendMask,
+  BLUR_PX, BACKDROP_DOF_PX, blendMask,
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   maskBlurPx, ERODE_POWER, needsInvert,
   confidenceToAlpha, hardenMaskAlpha, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
+  plateDilatePx, plateFillSize,
 } from "./effects";
 
 export type QbgOptions = {
@@ -77,6 +78,16 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   /** person cutout layer for source-over composite (kills destination-over halo) */
   private personCanvas?: OffscreenCanvas;
   private personCtx?: OffscreenCanvasRenderingContext2D | null;
+  /** Person-free blur plate: scrub the subject before blur so a soft matte
+   *  cannot reveal a smeared double as ghost/halo. */
+  private plateCanvas?: OffscreenCanvas;
+  private plateCtx?: OffscreenCanvasRenderingContext2D | null;
+  private fillCanvas?: OffscreenCanvas;
+  private fillCtx?: OffscreenCanvasRenderingContext2D | null;
+  private dilCanvas?: OffscreenCanvas;
+  private dilCtx?: OffscreenCanvasRenderingContext2D | null;
+  private stampCanvas?: OffscreenCanvas;
+  private stampCtx?: OffscreenCanvasRenderingContext2D | null;
   /** Which class the mask paints opaque. MEASURED, never assumed — see the
    *  post-mortem above maskPolarity() in lib/effects.ts. */
   private polarity: Polarity | null = null;
@@ -220,14 +231,17 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     }
   }
 
-  /** Run the model at SEGMENT_HZ on a downscaled copy of the SAME frame
-   *  about to be painted, then mix the result into the smoothed mask.
-   *  Synchronous by design — segmentForVideo's callback fires inline, and
+  /** Run the model on a downscaled copy of the SAME frame about to be
+   *  painted, then mix the result into the smoothed mask. Segment every
+   *  paint frame so a ~60fps camera never rides a one-frame-stale
+   *  silhouette; only coalesce back-to-back paints within 8ms.
+   *  Synchronous by design - segmentForVideo's callback fires inline, and
    *  awaiting anything here is how the stock version ended up with a mask
    *  that belonged to a frame already gone. */
   private segmentFrame(src: CanvasImageSource, W: number, H: number) {
     const now = performance.now();
-    if (!this.seg || !shouldSegment(now, this.lastSegAt)) return;
+    if (!this.seg) return;
+    if (this.lastSegAt && now - this.lastSegAt < 8) return;
     // Prefer the source's intrinsic size; fall back to the output canvas.
     const vw = Number((src as any).videoWidth || (src as any).codedWidth || (src as any).width || W) || W;
     const vh = Number((src as any).videoHeight || (src as any).codedHeight || (src as any).height || H) || H;
@@ -397,6 +411,97 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     return this.blurCanvas;
   }
 
+  /** Dilate the person matte so the plate scrub covers soft edge pixels
+   *  that would otherwise leave person color for the blur to smear. */
+  private dilateSilhouette(W: number, H: number): OffscreenCanvas | null {
+    if (!this.maskCanvas) return null;
+    if (!this.dilCanvas || this.dilCanvas.width !== W || this.dilCanvas.height !== H) {
+      this.dilCanvas = new OffscreenCanvas(W, H);
+      this.dilCtx = this.dilCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const d = this.dilCtx;
+    if (!d) return null;
+    const r = plateDilatePx(H);
+    d.save();
+    d.globalCompositeOperation = "copy";
+    d.filter = "none";
+    d.drawImage(this.maskCanvas as any, 0, 0, W, H);
+    // Normalise polarity so white alpha always means THE PERSON.
+    if (needsInvert(this.polarity || "background")) {
+      d.globalCompositeOperation = "source-out";
+      d.fillStyle = "#000";
+      d.fillRect(0, 0, W, H);
+    }
+    // Blur expands the footprint (dilate). RGB stays white so the soft rim
+    // cannot pick up a dark fringe.
+    d.globalCompositeOperation = "copy";
+    d.filter = `blur(${r}px)`;
+    d.drawImage(this.dilCanvas as any, 0, 0, W, H);
+    d.filter = "none";
+    d.restore();
+    return this.dilCanvas;
+  }
+
+  /** Blur a plate where the person has been replaced by upscaled room-color
+   *  mush. Blurring the live frame alone keeps a smeared double of the
+   *  subject that soft matte edges reveal as ghost/halo. */
+  private personFreeBlur(
+    frame: CanvasImageSource, W: number, H: number, radius: number,
+  ): OffscreenCanvas | null {
+    if (!this.plateCanvas || this.plateCanvas.width !== W || this.plateCanvas.height !== H) {
+      this.plateCanvas = new OffscreenCanvas(W, H);
+      this.plateCtx = this.plateCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const plate = this.plateCtx;
+    if (!plate) return this.blurred(frame, W, H, radius);
+
+    const fill = plateFillSize(W, H);
+    if (!this.fillCanvas || this.fillCanvas.width !== fill.w || this.fillCanvas.height !== fill.h) {
+      this.fillCanvas = new OffscreenCanvas(fill.w, fill.h);
+      this.fillCtx = this.fillCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    if (!this.stampCanvas || this.stampCanvas.width !== W || this.stampCanvas.height !== H) {
+      this.stampCanvas = new OffscreenCanvas(W, H);
+      this.stampCtx = this.stampCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const fc = this.fillCtx, sc = this.stampCtx;
+    const dil = this.dilateSilhouette(W, H);
+    if (!fc || !sc || !dil) return this.blurred(frame, W, H, radius);
+
+    // 1. full frame onto the plate
+    plate.save();
+    plate.globalCompositeOperation = "copy";
+    plate.filter = "none";
+    plate.drawImage(frame as any, 0, 0, W, H);
+    plate.restore();
+
+    // 2. tiny downscale - average room color, person becomes a few mush pixels
+    fc.save();
+    fc.globalCompositeOperation = "copy";
+    fc.filter = "none";
+    fc.drawImage(frame as any, 0, 0, fill.w, fill.h);
+    fc.restore();
+
+    // 3. upscale mush, keep only under the dilated person matte
+    sc.save();
+    sc.globalCompositeOperation = "copy";
+    sc.filter = "none";
+    sc.drawImage(this.fillCanvas as any, 0, 0, W, H);
+    sc.globalCompositeOperation = "destination-in";
+    sc.drawImage(dil as any, 0, 0, W, H);
+    sc.restore();
+
+    // 4. cover the person on the plate with that mush
+    plate.save();
+    plate.globalCompositeOperation = "source-over";
+    plate.filter = "none";
+    plate.drawImage(this.stampCanvas as any, 0, 0, W, H);
+    plate.restore();
+
+    // 5. blur the person-free plate
+    return this.blurred(this.plateCanvas, W, H, radius);
+  }
+
   /** The good path: person sharp, background replaced, edge eroded and
    *  feathered. Background is painted FULLY FIRST, then the person cutout
    *  is source-over'd on top. destination-over under a soft black-fringed
@@ -431,11 +536,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       if (src) drawCoverSoft(ctx, src, W, H, BACKDROP_DOF_PX);
       else if (this.bg) drawCoverSoft(ctx, this.bg, W, H, BACKDROP_DOF_PX);
       else {
-        const soft = this.blurred(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
+        const soft = this.personFreeBlur(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
         if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
       }
     } else {
-      const soft = this.blurred(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
+      const soft = this.personFreeBlur(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
       if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
       else {
         ctx.filter = `blur(${this.opts.blurRadius || BLUR_PX}px)`;
