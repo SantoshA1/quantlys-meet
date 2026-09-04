@@ -34,7 +34,7 @@ import {
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   maskBlurPx, ERODE_POWER, needsInvert,
   confidenceToAlpha, hardenMaskAlpha, adaptiveSmoothAlpha,
-  overscanRect, bokehPass,
+  overscanRect, bokehPass, maskIsFresh,
 } from "./effects";
 
 export type QbgOptions = {
@@ -72,6 +72,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private blurCtx?: OffscreenCanvasRenderingContext2D | null;
   private lastSegAt = 0;
   private haveMask = false;
+  /** performance.now() when the smoothed mask last landed — freshness gate */
+  private maskAt = 0;
+  /** person cutout layer for source-over composite (kills destination-over halo) */
+  private personCanvas?: OffscreenCanvas;
+  private personCtx?: OffscreenCanvasRenderingContext2D | null;
   /** Which class the mask paints opaque. MEASURED, never assumed — see the
    *  post-mortem above maskPolarity() in lib/effects.ts. */
   private polarity: Polarity | null = null;
@@ -119,6 +124,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.teardownVideo();
     this.smooth = null;
     this.haveMask = false;
+    this.maskAt = 0;
   }
 
   async update(opts: QbgOptions): Promise<void> {
@@ -186,9 +192,14 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       }
       const W = this.canvas.width, H = this.canvas.height;
 
-      if (this.inputVideo) this.segment(this.inputVideo, W, H);
+      // Segment THIS VideoFrame — not this.inputVideo. The hidden video
+      // element lags the insertable-stream frame by one or more poses; that
+      // desync is the translucent ghost beside a turning head.
+      this.segmentFrame(frame, W, H);
 
-      const paint = warmupPaint({ wantsEffect: true, hasMask: this.haveMask });
+      const now = performance.now();
+      const fresh = this.haveMask && maskIsFresh(now, this.maskAt);
+      const paint = warmupPaint({ wantsEffect: true, hasMask: fresh });
       if (paint === "masked") this.paintMasked(frame, W, H);
       else this.paintBlurAll(frame, W, H);
 
@@ -209,14 +220,17 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     }
   }
 
-  /** Run the model at SEGMENT_HZ on a downscaled copy, then mix the result
-   *  into the smoothed mask. Synchronous by design — segmentForVideo's
-   *  callback fires inline, and awaiting anything here is how the stock
-   *  version ended up with a mask that belonged to a frame already gone. */
-  private segment(video: HTMLVideoElement, W: number, H: number) {
+  /** Run the model at SEGMENT_HZ on a downscaled copy of the SAME frame
+   *  about to be painted, then mix the result into the smoothed mask.
+   *  Synchronous by design — segmentForVideo's callback fires inline, and
+   *  awaiting anything here is how the stock version ended up with a mask
+   *  that belonged to a frame already gone. */
+  private segmentFrame(src: CanvasImageSource, W: number, H: number) {
     const now = performance.now();
     if (!this.seg || !shouldSegment(now, this.lastSegAt)) return;
-    const vw = video.videoWidth || W, vh = video.videoHeight || H;
+    // Prefer the source's intrinsic size; fall back to the output canvas.
+    const vw = Number((src as any).videoWidth || (src as any).codedWidth || (src as any).width || W) || W;
+    const vh = Number((src as any).videoHeight || (src as any).codedHeight || (src as any).height || H) || H;
     if (!vw || !vh) return;
     const s = segmentSize(vw, vh);
 
@@ -227,7 +241,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       this.maskImage = undefined;
     }
     if (!this.smallCtx) return;
-    this.smallCtx.drawImage(video, 0, 0, s.w, s.h);
+    this.smallCtx.drawImage(src as any, 0, 0, s.w, s.h);
 
     this.lastSegAt = now;
     try {
@@ -268,14 +282,17 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
           this.maskCtx = this.maskCanvas.getContext("2d", { willReadFrequently: false });
           this.maskImage = new ImageData(mw, mh);
         }
-        // The mask goes into the canvas as pure alpha — the colour channels
-        // are irrelevant to every composite below, so writing only alpha is
-        // a quarter of the memory traffic of the stock RGBA copy.
+        // Alpha carries the matte. RGB must be WHITE, not left at 0: a
+        // subsequent canvas blur() of black+alpha smears a dark fringe into
+        // the soft edge — that is the halo around the cap in the screenshots.
         const px = this.maskImage!.data;
         const sm = this.smooth!;
-        for (let i = 0, j = 3; i < sm.length; i++, j += 4) px[j] = sm[i];
+        for (let i = 0, j = 0; i < sm.length; i++, j += 4) {
+          px[j] = 255; px[j + 1] = 255; px[j + 2] = 255; px[j + 3] = sm[i];
+        }
         this.maskCtx!.putImageData(this.maskImage!, 0, 0);
         this.haveMask = true;
+        this.maskAt = performance.now();
 
         // Which half of this mask is the person? Measured off the mask
         // itself every time one lands, with the standing answer kept when a
@@ -381,42 +398,54 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   }
 
   /** The good path: person sharp, background replaced, edge eroded and
-   *  feathered. Composite order matters and is the reason this reads as a
-   *  lens rather than a sticker. */
+   *  feathered. Background is painted FULLY FIRST, then the person cutout
+   *  is source-over'd on top. destination-over under a soft black-fringed
+   *  matte was the dark halo around hat and shoulders. */
   private paintMasked(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
     const sil = this.silhouette(W, H);
     if (!sil) { this.paintBlurAll(frame, W, H); return; }
+
+    if (!this.personCanvas || this.personCanvas.width !== W || this.personCanvas.height !== H) {
+      this.personCanvas = new OffscreenCanvas(W, H);
+      this.personCtx = this.personCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const p = this.personCtx;
+    if (!p) { this.paintBlurAll(frame, W, H); return; }
+
+    // Person cutout on its own layer (sil alpha × live frame).
+    p.save();
+    p.globalCompositeOperation = "copy";
+    p.filter = "none";
+    p.drawImage(sil as any, 0, 0, W, H);
+    p.globalCompositeOperation = "source-in";
+    p.drawImage(frame as any, 0, 0, W, H);
+    p.restore();
+
     ctx.save();
-
-    // 1. the prepared silhouette — always the person, never the room
-    ctx.globalCompositeOperation = "copy";
     ctx.filter = "none";
-    ctx.drawImage(sil as any, 0, 0, W, H);
-
-    // 2. the person, punched out of the live frame by it
-    ctx.globalCompositeOperation = "source-in";
-    ctx.drawImage(frame as any, 0, 0, W, H);
-
-    // 3. the background, painted behind them
-    ctx.globalCompositeOperation = "destination-over";
+    // 1. full background
+    ctx.globalCompositeOperation = "copy";
     if ((this.opts.kind === "image" || this.opts.kind === "video") && (this.bg || this.bgVideo)) {
-      // JUST the backdrop — never an under-blur of the real room (that buried
-      // every image effect). Soft DOF so the backdrop sits behind the person.
       const src: any = this.bgVideo && this.bgVideo.readyState >= 2 ? this.bgVideo : this.bg;
       if (src) drawCoverSoft(ctx, src, W, H, BACKDROP_DOF_PX);
       else if (this.bg) drawCoverSoft(ctx, this.bg, W, H, BACKDROP_DOF_PX);
+      else {
+        const soft = this.blurred(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
+        if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
+      }
     } else {
       const soft = this.blurred(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
       if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
       else {
-        // The small canvas could not be made — blur in place rather than
-        // publish a sharp room behind somebody who asked for privacy.
         ctx.filter = `blur(${this.opts.blurRadius || BLUR_PX}px)`;
         ctx.drawImage(frame as any, 0, 0, W, H);
         ctx.filter = "none";
       }
     }
+    // 2. person on top — soft edge blends into bg without a dark under-fringe
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(this.personCanvas as any, 0, 0, W, H);
     ctx.restore();
   }
 
