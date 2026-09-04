@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask, suppressLeafLeaks,
   SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
@@ -372,6 +372,16 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         lateralPersonGate(this.smooth, mw, mh);
         // Drop tiny flecks that somehow survive open+island+lateral.
         despecklePersonMask(this.smooth, mw, mh);
+        // Leaf-green leaks outside head box (only when smallCanvas aligns 1:1 with mask).
+        if (
+          this.smallCtx && this.smallCanvas &&
+          this.smallCanvas.width === mw && this.smallCanvas.height === mh
+        ) {
+          try {
+            const id = this.smallCtx.getImageData(0, 0, mw, mh);
+            suppressLeafLeaks(this.smooth, id.data, mw, mh);
+          } catch { /* getImageData unavailable — lateral+despeckle still apply */ }
+        }
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
@@ -617,7 +627,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         let ok = false;
         if ((this.opts.kind === "image" || this.opts.kind === "video") && (this.bg || this.bgVideo)) {
           const src: any = this.bgVideo && this.bgVideo.readyState >= 2 ? this.bgVideo : this.bg;
-          if (src) ok = this.gl.drawImageBg(frame as any, src, 0.12);
+          if (src) ok = this.gl.drawImageBg(frame as any, src, 0);
         } else {
           ok = this.gl.drawBlur(frame as any, this.opts.blurRadius || BLUR_PX);
         }

@@ -37,7 +37,17 @@ out vec4 outColor;
 uniform sampler2D u_frame;
 uniform sampler2D u_mask;
 uniform vec2 u_texel;   // 1/width, 0 for H
+uniform vec2 u_maskTexel; // 1/W, 1/H for 4-neigh erode
 uniform float u_radius; // blur radius in source pixels at this pass size
+
+float sampleMaskEroded(vec2 uv) {
+  float m = texture(u_mask, uv).r;
+  m = min(m, texture(u_mask, uv + vec2(u_maskTexel.x, 0.0)).r);
+  m = min(m, texture(u_mask, uv - vec2(u_maskTexel.x, 0.0)).r);
+  m = min(m, texture(u_mask, uv + vec2(0.0, u_maskTexel.y)).r);
+  m = min(m, texture(u_mask, uv - vec2(0.0, u_maskTexel.y)).r);
+  return m;
+}
 
 void main() {
   // Fixed 17-tap Gaussian; sigma ~ radius/3. Distances in texels.
@@ -49,7 +59,7 @@ void main() {
     float fi = float(i);
     float off = fi * (u_radius / 8.0);
     vec2 uv = v_uv + vec2(off * u_texel.x, off * u_texel.y);
-    float m = texture(u_mask, uv).r;
+    float m = sampleMaskEroded(uv);
     // Harder room exclusion: mid-mask near person contributes almost nothing
     // to the blur plate (kills dark clothing fringe into blur).
     float room = 1.0 - smoothstep(0.15, 0.45, m);
@@ -74,7 +84,17 @@ out vec4 outColor;
 uniform sampler2D u_frame;
 uniform sampler2D u_mask;
 uniform vec2 u_texel;
+uniform vec2 u_maskTexel; // 1/W, 1/H for 4-neigh erode
 uniform float u_radius;
+
+float sampleMaskEroded(vec2 uv) {
+  float m = texture(u_mask, uv).r;
+  m = min(m, texture(u_mask, uv + vec2(u_maskTexel.x, 0.0)).r);
+  m = min(m, texture(u_mask, uv - vec2(u_maskTexel.x, 0.0)).r);
+  m = min(m, texture(u_mask, uv + vec2(0.0, u_maskTexel.y)).r);
+  m = min(m, texture(u_mask, uv - vec2(0.0, u_maskTexel.y)).r);
+  return m;
+}
 
 void main() {
   float sigma = max(0.5, u_radius / 3.0);
@@ -85,7 +105,7 @@ void main() {
     float fi = float(i);
     float off = fi * (u_radius / 8.0);
     vec2 uv = v_uv + vec2(off * u_texel.x, off * u_texel.y);
-    float m = texture(u_mask, uv).r;
+    float m = sampleMaskEroded(uv);
     // Harder room exclusion: mid-mask near person contributes almost nothing
     // to the blur plate (kills dark clothing fringe into blur).
     float room = 1.0 - smoothstep(0.15, 0.45, m);
@@ -176,19 +196,30 @@ uniform sampler2D u_bg;      // blur plate OR virtual bg (already cover-fitted i
 uniform sampler2D u_mask;
 uniform float u_useVirtual;  // 1.0 = sample u_bg as virtual cover, 0.0 = blur plate
 uniform vec4 u_cover;        // sx, sy, sw, sh in bg texture UV
-uniform float u_softEdge;    // light wrap strength 0..1
+uniform float u_softEdge;    // light wrap strength 0..1 (blur only; virtual forces 0)
 uniform float u_flipY;       // 1.0 if video textures need Y flip
+uniform vec2 u_texel;        // 1/W, 1/H for 1-texel morphological erode
 
 vec2 maybeFlip(vec2 uv) {
   return u_flipY > 0.5 ? vec2(uv.x, 1.0 - uv.y) : uv;
 }
 
+float sampleMaskEroded(vec2 uv) {
+  float m = texture(u_mask, uv).r;
+  m = min(m, texture(u_mask, uv + vec2(u_texel.x, 0.0)).r);
+  m = min(m, texture(u_mask, uv - vec2(u_texel.x, 0.0)).r);
+  m = min(m, texture(u_mask, uv + vec2(0.0, u_texel.y)).r);
+  m = min(m, texture(u_mask, uv - vec2(0.0, u_texel.y)).r);
+  return m;
+}
+
 void main() {
   vec2 uv = maybeFlip(v_uv);
   vec4 sharp = texture(u_sharp, uv);
-  float mask = texture(u_mask, uv).r;
-  // v3: pull matte edge slightly inward to kill chair fluff / dark cap fringe.
-  float person = smoothstep(0.48, 0.62, mask);
+  // 1-texel morphological erode: shrinks chair fluff / plant attached to silhouette.
+  float mask = sampleMaskEroded(uv);
+  // Inward erode via tighter smoothstep — kills room rim + plant fringe on cap.
+  float person = smoothstep(0.52, 0.68, mask);
 
   vec4 bg;
   if (u_useVirtual > 0.5) {
@@ -198,18 +229,25 @@ void main() {
     bg = texture(u_bg, v_uv);
   }
 
-  // Optional light wrap: slight bg bleed at the soft edge (Meet-style).
+  // Light wrap only for blur; virtual wrap added weird edge glow.
   float edge = person * (1.0 - person) * 4.0;
-  float wrap = clamp(u_softEdge, 0.0, 1.0) * edge * 0.18;
+  float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.18);
   float a = clamp(person - wrap, 0.0, 1.0);
 
-  // Stronger dark-fringe decontam at mid-alpha (cap/mesh chair edge).
+  // Mid-edge spill suppression (dark fringe + chroma/plant + color distance).
   float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
   float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
   float mid = step(0.04, a) * step(a, 0.92);
-  // Stronger when sharp is much darker than bg (cap / mesh chair fringe).
   float darkFringe = mid * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
-  vec3 sharpUse = mix(sharp.rgb, mix(sharp.rgb, bg.rgb, 0.55), darkFringe);
+  float greenExcess = sharp.g - max(sharp.r, sharp.b);
+  float greenSpill = mid * smoothstep(0.02, 0.12, greenExcess);
+  float colorDist = length(sharp.rgb - bg.rgb);
+  // Skin-like: r mildly above g and b — do not pull skin toward bg.
+  float skinLike = step(sharp.g + 0.02, sharp.r) * step(sharp.b, sharp.r);
+  float colorSpill = mid * (1.0 - skinLike) * smoothstep(0.15, 0.45, colorDist);
+  a = a * (1.0 - greenSpill * 0.9);
+  vec3 sharpUse = sharp.rgb;
+  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.55, max(greenSpill * 0.75, colorSpill * 0.5)));
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);
@@ -526,7 +564,7 @@ export class QbgGl {
   drawImageBg(
     frame: CanvasImageSource,
     bg: CanvasImageSource,
-    softEdge: number = 0.12,
+    softEdge: number = 0,
   ): boolean {
     if (!this.isReady || !this.gl || !this.canvas) return false;
     if (this.w < 1 || this.h < 1) return false;
@@ -698,6 +736,7 @@ export class QbgGl {
     const locFrame = gl.getUniformLocation(prog, "u_frame");
     const locMask = gl.getUniformLocation(prog, "u_mask");
     const locTexel = gl.getUniformLocation(prog, "u_texel");
+    const locMaskTexel = gl.getUniformLocation(prog, "u_maskTexel");
     const locRadius = gl.getUniformLocation(prog, "u_radius");
 
     gl.activeTexture(gl.TEXTURE0);
@@ -709,6 +748,7 @@ export class QbgGl {
     gl.uniform1i(locMask, 1);
 
     gl.uniform2f(locTexel, texelX, texelY);
+    gl.uniform2f(locMaskTexel, 1 / Math.max(1, this.w), 1 / Math.max(1, this.h));
     gl.uniform1f(locRadius, radius);
   }
 
@@ -730,6 +770,7 @@ export class QbgGl {
     const locCover = gl.getUniformLocation(this.composite!, "u_cover");
     const locSoft = gl.getUniformLocation(this.composite!, "u_softEdge");
     const locFlip = gl.getUniformLocation(this.composite!, "u_flipY");
+    const locTexel = gl.getUniformLocation(this.composite!, "u_texel");
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
@@ -750,6 +791,7 @@ export class QbgGl {
     gl.uniform1f(locUse, virtual ? 1 : 0);
     gl.uniform1f(locSoft, Math.max(0, Math.min(1, Number(softEdge) || 0)));
     gl.uniform1f(locFlip, 0);
+    gl.uniform2f(locTexel, 1 / Math.max(1, W), 1 / Math.max(1, H));
 
     if (virtual && bgSrc) {
       const iw = Number((bgSrc as any).videoWidth || (bgSrc as any).width || W) || W;
