@@ -67,10 +67,10 @@ export const IMAGE_UNDERBLUR_PX = 0;
 export function featherPx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
   if (h <= 0) return 1;
-  // FIELD 2026-08-24 / 2026-09-04: thick feather = sticker halo. Post-#18
-  // screenshots still showed a dark fringe around the cap — soft edge was
-  // still too wide. Hold to a 1px AA band at 720p (~0.14% of height).
-  return Math.max(1, Math.min(2, Math.round(h * 0.0014)));
+  // FIELD 2026-09-04 v6: soft matte dissolved the WHOLE silhouette into the
+  // blur (waxy face, not just an edge halo). Feather is AA only — 1px at
+  // every meeting resolution. Zoom/Meet keep the subject pin-sharp; we match.
+  return 1;
 }
 
 /** Segmentation cadence. FIELD 2026-09-04 screenshots: a 30Hz mask under
@@ -102,14 +102,16 @@ export function maskIsFresh(nowMs: number, maskAtMs: number, maxAgeMs: number = 
  *  leave a rim of person color that the blur then smears as a ghost/halo. */
 /** Dilate fraction used by the temporal hist update path - keep person
  *  fringes out of hist so they cannot smear into a self-ghost. */
-export const HIST_DILATE = 0.02;
+export const HIST_DILATE = 0.028;
 
 export const PLATE_DILATE_FRAC = HIST_DILATE;
 
 export function plateDilatePx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
-  if (h <= 0) return 4;
-  return Math.max(4, Math.min(16, Math.round(h * PLATE_DILATE_FRAC)));
+  if (h <= 0) return 6;
+  // Generous exclusion so dark clothing / cap never writes into hist near
+  // the edge (that fringe was the dark self-ghost after blur).
+  return Math.max(6, Math.min(20, Math.round(h * PLATE_DILATE_FRAC)));
 }
 
 /** Tiny sample size for the person-fill mush: downscale the full frame,
@@ -244,10 +246,21 @@ export function blendMask(
  *  There is deliberately no "hold" state. */
 export function warmupPaint(s: {
   wantsEffect: boolean;
+  /** fresh mask this frame */
   hasMask: boolean;
+  /** any silhouette has landed (may be one pose old) */
+  haveMask?: boolean;
+  /** temporal room plate is seeded */
+  histReady?: boolean;
 }): "raw" | "blur-all" | "masked" {
   if (!s.wantsEffect) return "raw";
-  return s.hasMask ? "masked" : "blur-all";
+  // FIELD 2026-09-04 v6: paintBlurAll when the mask was briefly stale waxed
+  // the ENTIRE face (Gaussian over the subject). Zoom/Meet never publish a
+  // blurred person. Prefer last matte; if we only have hist, passthrough
+  // sharp camera rather than smear the subject. blur-all only on cold start.
+  if (s.hasMask || s.haveMask) return "masked";
+  if (s.histReady) return "raw";
+  return "blur-all";
 }
 
 /** The mask is computed on a downscaled copy of the frame — the model's own
@@ -322,6 +335,12 @@ export function confidenceToAlpha(c: number, contrast: number = MASK_CONTRAST): 
 export const HARDEN_OPAQUE = 180;
 export const HARDEN_CLEAR = 90;
 
+/** Person-layer matte (source-in punch). Near-binary so the face/cap stay
+ *  camera-sharp — mid-alpha dark clothing over a light blur was the dark
+ *  fringe, and a wide soft band dissolved the silhouette into waxy blur. */
+export const HARDEN_PERSON_OPAQUE = 160;
+export const HARDEN_PERSON_CLEAR = 100;
+
 /** Single-value harden — pure, for tests and for reasoning about the curve. */
 export function hardenAlpha(
   v: number,
@@ -348,6 +367,38 @@ export function hardenMaskAlpha(
     mask[i] = hardenAlpha(mask[i] as number, opaque, clear);
   }
   return mask;
+}
+
+/** Near-binary harden for the PERSON cutout layer. Soft band is at most a
+ *  hair (HARDEN_PERSON_CLEAR..OPAQUE); everything else is 0 or 255. */
+export function hardenPersonMatte(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  return hardenMaskAlpha(mask, HARDEN_PERSON_OPAQUE, HARDEN_PERSON_CLEAR);
+}
+
+/** Where hard matte is fully opaque, composite RGB must equal the source
+ *  camera byte-for-byte (max abs diff <= tol). Pure guard for "face == sharp". */
+export function personCoreMatchesSource(
+  src: ArrayLike<number>,
+  out: ArrayLike<number>,
+  alpha: ArrayLike<number>,
+  tol: number = 2,
+): boolean {
+  if (!src || !out || !alpha) return false;
+  const n = Math.min(alpha.length, Math.floor(src.length / 4), Math.floor(out.length / 4));
+  if (n <= 0) return false;
+  const t = Math.max(0, Number(tol) || 0);
+  let saw = false;
+  for (let i = 0; i < n; i++) {
+    if ((alpha[i] as number) < 255) continue;
+    saw = true;
+    const j = i * 4;
+    for (let c = 0; c < 3; c++) {
+      if (Math.abs((src[j + c] as number) - (out[j + c] as number)) > t) return false;
+    }
+  }
+  return saw;
 }
 
 // ── the blur, and the dark frame nobody ordered ──────────────────────────
@@ -627,11 +678,10 @@ export function edgeMean(mask: ArrayLike<number>, w: number, h: number): number 
  *  fingers and the tips of hair. */
 export function erodePx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
-  if (h <= 0) return 1;
-  // Pull inside the selfie model's generous room rim. ~0.35% of height —
-  // 3px at 720p — enough to hand dark edge pixels to the backdrop without
-  // eating fingertips. Paired with a 1px feather so maskBlurPx stays thin.
-  return Math.max(1, Math.min(4, Math.round(h * 0.0035)));
+  if (h <= 0) return 2;
+  // Pull inside the selfie room-rim (~3-4px at 720p) so dark edge pixels
+  // go to the blur plate, not the person layer. Paired with 1px AA feather.
+  return Math.max(2, Math.min(4, Math.round(h * 0.0045)));
 }
 
 /** The mask is blurred ONCE, by enough to carry both jobs: the erosion needs
@@ -646,7 +696,7 @@ export function maskBlurPx(outputHeight: number): number {
  *  a canvas can do it in n-1 self-composites with `source-in`. Guarded here
  *  because "shrink the silhouette" is a claim about a curve, and a curve can
  *  be checked without a camera. */
-export const ERODE_POWER = 4;
+export const ERODE_POWER = 5;
 
 export function alphaAfterGamma(alpha: number, power: number = ERODE_POWER): number {
   const raw = Number(alpha);
