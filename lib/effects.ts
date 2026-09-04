@@ -971,8 +971,8 @@ export const FACE_HULL_HOLD_MS = 400;
 /** Expand a normalized face box (x,y,w,h in 0..1) into a seated person hull:
  *  cap room above, shoulders/torso below, shoulder width each side. */
 export const FACE_HULL = {
-  /** Extend upward as a fraction of face height (cap only — plant above must die). */
-  top: 0.28,
+  /** Extend upward as a fraction of face height (API/tests; qbg applies X-only so Y unused there). */
+  top: 0.50,
   /** Extend downward as a multiple of face height (shoulders + seated torso). */
   bottom: 2.2,
   /** Extend left/right as a fraction of face width each side. */
@@ -1013,8 +1013,14 @@ export function expandFaceHull(
   return { x0, y0, x1, y1 };
 }
 
+export type FaceHullApplyOpts = {
+  /** Which axes to constrain. Default "x": kill side leaks without shaving cap top. */
+  axes?: "x" | "xy" | "y";
+};
+
 /** Intersect the person matte with an expanded face→shoulders hull.
  *  Hard-zeros outside; soft-multiplies alpha in a falloff band (~0.04 frame).
+ *  Default axes="x" (sides only) — Y cut shaves baseball caps / crowns.
  *  When hull is null/undefined the mask is LEFT UNCHANGED — never wipe the
  *  person just because the face detector blinked. Mutates and returns mask. */
 export function applyFaceHullMask(
@@ -1023,6 +1029,7 @@ export function applyFaceHullMask(
   mh: number,
   hull: FaceHull | null | undefined,
   falloff?: number,
+  opts?: FaceHullApplyOpts,
 ): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
   if (!mask || !mw || !mh || !hull) return mask;
   const W = Math.max(0, Math.floor(Number(mw)) || 0);
@@ -1033,6 +1040,9 @@ export function applyFaceHullMask(
   const x1 = Number(hull.x1), y1 = Number(hull.y1);
   if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) return mask;
   const fo = Math.max(0, Number(falloff ?? FACE_HULL.falloff));
+  const axes = opts?.axes === "xy" || opts?.axes === "y" ? opts.axes : "x";
+  const useX = axes === "x" || axes === "xy";
+  const useY = axes === "y" || axes === "xy";
   for (let y = 0; y < H; y++) {
     const ny = (y + 0.5) / H;
     for (let x = 0; x < W; x++) {
@@ -1040,9 +1050,9 @@ export function applyFaceHullMask(
       const a = mask[i] as number;
       if (a <= 0) continue;
       const nx = (x + 0.5) / W;
-      const ox = nx < x0 ? x0 - nx : nx > x1 ? nx - x1 : 0;
-      const oy = ny < y0 ? y0 - ny : ny > y1 ? ny - y1 : 0;
-      if (ox === 0 && oy === 0) continue; // inside hard hull
+      const ox = useX ? (nx < x0 ? x0 - nx : nx > x1 ? nx - x1 : 0) : 0;
+      const oy = useY ? (ny < y0 ? y0 - ny : ny > y1 ? ny - y1 : 0) : 0;
+      if (ox === 0 && oy === 0) continue; // inside hard hull (on active axes)
       const d = Math.hypot(ox, oy);
       if (fo <= 0 || d >= fo) {
         mask[i] = 0;
