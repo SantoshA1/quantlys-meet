@@ -492,9 +492,14 @@ export function shouldDropFrame(busy: boolean): boolean {
  *  the day waits on a download, and an offline desktop build never blurs at
  *  all. We ship them; this names where. Same-origin, versioned by the build,
  *  cached by the browser forever after. */
+/** Meet uses a landscape-variant selfie model; square mis-segments wide webcam scenes. */
+export const SELFIE_LANDSCAPE_CDN =
+  "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite";
+
 export const LOCAL_ASSETS = {
   tasksVisionFileSet: "/mediapipe/wasm",
-  modelAssetPath: "/mediapipe/selfie_segmenter.tflite",
+  // Prefer landscape local asset; square is not the primary even if present.
+  modelAssetPath: "/mediapipe/selfie_segmenter_landscape.tflite",
 };
 
 /** Whether the shipped assets are actually present in this deployment. A
@@ -504,6 +509,8 @@ export function assetPaths(local: { wasm: boolean; model: boolean }):
   { tasksVisionFileSet?: string; modelAssetPath?: string } | undefined {
   const out: { tasksVisionFileSet?: string; modelAssetPath?: string } = {};
   if (local?.wasm) out.tasksVisionFileSet = LOCAL_ASSETS.tasksVisionFileSet;
+  // Only use local model when the landscape file is present — do not keep
+  // square selfie_segmenter.tflite as primary.
   if (local?.model) out.modelAssetPath = LOCAL_ASSETS.modelAssetPath;
   return Object.keys(out).length ? out : undefined;
 }
@@ -646,9 +653,108 @@ export function keepCenterPersonIsland(
 }
 
 
+/** Soft upper-body gate defaults (normalized). Wider than CENTER_BOX so arms
+ *  stay; bottom stops short of full frame so a couch bridge cannot survive. */
+export const TORSO_GATE = {
+  cx: 0.5,
+  top: 0.02,
+  bottom: 0.78,
+  width: 0.55,
+  /** Soft falloff outside the core ellipse, as a fraction of frame height. */
+  falloff: 0.06,
+};
+
+export type TorsoGateOpts = {
+  cx?: number;
+  top?: number;
+  bottom?: number;
+  width?: number;
+  falloff?: number;
+};
+
+/** Soft vertical stadium / ellipse gate: multiply person alphas so only the
+ *  head–shoulders–torso band survives. Kills office-chair→couch bridges that
+ *  keepCenterPersonIsland cannot cut (one connected component). Mutates. */
+export function torsoGateMask(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  opts?: TorsoGateOpts,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const cx = Number(opts?.cx ?? TORSO_GATE.cx);
+  const top = Number(opts?.top ?? TORSO_GATE.top);
+  const bottom = Number(opts?.bottom ?? TORSO_GATE.bottom);
+  const width = Number(opts?.width ?? TORSO_GATE.width);
+  const falloff = Math.max(0.01, Number(opts?.falloff ?? TORSO_GATE.falloff));
+  const rx = Math.max(1e-3, width * 0.5);
+  const cy = (top + bottom) * 0.5;
+  const ry = Math.max(1e-3, (bottom - top) * 0.5);
+  const soft = falloff;
+  for (let y = 0; y < H; y++) {
+    const ny = (y + 0.5) / H;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const a = mask[i] as number;
+      if (a <= 0) continue;
+      const nx = (x + 0.5) / W;
+      const dx = (nx - cx) / rx;
+      const dy = (ny - cy) / ry;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      let g = 1;
+      if (d > 1) {
+        const t = (d - 1) / Math.max(1e-3, soft / Math.max(ry, 1e-3));
+        g = t >= 1 ? 0 : 1 - t;
+      }
+      if (g <= 0) mask[i] = 0;
+      else if (g < 1) mask[i] = Math.round(a * g);
+    }
+  }
+  return mask;
+}
+
+/** Stronger zeroing for lower furniture bands (couches). Prefer after island
+ *  + torsoGate: only clears residual person pixels in bottom corners / y>0.82
+ *  that the soft ellipse already attenuated. Does not aggressively shave
+ *  seated legs inside the torso core. Mutates. */
+export function suppressLowerRoom(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const yCut = Math.floor(0.82 * H);
+  const xLeft = Math.floor(0.22 * W);
+  const xRight = Math.ceil(0.78 * W);
+  const yCorner = Math.floor(0.72 * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if ((mask[i] as number) <= 0) continue;
+      if (y >= yCut) {
+        mask[i] = 0;
+        continue;
+      }
+      if (y >= yCorner && (x < xLeft || x >= xRight)) {
+        mask[i] = 0;
+      }
+    }
+  }
+  return mask;
+}
+
 /** How much brighter the centre must be than the edges before we believe it.
  *  Below this the frame is ambiguous (an extreme close-up fills everything;
  *  an empty chair fills nothing) and the last confident answer is kept. */
+
 export const POLARITY_MARGIN = 12;
 
 export type Polarity = "person" | "background";
