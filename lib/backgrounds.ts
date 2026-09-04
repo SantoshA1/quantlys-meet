@@ -87,7 +87,7 @@ function windows(x: number, y: number, w: number, h: number, seed: number): stri
 
 export const SLOTS: Slot[] = [
   {
-    id: "office", label: "Office Cubicle", photo: "/backgrounds/office.jpg",
+    id: "office", label: "Tech atrium", photo: "/backgrounds/office.jpg",
     drawn: svg(
       `<defs><linearGradient id="w" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0%" stop-color="#eceae5"/><stop offset="100%" stop-color="#c4c0b9"/></linearGradient>` +
@@ -146,7 +146,7 @@ export const SLOTS: Slot[] = [
     ),
   },
   {
-    id: "library", label: "Library", photo: "/backgrounds/library.jpg",
+    id: "library", label: "Warm library", photo: "/backgrounds/library.jpg",
     drawn: svg(
       `<defs><linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">` +
       `<stop offset="0%" stop-color="#2a1f18"/><stop offset="100%" stop-color="#16100c"/></linearGradient>` +
@@ -167,7 +167,7 @@ export const SLOTS: Slot[] = [
     ),
   },
   {
-    id: "loft", label: "Sunlit Loft", photo: "/backgrounds/loft.jpg",
+    id: "loft", label: "Neon loft", photo: "/backgrounds/loft.jpg",
     drawn: svg(
       `<defs><linearGradient id="brick" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0%" stop-color="#a5715a"/><stop offset="100%" stop-color="#7d5343"/></linearGradient>` +
@@ -198,7 +198,7 @@ export const SLOTS: Slot[] = [
     ),
   },
   {
-    id: "city", label: "City View", photo: "/backgrounds/city.jpg",
+    id: "city", label: "Glass dusk", photo: "/backgrounds/city.jpg",
     drawn: svg(
       `<defs><linearGradient id="dusk" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0%" stop-color="#141d33"/><stop offset="52%" stop-color="#3a3550"/>` +
@@ -224,7 +224,7 @@ export const SLOTS: Slot[] = [
     ),
   },
   {
-    id: "lounge", label: "Cozy Lounge", photo: "/backgrounds/lounge.jpg",
+    id: "lounge", label: "Coastal calm", photo: "/backgrounds/lounge.jpg",
     drawn: svg(
       `<defs><linearGradient id="wall2" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0%" stop-color="#4a3b39"/><stop offset="100%" stop-color="#2b211f"/></linearGradient>` +
@@ -248,6 +248,25 @@ export const SLOTS: Slot[] = [
       `<rect x="760" y="150" width="150" height="190" fill="#241c1a" stroke="#5e4a41" stroke-width="8" transform="rotate(1.5 835 245)"/>`
     ),
   },
+];
+
+
+/** Living loops — short muted seamless videos composited with the same edge
+ *  pipeline as stills. Ship under public/backgrounds/; the shelf only offers
+ *  a loop when its file is actually present (same probe as photographs). */
+export type LoopSlot = {
+  id: string;
+  label: string;
+  /** muted seamless loop (webm preferred) */
+  loop: string;
+  /** still used for the swatch and as a degrade target */
+  poster: string;
+};
+
+export const LOOPS: LoopSlot[] = [
+  { id: "beach", label: "Beach dusk", loop: "/backgrounds/beach.webm", poster: "/backgrounds/beach.jpg" },
+  { id: "courtyard", label: "Courtyard breeze", loop: "/backgrounds/courtyard.webm", poster: "/backgrounds/courtyard.jpg" },
+  { id: "citylights", label: "City shimmer", loop: "/backgrounds/citylights.webm", poster: "/backgrounds/citylights.jpg" },
 ];
 
 /** The custom slot: a person's OWN picture, added in the panel. It is not in

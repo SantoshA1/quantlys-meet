@@ -1,18 +1,23 @@
-# Drop your own photographs here
+# Quantlys Meeting backdrops
 
-Each backdrop in the meeting's Settings panel is a SLOT. If a file with the
-matching name is here, that photograph is used. If it is not, a drawn room is
-used instead — so the shelf always works, and never ships a photograph of a
-real place that somebody would have to hold a licence for.
+Each still backdrop in Settings is a SLOT. If a matching JPEG is here, that
+picture is used. If it is not, a drawn room is the fallback.
 
-    office.jpg     Office Cubicle
-    library.jpg    Library
-    loft.jpg       Sunlit Loft
-    city.jpg       City View
-    lounge.jpg     Cozy Lounge
+    office.jpg       Tech atrium
+    library.jpg      Warm library
+    loft.jpg         Neon loft
+    city.jpg         Glass dusk
+    lounge.jpg       Coastal calm
 
-Use 1280x720 or larger, 16:9. They are cropped to cover, never squashed.
-No code change and no list to edit — drop the file in and deploy.
+Living loops (muted, seamless) use the same edge pipeline as stills:
 
-(A person can also add their OWN picture from the Settings panel at any time.
-That one stays on their machine and is never uploaded anywhere.)
+    beach.webm / beach.jpg             Beach dusk
+    courtyard.webm / courtyard.jpg     Courtyard breeze
+    citylights.webm / citylights.jpg   City shimmer
+
+Stills: 1280×720 or larger, 16:9. Loops: keep under ~6 MB, webm preferred.
+They are cropped to cover, never squashed. Drop a file in and deploy — the
+shelf probes what exists.
+
+(A person can also add their OWN picture from Settings at any time. That one
+stays on their machine and is never uploaded anywhere.)

@@ -1,0 +1,23 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden}
+.scene{position:relative;width:1920px;height:1080px;background:linear-gradient(180deg,#141d33 0%,#3a3550 45%,#8a5a54 100%);overflow:hidden}
+.haze{position:absolute;left:0;right:0;top:38%;height:30%;background:linear-gradient(180deg,rgba(255,160,120,.15),rgba(255,120,90,.05));filter:blur(8px)}
+.tower{position:absolute;bottom:50px;background:linear-gradient(90deg,#0f1624,#1a2438 40%,#0c1320);box-shadow:0 0 40px rgba(0,0,0,.35)}
+.win{position:absolute;width:8px;height:11px;border-radius:1px}
+.frame{position:absolute;inset:0;border:48px solid #12161c;box-shadow:inset 0 0 80px rgba(120,180,220,.08)}
+.mull{position:absolute;left:50%;top:48px;bottom:48px;width:22px;margin-left:-11px;background:#12161c}
+.glow{position:absolute;inset:48px;background:radial-gradient(ellipse at 50% 70%,rgba(255,180,120,.12),transparent 55%)}
+.dof{position:absolute;inset:0;backdrop-filter:blur(1.5px);background:radial-gradient(ellipse at center,transparent 35%,rgba(8,10,18,.3))}
+</style></head><body><div class="scene" id="s"><div class="haze"></div><script>
+const s=document.getElementById('s');
+const towers=[[70,420,160],[260,300,150],[450,220,210],[700,340,150],[900,180,200],[1160,260,170],[1380,300,160],[1600,210,190],[1820,360,120]];
+towers.forEach(([x,top,w],i)=>{
+  const t=document.createElement('div'); t.className='tower'; t.style.left=x+'px'; t.style.top=top+'px'; t.style.width=w+'px'; t.style.bottom='50px';
+  for(let yy=top+14; yy<1030; yy+=22) for(let xx=x+8; xx<x+w-12; xx+=17){
+    if(Math.random()<0.38) continue; const w=document.createElement('div'); w.className='win';
+    w.style.left=(xx-x)+'px'; w.style.top=(yy-top)+'px';
+    w.style.background=Math.random()>0.45?`hsl(44 85% ${55+Math.random()*20}%)`:`hsl(205 80% ${55+Math.random()*15}%)`;
+    w.style.boxShadow=`0 0 ${4+Math.random()*8}px currentColor`; t.appendChild(w);
+  } s.appendChild(t);
+});
+</script><div class="glow"></div><div class="frame"></div><div class="mull"></div><div class="dof"></div></div></body></html>

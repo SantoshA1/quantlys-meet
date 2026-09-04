@@ -29,7 +29,7 @@
 import { ProcessorWrapper, VideoTransformer } from "@livekit/track-processors";
 import type { ImageSegmenter } from "@mediapipe/tasks-vision";
 import {
-  BLUR_PX, shouldSegment, blendMask,
+  BLUR_PX, BACKDROP_DOF_PX, shouldSegment, blendMask,
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   maskBlurPx, ERODE_POWER, needsInvert,
@@ -37,9 +37,11 @@ import {
 } from "./effects";
 
 export type QbgOptions = {
-  kind: "blur" | "image";
-  /** data: URL for image backgrounds */
+  kind: "blur" | "image" | "video";
+  /** data: URL or same-origin path for still backgrounds */
   imagePath?: string;
+  /** same-origin muted seamless loop for living backgrounds */
+  videoPath?: string;
   blurRadius?: number;
 };
 
@@ -47,6 +49,8 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private opts: QbgOptions;
   private seg?: ImageSegmenter;
   private bg: ImageBitmap | null = null;
+  /** living loop element; drawn each paint when kind === "video" */
+  private bgVideo: HTMLVideoElement | null = null;
   private busy = false;
 
   /** the smoothed mask, alpha channel only, at segmentation resolution */
@@ -102,7 +106,8 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       outputCategoryMask: true,
       outputConfidenceMasks: true,
     });
-    if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
+    if (this.opts.kind === "video" && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
+    else if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
   }
 
   async destroy(): Promise<void> {
@@ -110,15 +115,23 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     try { await this.seg?.close(); } catch { /* closing twice is not an error worth surfacing */ }
     this.seg = undefined;
     this.bg = null;
+    this.teardownVideo();
     this.smooth = null;
     this.haveMask = false;
   }
 
   async update(opts: QbgOptions): Promise<void> {
     const wasImage = this.opts.imagePath;
+    const wasVideo = this.opts.videoPath;
     this.opts = opts;
-    if (opts.imagePath && opts.imagePath !== wasImage) await this.loadBackground(opts.imagePath);
-    if (!opts.imagePath) this.bg = null;
+    if (opts.kind === "video" && opts.videoPath) {
+      if (opts.videoPath !== wasVideo) await this.loadVideo(opts.videoPath);
+      this.bg = null;
+    } else {
+      this.teardownVideo();
+      if (opts.imagePath && opts.imagePath !== wasImage) await this.loadBackground(opts.imagePath);
+      if (!opts.imagePath) this.bg = null;
+    }
   }
 
   private async loadBackground(path: string) {
@@ -130,6 +143,33 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       img.src = path;
     });
     this.bg = await createImageBitmap(img);
+  }
+
+  private teardownVideo() {
+    const v = this.bgVideo;
+    this.bgVideo = null;
+    if (!v) return;
+    try { v.pause(); } catch { /* already gone */ }
+    try { v.removeAttribute("src"); v.load(); } catch { /* same */ }
+  }
+
+  private async loadVideo(path: string) {
+    this.teardownVideo();
+    const v = document.createElement("video");
+    v.muted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.crossOrigin = "anonymous";
+    v.preload = "auto";
+    await new Promise<void>((res, rej) => {
+      const ok = () => { v.removeEventListener("error", bad); res(); };
+      const bad = () => { v.removeEventListener("loadeddata", ok); rej(new Error("background loop failed to load")); };
+      v.addEventListener("loadeddata", ok, { once: true });
+      v.addEventListener("error", bad, { once: true });
+      v.src = path;
+    });
+    try { await v.play(); } catch { /* autoplay may be blocked until a gesture; paint uses current frame anyway */ }
+    this.bgVideo = v;
   }
 
   // ── the per-frame work ──────────────────────────────────────────────────
@@ -352,14 +392,12 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
 
     // 3. the background, painted behind them
     ctx.globalCompositeOperation = "destination-over";
-    if (this.opts.kind === "image" && this.bg) {
-      // JUST the backdrop. The previous version painted the real room
-      // blurred FIRST as "defence in depth" — which filled every transparent
-      // pixel, so this drawImage had nothing left to paint and the chosen
-      // backdrop was silently discarded. That is why Office/Library/Loft/City
-      // all rendered as plain blur. A backdrop that covers the whole
-      // background IS the privacy measure.
-      drawCover(ctx, this.bg, W, H);
+    if ((this.opts.kind === "image" || this.opts.kind === "video") && (this.bg || this.bgVideo)) {
+      // JUST the backdrop — never an under-blur of the real room (that buried
+      // every image effect). Soft DOF so the backdrop sits behind the person.
+      const src: any = this.bgVideo && this.bgVideo.readyState >= 2 ? this.bgVideo : this.bg;
+      if (src) drawCoverSoft(ctx, src, W, H, BACKDROP_DOF_PX);
+      else if (this.bg) drawCoverSoft(ctx, this.bg, W, H, BACKDROP_DOF_PX);
     } else {
       const soft = this.blurred(frame as any, W, H, this.opts.blurRadius || BLUR_PX);
       if (soft) ctx.drawImage(soft as any, 0, 0, W, H);
@@ -397,13 +435,29 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
  *  not squashed. A squashed horizon is another thing an eye reads as fake. */
 function drawCover(
   ctx: OffscreenCanvasRenderingContext2D,
-  img: ImageBitmap, W: number, H: number,
+  img: CanvasImageSource & { width: number; height: number }, W: number, H: number,
 ) {
-  const ar = img.width / img.height, target = W / H;
-  let sw = img.width, sh = img.height, sx = 0, sy = 0;
-  if (ar > target) { sw = img.height * target; sx = (img.width - sw) / 2; }
-  else { sh = img.width / target; sy = (img.height - sh) / 2; }
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+  const iw = (img as any).videoWidth || (img as any).width || W;
+  const ih = (img as any).videoHeight || (img as any).height || H;
+  const ar = iw / ih, target = W / H;
+  let sw = iw, sh = ih, sx = 0, sy = 0;
+  if (ar > target) { sw = ih * target; sx = (iw - sw) / 2; }
+  else { sh = iw / target; sy = (ih - sh) / 2; }
+  ctx.drawImage(img as any, sx, sy, sw, sh, 0, 0, W, H);
+}
+
+/** Cover + a few pixels of lens falloff so a backdrop reads as depth, not a
+ *  sticker. The blur is applied via a temporary filter on the draw — cheap,
+ *  and the same for stills and live loop frames. */
+function drawCoverSoft(
+  ctx: OffscreenCanvasRenderingContext2D,
+  img: CanvasImageSource & { width?: number; height?: number },
+  W: number, H: number, dofPx: number = BACKDROP_DOF_PX,
+) {
+  const r = Math.max(0, Number(dofPx) || 0);
+  if (r > 0) ctx.filter = `blur(${r}px)`;
+  drawCover(ctx, img as any, W, H);
+  ctx.filter = "none";
 }
 
 /** Is a same-origin asset actually there? Cheap HEAD, and any failure means
