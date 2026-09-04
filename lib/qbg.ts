@@ -451,7 +451,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
             hull = this.lastFaceHull;
           }
           // No face (and hold expired): skip constraint — do not blank person.
-          if (hull) applyFaceHullMask(this.smooth, mw, mh, hull, FACE_HULL.falloff);
+          if (hull) applyFaceHullMask(this.smooth, mw, mh, hull, FACE_HULL.falloff, { axes: "x" });
         }
         // Full-height side gate: kill plant/furniture columns without vertical torso cut.
         lateralPersonGate(this.smooth, mw, mh);
