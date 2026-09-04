@@ -611,9 +611,14 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
           ok = this.gl.drawBlur(frame as any, this.opts.blurRadius || BLUR_PX);
         }
         if (ok && this.gl.surface) {
+          // WebGL default FB is bottom-left; flip on 2d blit only.
+          // Do NOT flip in the vertex shader — that breaks FBO ping-pong blur
+          // plate alignment vs mask/sharp (black jagged blobs).
           ctx.save();
           ctx.globalCompositeOperation = "copy";
           ctx.filter = "none";
+          ctx.translate(0, H);
+          ctx.scale(1, -1);
           ctx.drawImage(this.gl.surface as any, 0, 0, W, H);
           ctx.restore();
           return;

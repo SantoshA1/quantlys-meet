@@ -20,10 +20,10 @@ export const VERT_SRC = `#version 300 es
 in vec2 a_pos;
 out vec2 v_uv;
 void main() {
-  // Canvas2d blit expects top-left origin; WebGL FB is bottom-left.
-  // Flip V so Blur is upright (FIELD 2026-09-04: Blur turned the room upside down).
-  vec2 p = a_pos * 0.5 + 0.5;
-  v_uv = vec2(p.x, 1.0 - p.y);
+  // Keep UV unflipped for ALL passes (including FBO ping-pong). Flipping here
+  // uprighted the final blit but misaligned the blur plate vs mask — black
+  // jagged blobs in the room (FIELD 2026-09-04). Upright is done in the 2d blit.
+  v_uv = a_pos * 0.5 + 0.5;
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }
 `;
@@ -53,8 +53,12 @@ void main() {
     sum += texture(u_frame, uv) * w;
     wsum += w;
   }
-  // Under the person core wsum is tiny — garbage is fine; composite covers it.
-  outColor = sum / max(wsum, 1e-4);
+  // Fallback to sharp when mask briefly marks room as person (prevents black holes).
+  if (wsum > 1e-3) {
+    outColor = sum / wsum;
+  } else {
+    outColor = texture(u_frame, v_uv);
+  }
 }
 `;
 
@@ -82,7 +86,12 @@ void main() {
     sum += texture(u_frame, uv) * w;
     wsum += w;
   }
-  outColor = sum / max(wsum, 1e-4);
+  // Fallback to sharp when mask briefly marks room as person (prevents black holes).
+  if (wsum > 1e-3) {
+    outColor = sum / wsum;
+  } else {
+    outColor = texture(u_frame, v_uv);
+  }
 }
 `;
 
@@ -108,7 +117,7 @@ void main() {
   vec4 sharp = texture(u_sharp, uv);
   float mask = texture(u_mask, uv).r;
   // Hardened matte with a thin AA band around 0.5.
-  float person = smoothstep(0.45, 0.55, mask);
+  float person = smoothstep(0.38, 0.62, mask);
 
   vec4 bg;
   if (u_useVirtual > 0.5) {
@@ -513,7 +522,7 @@ export class QbgGl {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboA);
     gl.viewport(0, 0, hw, hh);
     gl.useProgram(this.blurH);
-    this.bindBlurUniforms(this.blurH!, this.frameTex!, 1 / hw, 0, radius);
+    this.bindBlurUniforms(this.blurH!, this.frameTex!, 1 / Math.max(1, this.w), 0, radius);
     this.drawQuad();
 
     // Pass V: texA -> FBO B
