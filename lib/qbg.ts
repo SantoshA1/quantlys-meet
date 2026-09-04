@@ -88,6 +88,15 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private dilCtx?: OffscreenCanvasRenderingContext2D | null;
   private stampCanvas?: OffscreenCanvas;
   private stampCtx?: OffscreenCanvasRenderingContext2D | null;
+  /** Temporal person-free background plate. Room pixels accumulate across
+   *  frames; the person hole keeps the last known room from when they were
+   *  elsewhere. Blurring THIS is what kills the dark self-ghost of a cap. */
+  private histCanvas?: OffscreenCanvas;
+  private histCtx?: OffscreenCanvasRenderingContext2D | null;
+  private histReady = false;
+  /** Room-only update matte (white on room, clear over dilated person). */
+  private updCanvas?: OffscreenCanvas;
+  private updCtx?: OffscreenCanvasRenderingContext2D | null;
   /** Which class the mask paints opaque. MEASURED, never assumed — see the
    *  post-mortem above maskPolarity() in lib/effects.ts. */
   private polarity: Polarity | null = null;
@@ -136,6 +145,20 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.smooth = null;
     this.haveMask = false;
     this.maskAt = 0;
+    this.resetHist();
+  }
+
+  /** Drop the temporal plate so a fresh session / resolution does not smear
+   *  yesterday's room into today's blur. */
+  private resetHist() {
+    this.histReady = false;
+    if (this.histCtx && this.histCanvas) {
+      this.histCtx.save();
+      this.histCtx.globalCompositeOperation = "copy";
+      this.histCtx.fillStyle = "#000";
+      this.histCtx.fillRect(0, 0, this.histCanvas.width, this.histCanvas.height);
+      this.histCtx.restore();
+    }
   }
 
   async update(opts: QbgOptions): Promise<void> {
@@ -198,6 +221,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     this.busy = true;
     try {
       if (this.isDisabled || !this.canvas || !this.ctx) {
+        if (this.isDisabled) this.resetHist();
         controller.enqueue(frame);
         return;
       }
@@ -253,6 +277,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       this.smallCtx = this.smallCanvas.getContext("2d", { willReadFrequently: true });
       this.smooth = null;            // resolution changed — start the memory over
       this.maskImage = undefined;
+      this.resetHist();
     }
     if (!this.smallCtx) return;
     this.smallCtx.drawImage(src as any, 0, 0, s.w, s.h);
@@ -355,7 +380,8 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     // did). `source-out` + a full fill is alpha inversion on a canvas.
     if (needsInvert(this.polarity || "background")) {
       s.globalCompositeOperation = "source-out";
-      s.fillStyle = "#000";
+      // WHITE, not black: black RGB + blur smears a dark fringe (halo).
+      s.fillStyle = "#fff";
       s.fillRect(0, 0, W, H);
     }
 
@@ -370,6 +396,9 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     // self-composite with source-in multiplies the alpha by itself.
     s.globalCompositeOperation = "source-in";
     for (let i = 1; i < ERODE_POWER; i++) s.drawImage(this.silCanvas as any, 0, 0, W, H);
+    // One more harden pass: soft dark clothing / cap brim must not sit over
+    // the blur plate as a halo fringe.
+    s.drawImage(this.silCanvas as any, 0, 0, W, H);
 
     s.restore();
     return this.silCanvas;
@@ -429,7 +458,8 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     // Normalise polarity so white alpha always means THE PERSON.
     if (needsInvert(this.polarity || "background")) {
       d.globalCompositeOperation = "source-out";
-      d.fillStyle = "#000";
+      // WHITE: black RGB + blur = dark fringe on the hist update matte too.
+      d.fillStyle = "#fff";
       d.fillRect(0, 0, W, H);
     }
     // Blur expands the footprint (dilate). RGB stays white so the soft rim
@@ -442,64 +472,79 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     return this.dilCanvas;
   }
 
-  /** Blur a plate where the person has been replaced by upscaled room-color
-   *  mush. Blurring the live frame alone keeps a smeared double of the
-   *  subject that soft matte edges reveal as ghost/halo. */
+  /** Blur a TEMPORAL person-free plate. Downscaling the live frame and
+   *  stamping mush over the person left a dark self-blob (cap / hair) that
+   *  blur smeared into a ghost. Instead, keep a history canvas of room-only
+   *  pixels: update hist where the dilated person is NOT, leave the hole
+   *  alone so it still holds the last known room from when they stood
+   *  elsewhere. plateFillSize / dilate helpers stay for tests; paint uses
+   *  hist.
+   */
   private personFreeBlur(
     frame: CanvasImageSource, W: number, H: number, radius: number,
   ): OffscreenCanvas | null {
-    if (!this.plateCanvas || this.plateCanvas.width !== W || this.plateCanvas.height !== H) {
-      this.plateCanvas = new OffscreenCanvas(W, H);
-      this.plateCtx = this.plateCanvas.getContext("2d", { willReadFrequently: false });
+    if (!this.histCanvas || this.histCanvas.width !== W || this.histCanvas.height !== H) {
+      this.histCanvas = new OffscreenCanvas(W, H);
+      this.histCtx = this.histCanvas.getContext("2d", { willReadFrequently: false });
+      this.histReady = false;
     }
-    const plate = this.plateCtx;
-    if (!plate) return this.blurred(frame, W, H, radius);
+    const hist = this.histCtx;
+    if (!hist) return this.blurred(frame, W, H, radius);
 
-    const fill = plateFillSize(W, H);
-    if (!this.fillCanvas || this.fillCanvas.width !== fill.w || this.fillCanvas.height !== fill.h) {
-      this.fillCanvas = new OffscreenCanvas(fill.w, fill.h);
-      this.fillCtx = this.fillCanvas.getContext("2d", { willReadFrequently: false });
+    // Bootstrap: first frame seeds hist with the whole picture. The hole
+    // will be overwritten by room on later frames as the person moves.
+    if (!this.histReady) {
+      hist.save();
+      hist.globalCompositeOperation = "copy";
+      hist.filter = "none";
+      hist.drawImage(frame as any, 0, 0, W, H);
+      hist.restore();
+      this.histReady = true;
+    }
+
+    const dil = this.dilateSilhouette(W, H);
+    if (!dil) return this.blurred(this.histCanvas, W, H, radius);
+
+    // Room-only update matte: white on room, clear over dilated person.
+    if (!this.updCanvas || this.updCanvas.width !== W || this.updCanvas.height !== H) {
+      this.updCanvas = new OffscreenCanvas(W, H);
+      this.updCtx = this.updCanvas.getContext("2d", { willReadFrequently: false });
     }
     if (!this.stampCanvas || this.stampCanvas.width !== W || this.stampCanvas.height !== H) {
       this.stampCanvas = new OffscreenCanvas(W, H);
       this.stampCtx = this.stampCanvas.getContext("2d", { willReadFrequently: false });
     }
-    const fc = this.fillCtx, sc = this.stampCtx;
-    const dil = this.dilateSilhouette(W, H);
-    if (!fc || !sc || !dil) return this.blurred(frame, W, H, radius);
+    const uc = this.updCtx, sc = this.stampCtx;
+    if (!uc || !sc) return this.blurred(this.histCanvas, W, H, radius);
 
-    // 1. full frame onto the plate
-    plate.save();
-    plate.globalCompositeOperation = "copy";
-    plate.filter = "none";
-    plate.drawImage(frame as any, 0, 0, W, H);
-    plate.restore();
+    uc.save();
+    uc.globalCompositeOperation = "copy";
+    uc.filter = "none";
+    uc.fillStyle = "#fff";
+    uc.fillRect(0, 0, W, H);
+    // Punch an expanded hole over the person so soft fringes never write
+    // into hist (that fringe WAS the dark self-ghost).
+    uc.globalCompositeOperation = "destination-out";
+    uc.drawImage(dil as any, 0, 0, W, H);
+    uc.restore();
 
-    // 2. tiny downscale - average room color, person becomes a few mush pixels
-    fc.save();
-    fc.globalCompositeOperation = "copy";
-    fc.filter = "none";
-    fc.drawImage(frame as any, 0, 0, fill.w, fill.h);
-    fc.restore();
-
-    // 3. upscale mush, keep only under the dilated person matte
+    // Current frame, only room pixels.
     sc.save();
     sc.globalCompositeOperation = "copy";
     sc.filter = "none";
-    sc.drawImage(this.fillCanvas as any, 0, 0, W, H);
+    sc.drawImage(frame as any, 0, 0, W, H);
     sc.globalCompositeOperation = "destination-in";
-    sc.drawImage(dil as any, 0, 0, W, H);
+    sc.drawImage(this.updCanvas as any, 0, 0, W, H);
     sc.restore();
 
-    // 4. cover the person on the plate with that mush
-    plate.save();
-    plate.globalCompositeOperation = "source-over";
-    plate.filter = "none";
-    plate.drawImage(this.stampCanvas as any, 0, 0, W, H);
-    plate.restore();
+    // Stamp room onto hist; person region stays last-known room.
+    hist.save();
+    hist.globalCompositeOperation = "source-over";
+    hist.filter = "none";
+    hist.drawImage(this.stampCanvas as any, 0, 0, W, H);
+    hist.restore();
 
-    // 5. blur the person-free plate
-    return this.blurred(this.plateCanvas, W, H, radius);
+    return this.blurred(this.histCanvas, W, H, radius);
   }
 
   /** The good path: person sharp, background replaced, edge eroded and

@@ -100,7 +100,11 @@ export function maskIsFresh(nowMs: number, maskAtMs: number, maxAgeMs: number = 
 /** Fraction of output height used to dilate the person silhouette before
  *  scrubbing them from the blur plate. Dilate so soft matte edges do not
  *  leave a rim of person color that the blur then smears as a ghost/halo. */
-export const PLATE_DILATE_FRAC = 0.012;
+/** Dilate fraction used by the temporal hist update path - keep person
+ *  fringes out of hist so they cannot smear into a self-ghost. */
+export const HIST_DILATE = 0.02;
+
+export const PLATE_DILATE_FRAC = HIST_DILATE;
 
 export function plateDilatePx(outputHeight: number): number {
   const h = Number(outputHeight) || 0;
@@ -642,7 +646,7 @@ export function maskBlurPx(outputHeight: number): number {
  *  a canvas can do it in n-1 self-composites with `source-in`. Guarded here
  *  because "shrink the silhouette" is a claim about a curve, and a curve can
  *  be checked without a camera. */
-export const ERODE_POWER = 3;
+export const ERODE_POWER = 4;
 
 export function alphaAfterGamma(alpha: number, power: number = ERODE_POWER): number {
   const raw = Number(alpha);
