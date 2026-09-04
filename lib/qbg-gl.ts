@@ -210,6 +210,13 @@ float sampleMaskEroded(vec2 uv) {
   m = min(m, texture(u_mask, uv - vec2(u_texel.x, 0.0)).r);
   m = min(m, texture(u_mask, uv + vec2(0.0, u_texel.y)).r);
   m = min(m, texture(u_mask, uv - vec2(0.0, u_texel.y)).r);
+  // Virtual path: also min diagonals (8-neigh) for stronger erode on plant fringe.
+  if (u_useVirtual > 0.5) {
+    m = min(m, texture(u_mask, uv + vec2(u_texel.x, u_texel.y)).r);
+    m = min(m, texture(u_mask, uv + vec2(u_texel.x, -u_texel.y)).r);
+    m = min(m, texture(u_mask, uv + vec2(-u_texel.x, u_texel.y)).r);
+    m = min(m, texture(u_mask, uv + vec2(-u_texel.x, -u_texel.y)).r);
+  }
   return m;
 }
 
@@ -239,13 +246,16 @@ void main() {
   float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
   float mid = step(0.04, a) * step(a, 0.92);
   float darkFringe = mid * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
-  float greenExcess = sharp.g - max(sharp.r, sharp.b);
-  float greenSpill = mid * smoothstep(0.02, 0.12, greenExcess);
+  // Green + yellow-green plant fringe (both g-r and g-b positive).
+  float greenExcess = max(0.0, min(sharp.g - sharp.r, sharp.g - sharp.b));
+  float greenSpill = smoothstep(0.01, 0.08, greenExcess);
+  // Strong leaf: force alpha off (not just *0.1), mid-edge or anywhere clear leaf.
+  if (greenSpill > 0.55) a = 0.0;
   float colorDist = length(sharp.rgb - bg.rgb);
   // Skin-like: r mildly above g and b — do not pull skin toward bg.
   float skinLike = step(sharp.g + 0.02, sharp.r) * step(sharp.b, sharp.r);
   float colorSpill = mid * (1.0 - skinLike) * smoothstep(0.15, 0.45, colorDist);
-  a = a * (1.0 - greenSpill * 0.9);
+  a = a * (1.0 - greenSpill);
   vec3 sharpUse = sharp.rgb;
   sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.55, max(greenSpill * 0.75, colorSpill * 0.5)));
 

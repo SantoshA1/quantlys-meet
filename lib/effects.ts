@@ -822,9 +822,96 @@ export function despecklePersonMask(
   return mask;
 }
 
-/** Zero leaf-green person pixels outside a center head box (~30% width,
- *  upper ~45% height). Requires RGBA buffer 1:1 with mask dims (smallCanvas
- *  ImageData). Call only in segment callback — not every paint. Mutates. */
+/** Find topmost row in center-third width with enough person pixels
+ *  (count >= 0.08 * W_center). Returns -1 if none. Pure mask geometry. */
+export function findCrownY(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  personThresh: number = HARDEN_PERSON_CLEAR,
+): number {
+  if (!mask || !mw || !mh) return -1;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return -1;
+  const t = Math.max(0, Math.min(255, Number(personThresh)));
+  const x0 = Math.floor(W / 3);
+  const x1 = Math.ceil((2 * W) / 3);
+  const wCenter = Math.max(1, x1 - x0);
+  const need = Math.max(1, Math.ceil(0.08 * wCenter));
+  // Row person count in center third.
+  const rowCount = (y: number): number => {
+    let c = 0;
+    for (let x = x0; x < x1; x++) {
+      if ((mask[y * W + x] as number) >= t) c++;
+    }
+    return c;
+  };
+  // Require sustained mass over 4 rows so thin plant/blur spikes do not
+  // register as the crown — only the compact head top does.
+  const RUN = 4;
+  for (let y = 0; y <= H - RUN; y++) {
+    let ok = true;
+    for (let dy = 0; dy < RUN; dy++) {
+      if (rowCount(y + dy) < need) { ok = false; break; }
+    }
+    if (ok) return y;
+  }
+  return -1;
+}
+
+/** Zero thin plant / blur-rectangle protrusions above the compact head mass.
+ *  Pure mask geometry (no RGB). Center-half width only. Mutates. */
+export function suppressCrownProtrusions(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  personThresh: number = HARDEN_PERSON_CLEAR,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const t = Math.max(0, Math.min(255, Number(personThresh)));
+  const crownY = findCrownY(mask, W, H, t);
+  if (crownY < 0) return mask;
+  const xL = Math.floor(W * 0.25);
+  const xR = Math.ceil(W * 0.75);
+  const cut = Math.max(0, crownY - 2);
+  // Everything above the solid head mass in center half is a protrusion.
+  for (let y = 0; y < cut; y++) {
+    for (let x = xL; x < xR; x++) {
+      const i = y * W + x;
+      if ((mask[i] as number) > 0) mask[i] = 0;
+    }
+  }
+  // Thin 1–3px tall spikes sitting on the silhouette top in center half:
+  // person pixel with little mass in the 4 rows immediately below → kill.
+  const yEnd = Math.min(H, crownY + 4);
+  for (let y = cut; y < yEnd; y++) {
+    for (let x = xL; x < xR; x++) {
+      const i = y * W + x;
+      if ((mask[i] as number) < t) continue;
+      let below = 0;
+      for (let dy = 1; dy <= 4; dy++) {
+        const yy = y + dy;
+        if (yy >= H) break;
+        if ((mask[yy * W + x] as number) >= t) below++;
+      }
+      // Spike: at most 3 consecutive person rows including this one → below < 3
+      // and row above empty (or already cleared).
+      const aboveEmpty = y === 0 || (mask[(y - 1) * W + x] as number) < t;
+      if (aboveEmpty && below <= 2) mask[i] = 0;
+    }
+  }
+  return mask;
+}
+
+/** Zero leaf-green person pixels. Protects green clothing near face (middle
+ *  of head box) but NEVER protects leaf-green in the crown band (plant on
+ *  cap). Requires RGBA 1:1 with mask dims. Mutates. */
 export function suppressLeafLeaks(
   mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
   rgba: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
@@ -836,21 +923,37 @@ export function suppressLeafLeaks(
   const H = Math.max(0, Math.floor(Number(mh)) || 0);
   const n = W * H;
   if (!n || mask.length < n || rgba.length < n * 4) return mask;
-  // Center 30% width, upper ~45% — keep green clothing/hair near head.
+  // Center 30% width, upper ~45% — keep green clothing/hair near face.
   const x0 = Math.floor(W * 0.35);
   const x1 = Math.ceil(W * 0.65);
   const y1 = Math.ceil(H * 0.45);
+  const crownBand = Math.ceil(H * 0.18);
+  const crownSoft = Math.ceil(H * 0.28);
+  const crownY = findCrownY(mask, W, H);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       if ((mask[i] as number) <= 0) continue;
-      if (x >= x0 && x < x1 && y < y1) continue; // head box
       const j = i * 4;
       const r = rgba[j] as number;
       const g = rgba[j + 1] as number;
       const b = rgba[j + 2] as number;
-      // Leaf green: g exceeds r and b by margin.
-      if (g > r + 15 && g > b + 10) mask[i] = 0;
+      // Slightly lower thresholds catch yellowish-green plant fringe.
+      const leaf = g > r + 12 && g > b + 8;
+      if (!leaf) continue;
+      // Crown band: always kill leaf-green (plant on cap sits in head box).
+      if (y < crownBand) {
+        mask[i] = 0;
+        continue;
+      }
+      // Soft crown: leaf-green above the solid head mass also dies.
+      if (y < crownSoft && crownY >= 0 && y < crownY) {
+        mask[i] = 0;
+        continue;
+      }
+      // Head box middle: keep green clothing/hair near face.
+      if (x >= x0 && x < x1 && y < y1) continue;
+      mask[i] = 0;
     }
   }
   return mask;
