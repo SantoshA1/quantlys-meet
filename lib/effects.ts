@@ -971,8 +971,8 @@ export const FACE_HULL_HOLD_MS = 400;
 /** Expand a normalized face box (x,y,w,h in 0..1) into a seated person hull:
  *  cap room above, shoulders/torso below, shoulder width each side. */
 export const FACE_HULL = {
-  /** Extend upward as a fraction of face height (cap / hair room). */
-  top: 0.55,
+  /** Extend upward as a fraction of face height (cap only — plant above must die). */
+  top: 0.28,
   /** Extend downward as a multiple of face height (shoulders + seated torso). */
   bottom: 2.2,
   /** Extend left/right as a fraction of face width each side. */
