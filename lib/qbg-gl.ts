@@ -153,6 +153,16 @@ void main() {
     }
   }
   float outM = wsum > 1e-5 ? sum / wsum : centerM;
+  // Mild shrink bias: prefer not growing the matte past the filtered min of
+  // a small neighborhood when the bilateral would expand (chair fluff).
+  float nMin = centerM;
+  nMin = min(nMin, texture(u_mask, v_uv + vec2(u_texel.x, 0.0)).r);
+  nMin = min(nMin, texture(u_mask, v_uv - vec2(u_texel.x, 0.0)).r);
+  nMin = min(nMin, texture(u_mask, v_uv + vec2(0.0, u_texel.y)).r);
+  nMin = min(nMin, texture(u_mask, v_uv - vec2(0.0, u_texel.y)).r);
+  if (outM > centerM) {
+    outM = mix(outM, min(outM, nMin), 0.45);
+  }
   outColor = vec4(outM, outM, outM, 1.0);
 }
 `;
@@ -177,8 +187,8 @@ void main() {
   vec2 uv = maybeFlip(v_uv);
   vec4 sharp = texture(u_sharp, uv);
   float mask = texture(u_mask, uv).r;
-  // Hardened matte with a thin AA band around 0.5.
-  float person = smoothstep(0.42, 0.58, mask);
+  // v3: pull matte edge slightly inward to kill chair fluff / dark cap fringe.
+  float person = smoothstep(0.48, 0.62, mask);
 
   vec4 bg;
   if (u_useVirtual > 0.5) {
@@ -193,13 +203,13 @@ void main() {
   float wrap = clamp(u_softEdge, 0.0, 1.0) * edge * 0.18;
   float a = clamp(person - wrap, 0.0, 1.0);
 
-  // Light color decontamination at mid-alpha: if sharp is much darker than bg
-  // (dark clothing fringe), lean slightly toward bg without softening face core.
+  // Stronger dark-fringe decontam at mid-alpha (cap/mesh chair edge).
   float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
   float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
-  float mid = step(0.05, a) * step(a, 0.95);
-  float darkFringe = mid * step(sharpL + 0.08, bgL);
-  vec3 sharpUse = mix(sharp.rgb, mix(sharp.rgb, bg.rgb, 0.35), darkFringe);
+  float mid = step(0.04, a) * step(a, 0.92);
+  // Stronger when sharp is much darker than bg (cap / mesh chair fringe).
+  float darkFringe = mid * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
+  vec3 sharpUse = mix(sharp.rgb, mix(sharp.rgb, bg.rgb, 0.55), darkFringe);
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);

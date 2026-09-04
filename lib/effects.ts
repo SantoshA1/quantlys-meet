@@ -654,8 +654,9 @@ export function keepCenterPersonIsland(
 
 
 /** Morphological open radius at segment resolution. Small disk/square breaks
- *  thin chair→couch bridges without shaving wide shoulders (floating-head fix). */
-export const OPEN_RADIUS_PX = 2;
+ *  thin chair→couch bridges without shaving wide shoulders (floating-head fix).
+ *  v3: bumped 2→3 so chair fluff / plant flecks detach more reliably. */
+export const OPEN_RADIUS_PX = 3;
 
 /** Morphological opening on the person matte: binary threshold → erode →
  *  dilate, then zero person pixels that the open removed (bridges / thin
@@ -719,6 +720,104 @@ export function openPersonMask(
   // Zero person pixels that opening removed (bridges / thin protrusions).
   for (let i = 0; i < n; i++) {
     if ((mask[i] as number) >= thresh && !opened[i]) mask[i] = 0;
+  }
+  return mask;
+}
+
+/** Full-height soft side gate — kills left/right furniture & plants without
+ *  cutting the torso vertically (unlike TORSO_GATE ellipse → floating head).
+ *  Core kept where |nx-0.5| <= halfWidth; soft falloff over next falloff of
+ *  frame width to zero. Mutates person alphas by gate weight. */
+export const LATERAL_GATE = {
+  halfWidth: 0.40,
+  falloff: 0.06,
+};
+
+export type LateralGateOpts = {
+  halfWidth?: number;
+  falloff?: number;
+};
+
+export function lateralPersonGate(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  opts?: LateralGateOpts,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const half = Math.max(0.05, Math.min(0.49, Number(opts?.halfWidth ?? LATERAL_GATE.halfWidth)));
+  const fall = Math.max(0.01, Math.min(0.25, Number(opts?.falloff ?? LATERAL_GATE.falloff)));
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const a = mask[i] as number;
+      if (a <= 0) continue;
+      const nx = (x + 0.5) / W;
+      const d = Math.abs(nx - 0.5);
+      let g = 1;
+      if (d > half) {
+        const t = (d - half) / fall;
+        g = t >= 1 ? 0 : 1 - t;
+      }
+      if (g <= 0) mask[i] = 0;
+      else if (g < 1) mask[i] = Math.round(a * g);
+    }
+  }
+  return mask;
+}
+
+/** Zero remaining person components whose area is below max(24, minAreaFrac
+ *  of frame). Kills tiny green flecks that survive open+island+lateral.
+ *  Must NOT remove the main body. Mutates and returns the same buffer. */
+export const DESPECKLE_MIN_AREA_FRAC = 0.004;
+
+export function despecklePersonMask(
+  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
+  mw: number,
+  mh: number,
+  minAreaFrac: number = DESPECKLE_MIN_AREA_FRAC,
+  personThresh: number = HARDEN_PERSON_CLEAR,
+): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
+  if (!mask || !mw || !mh) return mask;
+  const W = Math.max(0, Math.floor(Number(mw)) || 0);
+  const H = Math.max(0, Math.floor(Number(mh)) || 0);
+  const n = W * H;
+  if (!n || mask.length < n) return mask;
+  const thresh = Math.max(0, Math.min(255, Number(personThresh)));
+  const t = Number.isFinite(thresh) ? thresh : HARDEN_PERSON_CLEAR;
+  const frac = Math.max(0, Number(minAreaFrac) || 0);
+  const minArea = Math.max(24, Math.floor(n * frac));
+  const visited = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (visited[i] || (mask[i] as number) < t) continue;
+    const pixels: number[] = [];
+    const stack = [i];
+    visited[i] = 1;
+    while (stack.length) {
+      const p = stack.pop()!;
+      pixels.push(p);
+      const x = p % W;
+      const y = (p / W) | 0;
+      const neigh = [
+        x > 0 ? p - 1 : -1,
+        x + 1 < W ? p + 1 : -1,
+        y > 0 ? p - W : -1,
+        y + 1 < H ? p + W : -1,
+      ];
+      for (let k = 0; k < 4; k++) {
+        const q = neigh[k];
+        if (q < 0 || visited[q] || (mask[q] as number) < t) continue;
+        visited[q] = 1;
+        stack.push(q);
+      }
+    }
+    if (pixels.length < minArea) {
+      for (let k = 0; k < pixels.length; k++) mask[pixels[k]] = 0;
+    }
   }
   return mask;
 }
