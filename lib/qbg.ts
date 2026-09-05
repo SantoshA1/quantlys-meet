@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, applyFaceHullMask, expandFaceHull, lateralPersonGate, despecklePersonMask, suppressLeafLeaks,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, applyFaceHullMask, expandFaceHull, lateralPersonGate, despecklePersonMask, suppressLeafLeaks, suppressDarkEdgeLeaks,
   SELFIE_LANDSCAPE_CDN, BLAZE_FACE_CDN, FACE_HULL, FACE_HULL_HOLD_MS, adaptiveSmoothAlpha,
   type FaceHull,
   overscanRect, bokehPass, maskIsFresh,
@@ -476,7 +476,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
                 id = this.leafCtx.getImageData(0, 0, mw, mh);
               }
             }
-            if (id) suppressLeafLeaks(this.smooth, id.data, mw, mh);
+            if (id) {
+              suppressLeafLeaks(this.smooth, id.data, mw, mh);
+              suppressDarkEdgeLeaks(this.smooth, id.data, mw, mh);
+            }
           } catch { /* getImageData unavailable */ }
         }
 
