@@ -186,7 +186,7 @@ export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
 /** Blur-path light-wrap softEdge (Meet-style RGB wrap; does not punch matte alpha). */
-export const LIGHT_WRAP_BLUR = 0.45;
+export const LIGHT_WRAP_BLUR = 0.50;
 /** Temporal EMA mix with previous chroma matte (kills sparkle flicker). */
 export const CHROMA_MASK_EMA = 0.68;
 /** Morphological SE radius (px) for close-then-open on chroma matte. */
@@ -378,11 +378,11 @@ void main() {
   vec4 sharp = texture(u_sharp, uv);
   // 1-texel morphological erode: shrinks chair fluff / plant attached to silhouette.
   float mask = sampleMaskEroded(uv);
-  // Blur path: softer threshold (less silhouette erode / dark fringe on navy caps).
+  // Blur path: tightened soft band (less mid-alpha contaminated edge on shoulders).
   // Virtual/chroma: keep tighter inward pull for cloth flecks / plant fringe.
   float person = (u_useVirtual > 0.5)
     ? smoothstep(0.52, 0.68, mask)
-    : smoothstep(0.35, 0.55, mask);
+    : smoothstep(0.42, 0.58, mask);
 
   vec4 bg;
   if (u_useVirtual > 0.5) {
@@ -412,11 +412,13 @@ void main() {
 
   // Cool-edge decontam (blur + virtual): cyan fringe has high B+G (green-only
   // despill misses it). Pull cool channels toward red warmth in the soft edge.
+  // Stronger on blur (shoulders/cap); virtual keeps milder mix.
   float coolLead = max(0.0, max(sharpUse.g, sharpUse.b) - sharpUse.r);
-  float coolAmt = edgeBand * smoothstep(0.02, 0.12, coolLead);
+  float coolAmt = edgeBand * smoothstep(0.01, 0.08, coolLead);
+  float coolStr = (u_useVirtual > 0.5) ? 0.7 : 0.95;
   float target = sharpUse.r;
-  sharpUse.g = mix(sharpUse.g, min(sharpUse.g, target + 0.02), coolAmt * 0.7);
-  sharpUse.b = mix(sharpUse.b, min(sharpUse.b, target + 0.04), coolAmt * 0.7);
+  sharpUse.g = mix(sharpUse.g, min(sharpUse.g, target + 0.02), coolAmt * coolStr);
+  sharpUse.b = mix(sharpUse.b, min(sharpUse.b, target + 0.04), coolAmt * coolStr);
 
   // Meet light wrap (blur only): add background light into FG RGB at soft edge.
   // Only lightens (lit = max); never punches alpha. Virtual wrapAmt stays 0.
