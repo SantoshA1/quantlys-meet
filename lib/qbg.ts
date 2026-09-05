@@ -33,7 +33,7 @@ import {
   warmupPaint, segmentSize, shouldDropFrame, assetPaths, procName,
   CENTER_BOX, maskPolarity, boxMean, edgeMean, type Polarity,
   needsInvert, featherPx, shouldSegment,
-  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland, lateralPersonGate, despecklePersonMask, suppressLeafLeaks,
+  confidenceToAlpha, hardenPersonMatte, openPersonMask, keepCenterPersonIsland,
   SELFIE_LANDSCAPE_CDN, adaptiveSmoothAlpha,
   overscanRect, bokehPass, maskIsFresh,
   plateDilatePx, webglCompositeReady,
@@ -68,9 +68,6 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   /** the downscaled copy handed to the segmenter */
   private smallCanvas?: OffscreenCanvas;
   private smallCtx?: OffscreenCanvasRenderingContext2D | null;
-  /** Scratch for leaf suppress when mask size != smallCanvas. */
-  private leafCanvas?: OffscreenCanvas;
-  private leafCtx?: OffscreenCanvasRenderingContext2D | null;
   /** reused Float32 -> alpha scratch, so a 110k-pixel mask is not a fresh
    *  allocation twenty times a second */
   private alphaBuf: Uint8ClampedArray | null = null;
@@ -380,29 +377,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // breaks chair→couch bridges (no TORSO_GATE ellipse).
         openPersonMask(this.smooth, mw, mh);
         keepCenterPersonIsland(this.smooth, mw, mh);
-        // Full-height side gate: kill plant/furniture columns without vertical torso cut.
-        lateralPersonGate(this.smooth, mw, mh);
-        // Drop tiny flecks that somehow survive open+island+lateral.
-        despecklePersonMask(this.smooth, mw, mh);
-        // Leaf-green leaks. Scale smallCanvas to mask size when they differ.
-        if (this.smallCtx && this.smallCanvas) {
-          try {
-            let id: ImageData | null = null;
-            if (this.smallCanvas.width === mw && this.smallCanvas.height === mh) {
-              id = this.smallCtx.getImageData(0, 0, mw, mh);
-            } else {
-              if (!this.leafCanvas || this.leafCanvas.width !== mw || this.leafCanvas.height !== mh) {
-                this.leafCanvas = new OffscreenCanvas(mw, mh);
-                this.leafCtx = this.leafCanvas.getContext("2d", { willReadFrequently: true });
-              }
-              if (this.leafCtx) {
-                this.leafCtx.drawImage(this.smallCanvas as any, 0, 0, mw, mh);
-                id = this.leafCtx.getImageData(0, 0, mw, mh);
-              }
-            }
-            if (id) suppressLeafLeaks(this.smooth, id.data, mw, mh);
-          } catch { /* getImageData unavailable */ }
-        }
+        // PR2: leaf / lateral / despeckle unwired from live path (heuristic thrash).
 
         if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
           this.maskCanvas = new OffscreenCanvas(mw, mh);
