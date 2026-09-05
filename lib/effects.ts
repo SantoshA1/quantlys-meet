@@ -658,6 +658,12 @@ export function keepCenterPersonIsland(
  *  Edge-spill: bumped 3→4 so medium plant blobs detach more reliably. */
 export const OPEN_RADIUS_PX = 4;
 
+/** Upper fraction of the frame left untouched by morphological open.
+ *  Full 2D open flattens rounded baseball-cap crowns (square SE removes the
+ *  tip; dilate restores a flat top). Ear/shoulder plant is cut by trapezoid
+ *  face-hull X instead — open only needs to break chair→couch bridges below. */
+export const OPEN_CROWN_BAND = 0.30;
+
 /** Morphological opening on the person matte: binary threshold → erode →
  *  dilate, then zero person pixels that the open removed (bridges / thin
  *  islands). Restores original alpha for survivors. Call before
@@ -681,14 +687,18 @@ export function openPersonMask(
   }
   const bin = new Uint8Array(n);
   for (let i = 0; i < n; i++) bin[i] = (mask[i] as number) >= thresh ? 1 : 0;
+  // Crown band: leave silhouette unchanged (preserve rounded cap). Below: full open.
+  const crownY = Math.ceil(H * OPEN_CROWN_BAND);
 
   // Erode with square SE of radius r (pixel stays only if full window is set).
   const eroded = new Uint8Array(n);
   for (let y = 0; y < H; y++) {
+    if (y < crownY) continue; // crown: skip — opened stays identity below
     for (let x = 0; x < W; x++) {
       let keep = 1;
       for (let dy = -r; dy <= r && keep; dy++) {
         const yy = y + dy;
+        // Allow SE to look into crown band for context, but do not rewrite crown rows.
         if (yy < 0 || yy >= H) { keep = 0; break; }
         for (let dx = -r; dx <= r; dx++) {
           const xx = x + dx;
@@ -699,14 +709,18 @@ export function openPersonMask(
     }
   }
 
-  // Dilate eroded with same SE.
+  // Dilate eroded with same SE. Crown rows stay as original bin.
   const opened = new Uint8Array(n);
   for (let y = 0; y < H; y++) {
+    if (y < crownY) {
+      for (let x = 0; x < W; x++) opened[y * W + x] = bin[y * W + x];
+      continue;
+    }
     for (let x = 0; x < W; x++) {
       let any = 0;
       for (let dy = -r; dy <= r && !any; dy++) {
         const yy = y + dy;
-        if (yy < 0 || yy >= H) continue;
+        if (yy < 0 || yy >= H || yy < crownY) continue;
         for (let dx = -r; dx <= r; dx++) {
           const xx = x + dx;
           if (xx < 0 || xx >= W) continue;
@@ -975,14 +989,22 @@ export const FACE_HULL = {
   top: 0.50,
   /** Extend downward as a multiple of face height (shoulders + seated torso). */
   bottom: 2.2,
-  /** Extend left/right as a fraction of face width each side. */
+  /** ExpandFaceHull box side pad (fraction of face width). Mid fallback. */
   side: 0.55,
+  /** Trapezoid X: tight pad beside head/ears (cuts plant without Y crown cut). */
+  sideHead: 0.28,
+  /** Trapezoid X: wider pad at shoulders (keeps arms; still cuts far furniture). */
+  shoulderSide: 0.85,
   /** Soft alpha falloff outside the hard hull, as a fraction of frame size. */
   falloff: 0.04,
 };
 
 export type FaceBoxNorm = { x: number; y: number; w: number; h: number };
-export type FaceHull = { x0: number; y0: number; x1: number; y1: number };
+/** Expanded person hull plus face-core box for height-varying (trapezoid) X. */
+export type FaceHull = {
+  x0: number; y0: number; x1: number; y1: number;
+  fx0: number; fy0: number; fx1: number; fy1: number;
+};
 
 export type FaceHullOpts = {
   top?: number;
@@ -1005,12 +1027,18 @@ export function expandFaceHull(
   const bottom = Number(opts?.bottom ?? FACE_HULL.bottom);
   const side = Number(opts?.side ?? FACE_HULL.side);
   if (!Number.isFinite(top) || !Number.isFinite(bottom) || !Number.isFinite(side)) return null;
+  // Hard box keeps FACE_HULL.side (axes=xy). Trapezoid X uses face core + sideHead/shoulderSide.
   const x0 = Math.max(0, Math.min(1, fx - side * fw));
   const x1 = Math.max(0, Math.min(1, fx + fw + side * fw));
   const y0 = Math.max(0, Math.min(1, fy - top * fh));
   const y1 = Math.max(0, Math.min(1, fy + fh + bottom * fh));
   if (!(x1 > x0) || !(y1 > y0)) return null;
-  return { x0, y0, x1, y1 };
+  const fx0 = Math.max(0, Math.min(1, fx));
+  const fy0 = Math.max(0, Math.min(1, fy));
+  const fx1 = Math.max(0, Math.min(1, fx + fw));
+  const fy1 = Math.max(0, Math.min(1, fy + fh));
+  if (!(fx1 > fx0) || !(fy1 > fy0)) return null;
+  return { x0, y0, x1, y1, fx0, fy0, fx1, fy1 };
 }
 
 export type FaceHullApplyOpts = {
@@ -1043,14 +1071,39 @@ export function applyFaceHullMask(
   const axes = opts?.axes === "xy" || opts?.axes === "y" ? opts.axes : "x";
   const useX = axes === "x" || axes === "xy";
   const useY = axes === "y" || axes === "xy";
+  // Trapezoid X (axes=x): tight beside head, wide at shoulders — color-agnostic
+  // cut of plant/furniture attached near ears/shoulders without any Y crown cut.
+  const fx0 = Number(hull.fx0), fy0 = Number(hull.fy0);
+  const fx1 = Number(hull.fx1), fy1 = Number(hull.fy1);
+  const hasFace = [fx0, fy0, fx1, fy1].every(Number.isFinite) && fx1 > fx0 && fy1 > fy0;
+  const fw = hasFace ? (fx1 - fx0) : 0;
+  const fh = hasFace ? (fy1 - fy0) : 0;
+  const sideHead = Math.max(0, Number(FACE_HULL.sideHead));
+  const sideShoulder = Math.max(sideHead, Number(FACE_HULL.shoulderSide));
+  const faceBot = hasFace ? fy1 : 0;
+  const shoulderY = hasFace ? Math.min(1, fy1 + 0.9 * fh) : 0;
+  const useTrapezoid = useX && !useY && hasFace && fw > 0;
+
   for (let y = 0; y < H; y++) {
     const ny = (y + 0.5) / H;
+    let rowX0 = x0, rowX1 = x1;
+    if (useTrapezoid) {
+      let padFrac = sideShoulder;
+      if (ny <= faceBot) padFrac = sideHead;
+      else if (ny < shoulderY) {
+        const t = (ny - faceBot) / Math.max(1e-6, shoulderY - faceBot);
+        padFrac = sideHead + t * (sideShoulder - sideHead);
+      }
+      const pad = padFrac * fw;
+      rowX0 = Math.max(0, fx0 - pad);
+      rowX1 = Math.min(1, fx1 + pad);
+    }
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       const a = mask[i] as number;
       if (a <= 0) continue;
       const nx = (x + 0.5) / W;
-      const ox = useX ? (nx < x0 ? x0 - nx : nx > x1 ? nx - x1 : 0) : 0;
+      const ox = useX ? (nx < rowX0 ? rowX0 - nx : nx > rowX1 ? nx - rowX1 : 0) : 0;
       const oy = useY ? (ny < y0 ? y0 - ny : ny > y1 ? ny - y1 : 0) : 0;
       if (ox === 0 && oy === 0) continue; // inside hard hull (on active axes)
       const d = Math.hypot(ox, oy);
