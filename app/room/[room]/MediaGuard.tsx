@@ -294,7 +294,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         effectDisabled.current = true;
         effectRef.current = EFFECTS[0];
         setFx("none");
-        save(SAVED.effect, "");
+        save(SAVED.effect, "none");
         setFxNote(
           "Your background effect froze the picture on this computer, so it has been turned off for the " +
           "rest of this meeting. Your plain video is being sent — everyone can see you moving again."
@@ -512,7 +512,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       if (p.kind === "none") {
         if (track.processor) await track.stopProcessor();
         setFx("none"); effectRef.current = EFFECTS[0];
-        save(SAVED.effect, ""); save(SAVED.blur, "");
+        save(SAVED.effect, "none"); save(SAVED.blur, "");
         return;
       }
       const sup = effectSupport({
@@ -529,9 +529,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         effect.id,
         p.kind === "blur"
           ? { kind: "blur", blurRadius: BLUR_PX }
-          : p.kind === "video"
-            ? { kind: "video", videoPath: p.videoPath }
-            : { kind: "image", imagePath: p.imagePath },
+          : p.kind === "chroma"
+            ? { kind: "chroma", blurRadius: BLUR_PX }
+            : p.kind === "video"
+              ? { kind: "video", videoPath: p.videoPath }
+              : { kind: "image", imagePath: p.imagePath },
       );
       // setProcessor replaces any active one AND swaps the published
       // MediaStreamTrack for a generated one. That swap is what used to
@@ -546,7 +548,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       // THE RULE: an effect that fails degrades to PLAIN VIDEO, never to no
       // video. Being seen matters more than the nicer wall.
       try { if (track?.processor) await track.stopProcessor(); } catch { /* raw video is already flowing */ }
-      setFx("none"); effectRef.current = EFFECTS[0]; save(SAVED.effect, "");
+      setFx("none"); effectRef.current = EFFECTS[0]; save(SAVED.effect, "none");
       // The reason only appears when there IS one a person could read —
       // "[object Event]" is not a reason, it is debris.
       const why = String(e?.message || "").trim();
@@ -601,11 +603,18 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       setPhotoIds(found);
       setLoopIds(foundLoops);
 
-      // DEFAULT_EFFECT_ID is what somebody who has never chosen gets; anyone
-      // who HAS chosen gets their choice back — unless what they chose was a
-      // drawn room, in which case they get plain video rather than the
-      // cartoon they were actually looking at.
-      const wantedFx = restoreEffect(load(SAVED.effect) || DEFAULT_EFFECT_ID, load(SAVED.blur), found, foundLoops);
+      // DEFAULT_EFFECT_ID (blur) is what somebody who has never chosen gets.
+      // Missing key → default. Explicit "none" (or legacy "") → plain video.
+      // A drawn room whose photograph this deployment never shipped falls
+      // through restoreEffect to plain video rather than the cartoon.
+      let savedFx: string | null = null;
+      try { savedFx = window.localStorage.getItem(SAVED.effect); } catch { savedFx = null; }
+      const wantedFx = restoreEffect(
+        savedFx === null ? DEFAULT_EFFECT_ID : (savedFx || "none"),
+        load(SAVED.blur),
+        found,
+        foundLoops,
+      );
       if (wantedFx.kind !== "none") { effectRef.current = wantedFx; setFx(wantedFx.id); }
     })();
     return () => { alive = false; };
@@ -1039,14 +1048,16 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
                     onError={(ev) => { (ev.currentTarget as HTMLImageElement).src = e.src || e.photo || ""; }}
                   />
                 ) : (
-                  <span className={e.kind === "blur" ? "qmg-swblur" : "qmg-swnone"}>
-                    {e.kind === "blur" ? "◐" : "∅"}
+                  <span className={e.kind === "blur" ? "qmg-swblur" : e.kind === "chroma" ? "qmg-swchroma" : "qmg-swnone"}>
+                    {e.kind === "blur" ? "◐" : e.kind === "chroma" ? "▣" : "∅"}
                   </span>
                 )}
+                {e.badge ? <b className={"qmg-badge" + (e.badge === "Beta" ? " qmg-badge-beta" : "")}>{e.badge}</b> : null}
                 <i>{e.kind === "video" ? `Loop · ${e.label}` : e.label}</i>
               </button>
             ))}
           </div>
+          <p className="qmg-note">Green screen needs a green cloth behind you — it keys clean edges without the AI matte. Blur and replace still need Chrome or Edge.</p>
 
           <div className="qmg-fxrow">
             <button className="qmg-addbg" onClick={() => fileRef.current?.click()} disabled={fxBusy}>
@@ -1141,8 +1152,15 @@ export const GUARD_CSS = `
 .qmg-swatch:hover { border-color:#3b4356; }
 .qmg-swatch:disabled { opacity:.6; cursor:default; }
 .qmg-son { border-color:#00a99d; box-shadow:0 0 0 1px #00a99d inset; }
-.qmg-swnone, .qmg-swblur { font-size:17px; color:#8b93a5; }
+.qmg-swnone, .qmg-swblur, .qmg-swchroma { font-size:17px; color:#8b93a5; }
 .qmg-swblur { filter:blur(1px); }
+.qmg-swchroma { color:#3ddc84; }
+.qmg-badge { position:absolute; top:4px; right:4px; z-index:1; font-size:8px; font-weight:700;
+  letter-spacing:.04em; text-transform:uppercase; color:#0b0e14; background:#7fe0d6;
+  border-radius:4px; padding:1px 4px; line-height:1.4; box-shadow:0 1px 2px rgba(0,0,0,.45); }
+.qmg-badge-beta { background:#f0d9a6; }
+.qmg-swatch[aria-pressed="true"] .qmg-badge { background:#00a99d; color:#fff; }
+.qmg-swatch[aria-pressed="true"] .qmg-badge-beta { background:#c9a227; color:#fff; }
 /* Eight slots read better in four columns — a backdrop swatch has to show a
    ROOM, and three-across at panel width makes each one a postage stamp. */
 .qmg-fx { grid-template-columns:repeat(4, 1fr); }

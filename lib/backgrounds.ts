@@ -30,6 +30,8 @@
 export type Slot = {
   id: string;
   label: string;
+  /** shelf badge — Beta for photo replace until matte is rock-solid */
+  badge?: string;
   /** where a real photo would live in this deployment */
   photo: string;
   /** the drawn room used until one does */
@@ -65,7 +67,7 @@ function windows(x: number, y: number, w: number, h: number, seed: number): stri
 
 export const SLOTS: Slot[] = [
   {
-    id: "city", label: "Glass dusk", photo: "/backgrounds/city.jpg",
+    id: "city", label: "Glass dusk", badge: "Beta", photo: "/backgrounds/city.jpg",
     drawn: svg(
       `<defs><linearGradient id="dusk" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0%" stop-color="#141d33"/><stop offset="52%" stop-color="#3a3550"/>` +
@@ -99,6 +101,8 @@ export const SLOTS: Slot[] = [
 export type LoopSlot = {
   id: string;
   label: string;
+  /** shelf badge — Beta for loop replace until matte is rock-solid */
+  badge?: string;
   /** muted seamless loop (webm preferred) */
   loop: string;
   /** still used for the swatch and as a degrade target */
@@ -106,7 +110,7 @@ export type LoopSlot = {
 };
 
 export const LOOPS: LoopSlot[] = [
-  { id: "citylights", label: "Loop City", loop: "/backgrounds/citylights.webm", poster: "/backgrounds/citylights.jpg" },
+  { id: "citylights", label: "Loop City", badge: "Beta", loop: "/backgrounds/citylights.webm", poster: "/backgrounds/citylights.jpg" },
 ];
 
 /** The custom slot: a person's OWN picture, added in the panel. It is not in

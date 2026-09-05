@@ -41,7 +41,7 @@ import {
 import { QbgGl } from "./qbg-gl";
 
 export type QbgOptions = {
-  kind: "blur" | "image" | "video";
+  kind: "blur" | "chroma" | "image" | "video";
   /** data: URL or same-origin path for still backgrounds */
   imagePath?: string;
   /** same-origin muted seamless loop for living backgrounds */
@@ -118,32 +118,36 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
 
   async init(o: any): Promise<void> {
     await super.init(o);
-    const vision = await import("@mediapipe/tasks-vision");
-    // Local assets when this deployment ships them; the CDN otherwise. The
-    // vendored copy is an optimisation, never a dependency — a missing file
-    // must degrade to "slower first blur", not to "no blur".
-    // Meet uses a landscape-variant selfie model; square mis-segments wide webcam scenes.
-    // Prefer local landscape tflite; if missing, fall back to CDN landscape (not square).
-    const local = assetPaths({ wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"), model: await head("/mediapipe/selfie_segmenter_landscape.tflite") });
-    const fileSet = await vision.FilesetResolver.forVisionTasks(
-      local?.tasksVisionFileSet ||
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
-    );
-    this.seg = await vision.ImageSegmenter.createFromOptions(fileSet, {
-      baseOptions: {
-        modelAssetPath: local?.modelAssetPath ||
-          SELFIE_LANDSCAPE_CDN,
-        delegate: "GPU",
-      },
-      runningMode: "VIDEO",
-      // BOTH. Confidence is what we want — a Float32 per pixel, which is the
-      // only thing that can draw a strand of hair — and the category mask is
-      // the fallback for a build or a model that does not return one. A
-      // fallback is behaviour, not a comment: paintMasked works either way,
-      // it just looks like 2026-08-20 on the old path.
-      outputCategoryMask: true,
-      outputConfidenceMasks: true,
-    });
+    // Green screen Reliable: skip MediaPipe entirely — chroma key from camera RGB.
+    const skipSeg = this.opts.kind === "chroma";
+    if (!skipSeg) {
+      const vision = await import("@mediapipe/tasks-vision");
+      // Local assets when this deployment ships them; the CDN otherwise. The
+      // vendored copy is an optimisation, never a dependency — a missing file
+      // must degrade to "slower first blur", not to "no blur".
+      // Meet uses a landscape-variant selfie model; square mis-segments wide webcam scenes.
+      // Prefer local landscape tflite; if missing, fall back to CDN landscape (not square).
+      const local = assetPaths({ wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"), model: await head("/mediapipe/selfie_segmenter_landscape.tflite") });
+      const fileSet = await vision.FilesetResolver.forVisionTasks(
+        local?.tasksVisionFileSet ||
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
+      );
+      this.seg = await vision.ImageSegmenter.createFromOptions(fileSet, {
+        baseOptions: {
+          modelAssetPath: local?.modelAssetPath ||
+            SELFIE_LANDSCAPE_CDN,
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        // BOTH. Confidence is what we want — a Float32 per pixel, which is the
+        // only thing that can draw a strand of hair — and the category mask is
+        // the fallback for a build or a model that does not return one. A
+        // fallback is behaviour, not a comment: paintMasked works either way,
+        // it just looks like 2026-08-20 on the old path.
+        outputCategoryMask: true,
+        outputConfidenceMasks: true,
+      });
+    }
     if (this.opts.kind === "video" && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
     else if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
 
@@ -265,6 +269,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       }
       const W = this.canvas.width, H = this.canvas.height;
 
+      // Green screen Reliable: no MediaPipe — chroma key + blur plate each frame.
+      if (this.opts.kind === "chroma") {
+        this.paintChroma(frame, W, H);
+      } else {
       // Segment THIS VideoFrame — not this.inputVideo. The hidden video
       // element lags the insertable-stream frame by one or more poses; that
       // desync is the translucent ghost beside a turning head.
@@ -290,6 +298,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         ctx.drawImage(frame as any, 0, 0, W, H);
         ctx.restore();
       } else this.paintBlurAll(frame, W, H);
+      }
 
       // ALWAYS enqueue what we just painted this frame. The stock transformer
       // skipped this on a late mask and published the previous canvas — that
@@ -624,6 +633,99 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
    *  feathered. Background is painted FULLY FIRST, then the person cutout
    *  is source-over'd on top. destination-over under a soft black-fringed
    *  matte was the dark halo around hat and shoulders. */
+
+  /** Green screen Reliable: GL chroma key → blur plate → sharp person.
+   *  Canvas2d fallback: key green in CPU and composite over a bokeh plate. */
+  private paintChroma(frame: VideoFrame, W: number, H: number) {
+    const ctx = this.ctx!;
+    if (this.useGl && this.gl && this.gl.isReady) {
+      try {
+        this.gl.resize(W, H);
+        const ok = this.gl.drawChroma(frame as any, this.opts.blurRadius || BLUR_PX);
+        if (ok && this.gl.surface) {
+          ctx.save();
+          const Hi = H;
+          const Wi = W;
+          ctx.setTransform(1, 0, 0, -1, 0, Hi);
+          ctx.globalCompositeOperation = "copy";
+          ctx.filter = "none";
+          ctx.drawImage(this.gl.surface as any, 0, -1, Wi, Hi + 2);
+          ctx.restore();
+          return;
+        }
+      } catch {
+        // Fall through to canvas2d — never hard-crash on a bad GL frame.
+      }
+    }
+    this.paintChromaCanvas2d(frame, W, H);
+  }
+
+  /** CPU chroma key fallback when WebGL2 is unavailable. */
+  private paintChromaCanvas2d(frame: VideoFrame, W: number, H: number) {
+    const ctx = this.ctx!;
+    if (!this.plateCanvas || this.plateCanvas.width !== W || this.plateCanvas.height !== H) {
+      this.plateCanvas = new OffscreenCanvas(W, H);
+      this.plateCtx = this.plateCanvas.getContext("2d", { willReadFrequently: true });
+    }
+    const pc = this.plateCtx;
+    if (!pc) {
+      this.paintBlurAll(frame, W, H);
+      return;
+    }
+    pc.save();
+    pc.globalCompositeOperation = "copy";
+    pc.filter = "none";
+    pc.drawImage(frame as any, 0, 0, W, H);
+    pc.restore();
+    let id: ImageData;
+    try {
+      id = this.plateCtx.getImageData(0, 0, W, H);
+    } catch {
+      this.paintBlurAll(frame, W, H);
+      return;
+    }
+    const d = id.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const sat = mx > 1e-4 ? (mx - mn) / mx : 0;
+      const greenDom = g - Math.max(r, b);
+      let key = 0;
+      if (greenDom > 0.04 && sat > 0.12) {
+        const gd = Math.min(1, Math.max(0, (greenDom - 0.04) / 0.12));
+        const sd = Math.min(1, Math.max(0, (sat - 0.12) / 0.20));
+        key = gd * sd;
+      }
+      const person = 1 - Math.min(1, Math.max(0, key));
+      d[i + 3] = Math.round(255 * person);
+    }
+    pc.putImageData(id, 0, 0);
+
+    const plate = this.blurred(frame, W, H, this.opts.blurRadius || BLUR_PX);
+    ctx.save();
+    ctx.globalCompositeOperation = "copy";
+    ctx.filter = "none";
+    if (plate) ctx.drawImage(plate as any, 0, 0, W, H);
+    else ctx.drawImage(frame as any, 0, 0, W, H);
+    if (!this.personCanvas || this.personCanvas.width !== W || this.personCanvas.height !== H) {
+      this.personCanvas = new OffscreenCanvas(W, H);
+      this.personCtx = this.personCanvas.getContext("2d", { willReadFrequently: false });
+    }
+    const per = this.personCtx;
+    if (per) {
+      per.save();
+      per.globalCompositeOperation = "copy";
+      per.filter = "none";
+      per.drawImage(frame as any, 0, 0, W, H);
+      per.globalCompositeOperation = "destination-in";
+      per.drawImage(this.plateCanvas as any, 0, 0, W, H);
+      per.restore();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(this.personCanvas as any, 0, 0, W, H);
+    }
+    ctx.restore();
+  }
+
   private paintMasked(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
     // WebGL2 path: weighted bg blur + sharp person mix. One blit to 2d canvas.

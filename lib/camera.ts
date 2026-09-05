@@ -207,8 +207,10 @@ export function blameKind(s: {
 
 export type Effect = {
   id: string;
-  kind: "none" | "blur" | "image" | "video";
+  kind: "none" | "blur" | "chroma" | "image" | "video";
   label: string;
+  /** short shelf badge — Reliable (green screen) or Beta (photo/loop replace) */
+  badge?: string;
   /** data: URL for image effects — self-contained, nothing to host or fetch */
   src?: string;
   /** where a real photograph would live in this deployment, if it ships one */
@@ -232,8 +234,9 @@ export type Effect = {
 export const EFFECTS: Effect[] = [
   { id: "none", kind: "none", label: "None" },
   { id: "blur", kind: "blur", label: "Blur" },
-  ...SLOTS.map((s): Effect => ({ id: s.id, kind: "image", label: s.label, src: s.drawn, photo: s.photo })),
-  ...LOOPS.map((s): Effect => ({ id: s.id, kind: "video", label: s.label, src: s.poster, loop: s.loop, photo: s.poster })),
+  { id: "chroma", kind: "chroma", label: "Green screen", badge: "Reliable" },
+  ...SLOTS.map((s): Effect => ({ id: s.id, kind: "image", label: s.label, badge: s.badge, src: s.drawn, photo: s.photo })),
+  ...LOOPS.map((s): Effect => ({ id: s.id, kind: "video", label: s.label, badge: s.badge, src: s.poster, loop: s.loop, photo: s.poster })),
   { id: CUSTOM_ID, kind: "image", label: "Your photo", src: CUSTOM_PLACEHOLDER, custom: true },
 ];
 
@@ -344,9 +347,11 @@ export function effectSupport(env: {
 export function processorFor(effect: Effect, customDataUrl?: string, photoOk?: boolean):
   | { kind: "none" }
   | { kind: "blur"; blurRadius: number }
+  | { kind: "chroma" }
   | { kind: "image"; imagePath: string; photo?: string }
   | { kind: "video"; videoPath: string; poster?: string } {
   if (effect.kind === "blur") return { kind: "blur", blurRadius: BLUR_PX };
+  if (effect.kind === "chroma") return { kind: "chroma" };
   if (effect.kind === "video" && effect.loop) {
     return { kind: "video", videoPath: effect.loop, poster: effect.photo || effect.src };
   }
