@@ -185,15 +185,12 @@ void main() {
 export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
-/** Blur-path light-wrap softEdge (virtual image/video stays 0). */
-export const LIGHT_WRAP_BLUR = 0.1;
+/** Blur-path light-wrap softEdge (0: wrap revealed contaminated edges; Meet wrap later). */
+export const LIGHT_WRAP_BLUR = 0;
 /** Temporal EMA mix with previous chroma matte (kills sparkle flicker). */
 export const CHROMA_MASK_EMA = 0.68;
 /** Morphological SE radius (px) for close-then-open on chroma matte. */
 export const CHROMA_MORPH_RADIUS = 2;
-/** Dark-fringe decontam mix toward BG (virtual only); blur path gates this off. */
-export const DARK_FRINGE_MIX = 0.32;
-
 /**
  * Joint bilateral filter on the person mask guided by frame luminance.
  * Meet blog: joint bilateral aligns matte to image boundaries before composite.
@@ -400,32 +397,19 @@ void main() {
   float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.12);
   float a = clamp(person - wrap, 0.0, 1.0);
 
-  // Mid-edge spill suppression (dark fringe + color distance) — VIRTUAL only.
-  // On blur, mixing sharp toward the cool plant/blur plate caused cyan shoulder
-  // rim and navy-cap darkening (QA after #53).
-  float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
-  float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
-  float mid = step(0.04, a) * step(a, 0.92);
-  // Bias fringe to mid-range luma — skip near-black navy caps / dark clothing.
-  float midLuma = smoothstep(0.10, 0.28, sharpL) * (1.0 - smoothstep(0.75, 0.92, sharpL));
-  float darkFringe = mid * midLuma * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
-  float colorDist = length(sharp.rgb - bg.rgb);
-  // Skin-like: r mildly above g and b — do not pull skin toward bg.
-  float skinLike = step(sharp.g + 0.02, sharp.r) * step(sharp.b, sharp.r);
-  float colorSpill = mid * (1.0 - skinLike) * smoothstep(0.15, 0.45, colorDist);
+  // Universal edge despill (blur + virtual): when g > max(r,b), clamp green
+  // toward max(r,b). Never mix FG toward bg.rgb — that invented cyan fringe on
+  // Glass dusk shoulders (QA after #54). Strong in soft edge band; virtual also
+  // mild on opaque person (green-screen bounce onto pink).
   vec3 sharpUse = sharp.rgb;
-  float virtGate = step(0.5, u_useVirtual);
-  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.32, colorSpill * 0.45) * virtGate);
-
-  // Classic chroma despill (virtual/green-screen): when g > max(r,b), clamp green
-  // toward max(r,b) on FG — never mix virtual BG green into pink/cloth.
-  float edgeBand = person * (1.0 - person) * 4.0;
   float maxRB = max(sharpUse.r, sharpUse.b);
   float gLead = max(0.0, sharpUse.g - maxRB);
-  float chromaSpill = (u_useVirtual > 0.5)
-    ? edgeBand * smoothstep(0.015, 0.10, gLead)
-    : 0.0;
-  sharpUse.g = mix(sharpUse.g, maxRB, clamp(chromaSpill * 0.85, 0.0, 1.0));
+  float edgeBand = person * (1.0 - person) * 4.0;
+  float despillAmt = clamp(edgeBand * smoothstep(0.0, 0.08, gLead) * 1.0, 0.0, 1.0);
+  if (u_useVirtual > 0.5) {
+    despillAmt = max(despillAmt, smoothstep(0.0, 0.06, gLead) * 0.55);
+  }
+  sharpUse.g = mix(sharpUse.g, maxRB, despillAmt);
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);
