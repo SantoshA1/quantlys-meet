@@ -455,7 +455,10 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         }
         // Full-height side gate: kill plant/furniture columns without vertical torso cut.
         lateralPersonGate(this.smooth, mw, mh);
-        // Drop tiny flecks that somehow survive open+island+lateral.
+        // Hull+lateral can orphan plant/chair that was part of the main island;
+        // re-run island so only the center person component survives, then despeckle.
+        keepCenterPersonIsland(this.smooth, mw, mh);
+        // Drop tiny flecks that somehow survive open+island+hull+lateral.
         despecklePersonMask(this.smooth, mw, mh);
         // Leaf-green leaks. Scale smallCanvas to mask size when they differ.
         if (this.smallCtx && this.smallCanvas) {

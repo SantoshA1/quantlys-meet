@@ -937,10 +937,10 @@ export function suppressLeafLeaks(
   const H = Math.max(0, Math.floor(Number(mh)) || 0);
   const n = W * H;
   if (!n || mask.length < n || rgba.length < n * 4) return mask;
-  // Center 30% width, upper ~45% — keep green clothing/hair near face.
-  const x0 = Math.floor(W * 0.35);
-  const x1 = Math.ceil(W * 0.65);
-  const y1 = Math.ceil(H * 0.45);
+  // Center ~16% width, upper ~38% — keep green clothing/hair near face; ear-adjacent plant not protected.
+  const x0 = Math.floor(W * 0.42);
+  const x1 = Math.ceil(W * 0.58);
+  const y1 = Math.ceil(H * 0.38);
   const crownBand = Math.ceil(H * 0.18);
   const crownSoft = Math.ceil(H * 0.28);
   const crownY = findCrownY(mask, W, H);
@@ -992,9 +992,9 @@ export const FACE_HULL = {
   /** ExpandFaceHull box side pad (fraction of face width). Mid fallback. */
   side: 0.55,
   /** Trapezoid X: tight pad beside head/ears (cuts plant without Y crown cut). */
-  sideHead: 0.28,
+  sideHead: 0.14,
   /** Trapezoid X: wider pad at shoulders (keeps arms; still cuts far furniture). */
-  shoulderSide: 0.85,
+  shoulderSide: 0.55,
   /** Soft alpha falloff outside the hard hull, as a fraction of frame size. */
   falloff: 0.04,
 };
