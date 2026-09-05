@@ -403,13 +403,13 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // Near-binary harden at SEGMENT RES (cheap). maskCanvas then already
         // carries a hard person alpha — no full-res pixel readback later.
         hardenPersonMatte(this.smooth);
-        // Morphological open breaks thin chair→couch bridges without the
-        // TORSO_GATE ellipse that clipped shoulders (floating-head hotfix).
+        // Morphological open skips crown band (preserve rounded cap); full SE below
+        // breaks chair→couch bridges (no TORSO_GATE ellipse).
         openPersonMask(this.smooth, mw, mh);
         keepCenterPersonIsland(this.smooth, mw, mh);
-        // Face→shoulders hull BEFORE lateral so we constrain plant/chair
-        // attached to the cap without fighting the side gate; lateral still
-        // helps when the face box widens into furniture.
+        // Face→shoulders trapezoid X BEFORE lateral: tight beside head/ears,
+        // wide at shoulders (color-agnostic; no Y crown cut). Lateral still
+        // helps when face detect misses.
         {
           let hull: FaceHull | null = null;
           if (this.face && this.smallCanvas) {
