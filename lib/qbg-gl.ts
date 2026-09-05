@@ -67,11 +67,15 @@ void main() {
     sum += texture(u_frame, uv) * w;
     wsum += w;
   }
-  // Fallback to sharp when mask briefly marks room as person (prevents black holes).
+  // Meet-safe: never fall back to sharp frame (would put FG/cap into blur plate).
   if (wsum > 1e-3) {
     outColor = sum / wsum;
   } else {
-    outColor = texture(u_frame, v_uv);
+    // no valid room samples — use desaturated edge fill from far taps only, never raw person
+    vec4 far = texture(u_frame, v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
+    float mf = sampleMaskEroded(v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
+    float rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    outColor = mix(vec4(0.15, 0.15, 0.16, 1.0), far, rf); // neutral if still person
   }
 }
 `;
@@ -113,11 +117,15 @@ void main() {
     sum += texture(u_frame, uv) * w;
     wsum += w;
   }
-  // Fallback to sharp when mask briefly marks room as person (prevents black holes).
+  // Meet-safe: never fall back to sharp frame (would put FG/cap into blur plate).
   if (wsum > 1e-3) {
     outColor = sum / wsum;
   } else {
-    outColor = texture(u_frame, v_uv);
+    // no valid room samples — use desaturated edge fill from far taps only, never raw person
+    vec4 far = texture(u_frame, v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
+    float mf = sampleMaskEroded(v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
+    float rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    outColor = mix(vec4(0.15, 0.15, 0.16, 1.0), far, rf); // neutral if still person
   }
 }
 `;
@@ -128,7 +136,7 @@ export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
 /** Blur-path light-wrap softEdge (virtual image/video stays 0). */
-export const LIGHT_WRAP_BLUR = 0.35;
+export const LIGHT_WRAP_BLUR = 0.2;
 /** Temporal EMA mix with previous chroma matte (kills sparkle flicker). */
 export const CHROMA_MASK_EMA = 0.68;
 /** Morphological SE radius (px) for close-then-open on chroma matte. */
@@ -323,8 +331,11 @@ void main() {
   vec4 sharp = texture(u_sharp, uv);
   // 1-texel morphological erode: shrinks chair fluff / plant attached to silhouette.
   float mask = sampleMaskEroded(uv);
-  // Inward erode via tighter smoothstep — kills room rim + plant fringe on cap.
-  float person = smoothstep(0.52, 0.68, mask);
+  // Blur path: softer threshold (less silhouette erode / dark fringe on navy caps).
+  // Virtual/chroma: keep tighter inward pull for cloth flecks / plant fringe.
+  float person = (u_useVirtual > 0.5)
+    ? smoothstep(0.52, 0.68, mask)
+    : smoothstep(0.35, 0.55, mask);
 
   vec4 bg;
   if (u_useVirtual > 0.5) {
@@ -803,6 +814,15 @@ export class QbgGl {
       this.runChromaEmaPass(this.chromaScratchTex, this.chromaScratchTex, this.refinedMaskTex, 0, false);
       this.runChromaEmaPass(this.chromaScratchTex, this.chromaScratchTex, this.chromaPrevTex, 0, false);
       this.chromaHasPrev = true;
+    }
+
+    // 4) Despeckle: erode small false-FG cloth flecks, then light dilate to restore edge.
+    if (this.chromaMorph && this.chromaScratchTex) {
+      this.runChromaMorph(this.refinedMaskTex, this.chromaScratchTex, 2.5, /* erode */ 1);
+      this.runChromaMorph(this.chromaScratchTex, this.refinedMaskTex, 1.5, /* dilate */ 0);
+      if (this.chromaPrevTex && this.chromaEma) {
+        this.runChromaEmaPass(this.refinedMaskTex, this.refinedMaskTex, this.chromaPrevTex, 0, false);
+      }
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
