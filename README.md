@@ -18,3 +18,7 @@ The button goes live once these files sit in YOUR GitHub repo (replace YOUR_ORG)
 - Watch per-person quality bars: one red = their wifi, all red = the app.
 - Spot-check 3 standups incl. one overlap moment. Transcript accurate+useful? → drop Zoom.
 - After test: set ALLOW_GUEST_JOIN=false, redeploy. Drop `/standup` in the calendar.
+
+## MODNet matte spike
+See public/models/README.md and scripts/download-modnet.sh.
+Toggle: matte query param or quantlys-matte storage key. Chroma path unchanged.

@@ -50,3 +50,7 @@ yarn-error.log*
 # this mount cannot delete files, so git's own lock files and scratch copies
 # get parked here instead of removed
 _to_delete/
+
+# MODNet spike weights + optional vendored ORT wasm
+public/models/*.onnx
+public/ort/
