@@ -127,6 +127,8 @@ void main() {
 export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
+/** Blur-path light-wrap softEdge (virtual image/video stays 0). */
+export const LIGHT_WRAP_BLUR = 0.4;
 
 /**
  * Joint bilateral filter on the person mask guided by frame luminance.
@@ -276,23 +278,18 @@ void main() {
   float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.18);
   float a = clamp(person - wrap, 0.0, 1.0);
 
-  // Mid-edge spill suppression (dark fringe + chroma/plant + color distance).
+  // Mid-edge spill suppression (dark fringe + color distance).
+  // Plant chroma force-zero removed — fought real greens (shirt/plants).
   float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
   float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
   float mid = step(0.04, a) * step(a, 0.92);
   float darkFringe = mid * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
-  // Green + yellow-green plant fringe (both g-r and g-b positive).
-  float greenExcess = max(0.0, min(sharp.g - sharp.r, sharp.g - sharp.b));
-  float greenSpill = smoothstep(0.01, 0.08, greenExcess);
-  // Strong leaf: force alpha off (not just *0.1), mid-edge or anywhere clear leaf.
-  if (greenSpill > 0.55) a = 0.0;
   float colorDist = length(sharp.rgb - bg.rgb);
   // Skin-like: r mildly above g and b — do not pull skin toward bg.
   float skinLike = step(sharp.g + 0.02, sharp.r) * step(sharp.b, sharp.r);
   float colorSpill = mid * (1.0 - skinLike) * smoothstep(0.15, 0.45, colorDist);
-  a = a * (1.0 - greenSpill);
   vec3 sharpUse = sharp.rgb;
-  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.55, max(greenSpill * 0.75, colorSpill * 0.5)));
+  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.55, colorSpill * 0.5));
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);
@@ -602,7 +599,7 @@ export class QbgGl {
       this.uploadFrame(frame);
       this.runJbf();
       this.runBlurPasses(Math.max(1, Number(blurPx) || 1));
-      this.runComposite(/* virtual */ false, null, 0);
+      this.runComposite(/* virtual */ false, null, LIGHT_WRAP_BLUR);
       return true;
     } catch {
       return false;
