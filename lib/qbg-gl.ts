@@ -633,19 +633,25 @@ export class QbgGl {
 
 
   /**
-   * Green-screen Reliable: chroma-key mask from camera RGB → weighted blur of
-   * the FULL frame as BG plate → sharp person composite. Skips MediaPipe /
-   * JBF — the cloth IS the matte.
+   * Green-screen Reliable: chroma-key mask from camera RGB → sharp person over
+   * a chosen virtual plate (image/video) or a neutral dark-gray studio when
+   * none is set. NEVER blur the camera as the plate (green cloth stays olive).
+   * softEdge matches drawImageBg (image path uses 0). Skips MediaPipe / JBF.
    */
-  drawChroma(frame: CanvasImageSource, blurPx: number): boolean {
+  drawChroma(frame: CanvasImageSource, bg: CanvasImageSource | null, softEdge: number = 0): boolean {
     if (!this.isReady || !this.gl || !this.canvas || !this.chromaMask) return false;
     if (this.w < 1 || this.h < 1) return false;
     try {
       this.uploadFrame(frame);
       if (!this.runChromaMask()) return false;
       // runChromaMask sets jbfLive so activePersonMask() uses the chroma matte.
-      this.runBlurPasses(Math.max(1, Number(blurPx) || 1));
-      this.runComposite(/* virtual */ false, null, 0);
+      if (bg) {
+        this.uploadBg(bg);
+        this.runComposite(/* virtual */ true, bg, softEdge);
+      } else {
+        this.uploadSolidBg(0x1c, 0x1f, 0x26);
+        this.runComposite(/* virtual */ true, null, 0);
+      }
       return true;
     } catch {
       return false;
@@ -801,6 +807,22 @@ export class QbgGl {
     gl.bindTexture(gl.TEXTURE_2D, this.bgTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bg as any);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  /** 1×1 solid into bgTex for chroma with no BG file (neutral studio plate). */
+  private uploadSolidBg(r: number, g: number, b: number): void {
+    const gl = this.gl!;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.bgTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([r & 255, g & 255, b & 255, 255]),
+    );
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
