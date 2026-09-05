@@ -655,8 +655,8 @@ export function keepCenterPersonIsland(
 
 /** Morphological open radius at segment resolution. Small disk/square breaks
  *  thin chair→couch bridges without shaving wide shoulders (floating-head fix).
- *  Chair-under-arm: bumped 4→6 so thick chair↔body bridges detach (cap ≤8). */
-export const OPEN_RADIUS_PX = 6;
+ *  Edge-spill: bumped 3→4 so medium plant blobs detach more reliably. */
+export const OPEN_RADIUS_PX = 4;
 
 /** Upper fraction of the frame left untouched by morphological open.
  *  Full 2D open flattens rounded baseball-cap crowns (square SE removes the
@@ -967,104 +967,6 @@ export function suppressLeafLeaks(
       }
       // Head box middle: keep green clothing/hair near face.
       if (x >= x0 && x < x1 && y < y1) continue;
-      mask[i] = 0;
-    }
-  }
-  return mask;
-}
-
-/** Tunables for suppressDarkEdgeLeaks — dark furniture / office-chair blobs
- *  that MediaPipe labeled person, but only when edge-adjacent (not deep
- *  interior shadows) and outside the protected face/beard/hair core. */
-export const DARK_EDGE = {
-  /** Max luma (0.299R+0.587G+0.114B) to count as "dark chair". */
-  lumaMax: 52,
-  /** Max channel range (max-min) — chairs are low-chroma; shirts often not. */
-  chromaMax: 35,
-  /** 4-connected distance (px) from a non-person pixel to still count as edge. */
-  edgePx: 5,
-  /** Protected face core (normalized): skip beard/hair/face. */
-  faceX0: 0.40,
-  faceX1: 0.60,
-  faceY0: 0.08,
-  faceY1: 0.42,
-};
-
-/** Zero dark, low-chroma person pixels that sit near the mask exterior
- *  (chair under raised arm / beside shoulders). Keeps face-core beard/hair
- *  and colorful clothing. Requires RGBA 1:1 with mask dims. Mutates. */
-export function suppressDarkEdgeLeaks(
-  mask: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
-  rgba: Uint8ClampedArray | Uint8Array | number[] | null | undefined,
-  mw: number,
-  mh: number,
-): Uint8ClampedArray | Uint8Array | number[] | null | undefined {
-  if (!mask || !rgba || !mw || !mh) return mask;
-  const W = Math.max(0, Math.floor(Number(mw)) || 0);
-  const H = Math.max(0, Math.floor(Number(mh)) || 0);
-  const n = W * H;
-  if (!n || mask.length < n || rgba.length < n * 4) return mask;
-  const thresh = HARDEN_PERSON_CLEAR;
-  const edgePx = Math.max(1, Math.min(12, Math.floor(Number(DARK_EDGE.edgePx)) || 5));
-  const lumaMax = Number(DARK_EDGE.lumaMax);
-  const chromaMax = Number(DARK_EDGE.chromaMax);
-  const fx0 = Math.floor(W * DARK_EDGE.faceX0);
-  const fx1 = Math.ceil(W * DARK_EDGE.faceX1);
-  const fy0 = Math.floor(H * DARK_EDGE.faceY0);
-  const fy1 = Math.ceil(H * DARK_EDGE.faceY1);
-
-  // BFS distance from exterior (mask < clear). dist=0 on exterior; person
-  // pixels get 1..edgePx when reachable within that many 4-connected steps.
-  const dist = new Int16Array(n);
-  dist.fill(-1);
-  const qx = new Int32Array(n);
-  const qy = new Int32Array(n);
-  let qh = 0, qt = 0;
-  for (let i = 0; i < n; i++) {
-    if ((mask[i] as number) < thresh) {
-      dist[i] = 0;
-      qx[qt] = i % W;
-      qy[qt] = (i / W) | 0;
-      qt++;
-    }
-  }
-  const dirs = [1, 0, -1, 0, 0, 1, 0, -1];
-  while (qh < qt) {
-    const x = qx[qh];
-    const y = qy[qh];
-    qh++;
-    const d0 = dist[y * W + x];
-    if (d0 >= edgePx) continue;
-    for (let k = 0; k < 4; k++) {
-      const nx = x + dirs[k * 2];
-      const ny = y + dirs[k * 2 + 1];
-      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-      const j = ny * W + nx;
-      if (dist[j] >= 0) continue;
-      dist[j] = d0 + 1;
-      qx[qt] = nx;
-      qy[qt] = ny;
-      qt++;
-    }
-  }
-
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      if ((mask[i] as number) < thresh) continue;
-      const d = dist[i];
-      if (d < 1 || d > edgePx) continue;
-      // Face core: never kill beard/hair/face.
-      if (x >= fx0 && x < fx1 && y >= fy0 && y < fy1) continue;
-      const j = i * 4;
-      const r = rgba[j] as number;
-      const g = rgba[j + 1] as number;
-      const b = rgba[j + 2] as number;
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-      if (luma > lumaMax) continue;
-      const mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-      const mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-      if (mx - mn > chromaMax) continue;
       mask[i] = 0;
     }
   }
