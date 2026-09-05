@@ -128,7 +128,13 @@ export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
 /** Blur-path light-wrap softEdge (virtual image/video stays 0). */
-export const LIGHT_WRAP_BLUR = 0.4;
+export const LIGHT_WRAP_BLUR = 0.35;
+/** Temporal EMA mix with previous chroma matte (kills sparkle flicker). */
+export const CHROMA_MASK_EMA = 0.68;
+/** Morphological SE radius (px) for close-then-open on chroma matte. */
+export const CHROMA_MORPH_RADIUS = 2;
+/** Dark-fringe decontam mix toward BG (blur path); kept mild for navy caps. */
+export const DARK_FRINGE_MIX = 0.32;
 
 /**
  * Joint bilateral filter on the person mask guided by frame luminance.
@@ -209,18 +215,73 @@ void main() {
   float mx = max(c.r, max(c.g, c.b));
   float mn = min(c.r, min(c.g, c.b));
   float sat = mx > 1e-4 ? (mx - mn) / mx : 0.0;
-  // Green dominance (g above r and b). Soft thresholds tolerate cloth shade.
+  // Classic green dominance + olive/yellow-green (g>r and g>b both positive).
   float greenDom = c.g - max(c.r, c.b);
-  float key = smoothstep(0.04, 0.16, greenDom) * smoothstep(0.12, 0.32, sat);
+  float olive = min(c.g - c.r, c.g - c.b);
+  float greenAmt = max(greenDom, olive * 0.9);
+  // Wider soft thresholds for wrinkled / uneven cloth (holes + shade).
+  float key = smoothstep(0.02, 0.14, greenAmt) * smoothstep(0.08, 0.28, sat);
   // Mild YCbCr assist: green screen sits in low Cr / mid-high Cb territory.
   float y  = dot(c, vec3(0.299, 0.587, 0.114));
   float cb = 0.5 + (c.b - y) * 0.564;
   float cr = 0.5 + (c.r - y) * 0.713;
-  float ycbcrKey = smoothstep(0.42, 0.52, cb) * (1.0 - smoothstep(0.40, 0.48, cr))
-                 * smoothstep(0.10, 0.28, sat);
+  float ycbcrKey = smoothstep(0.40, 0.52, cb) * (1.0 - smoothstep(0.38, 0.48, cr))
+                 * smoothstep(0.08, 0.26, sat);
   key = max(key, ycbcrKey * 0.85);
   float person = 1.0 - clamp(key, 0.0, 1.0);
   outColor = vec4(person, person, person, 1.0);
+}
+`;
+
+/** Dilate (u_mode=0) or erode (u_mode=1) person matte with small SE (~2–3px). */
+export const FRAG_CHROMA_MORPH = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_mask;
+uniform vec2 u_texel;
+uniform float u_radius;
+uniform float u_mode;
+
+void main() {
+  float r = clamp(u_radius, 1.0, 3.0);
+  float m = texture(u_mask, v_uv).r;
+  for (int i = 1; i <= 3; i++) {
+    if (float(i) > r + 0.01) break;
+    vec2 t = u_texel * float(i);
+    float a = texture(u_mask, v_uv + vec2( t.x, 0.0)).r;
+    float b = texture(u_mask, v_uv + vec2(-t.x, 0.0)).r;
+    float c = texture(u_mask, v_uv + vec2(0.0,  t.y)).r;
+    float d = texture(u_mask, v_uv + vec2(0.0, -t.y)).r;
+    float e = texture(u_mask, v_uv + vec2( t.x,  t.y)).r;
+    float f = texture(u_mask, v_uv + vec2( t.x, -t.y)).r;
+    float g = texture(u_mask, v_uv + vec2(-t.x,  t.y)).r;
+    float h = texture(u_mask, v_uv + vec2(-t.x, -t.y)).r;
+    if (u_mode < 0.5) {
+      m = max(m, max(max(max(a, b), max(c, d)), max(max(e, f), max(g, h))));
+    } else {
+      m = min(m, min(min(min(a, b), min(c, d)), min(min(e, f), min(g, h))));
+    }
+  }
+  outColor = vec4(m, m, m, 1.0);
+}
+`;
+
+/** Temporal EMA: mix current chroma matte with previous to kill sparkle flicker. */
+export const FRAG_CHROMA_EMA = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_curr;
+uniform sampler2D u_prev;
+uniform float u_mix;
+uniform float u_hasPrev;
+
+void main() {
+  float c = texture(u_curr, v_uv).r;
+  float p = texture(u_prev, v_uv).r;
+  float m = (u_hasPrev > 0.5) ? mix(c, p, clamp(u_mix, 0.0, 0.95)) : c;
+  outColor = vec4(m, m, m, 1.0);
 }
 `;
 
@@ -275,7 +336,7 @@ void main() {
 
   // Light wrap only for blur; virtual wrap added weird edge glow.
   float edge = person * (1.0 - person) * 4.0;
-  float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.18);
+  float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.12);
   float a = clamp(person - wrap, 0.0, 1.0);
 
   // Mid-edge spill suppression (dark fringe + color distance).
@@ -283,13 +344,26 @@ void main() {
   float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
   float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
   float mid = step(0.04, a) * step(a, 0.92);
-  float darkFringe = mid * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
+  // Bias fringe to mid-range luma — skip near-black navy caps / dark clothing.
+  float midLuma = smoothstep(0.10, 0.28, sharpL) * (1.0 - smoothstep(0.75, 0.92, sharpL));
+  float darkFringe = mid * midLuma * clamp((bgL - sharpL - 0.04) / 0.20, 0.0, 1.0);
   float colorDist = length(sharp.rgb - bg.rgb);
   // Skin-like: r mildly above g and b — do not pull skin toward bg.
   float skinLike = step(sharp.g + 0.02, sharp.r) * step(sharp.b, sharp.r);
   float colorSpill = mid * (1.0 - skinLike) * smoothstep(0.15, 0.45, colorDist);
   vec3 sharpUse = sharp.rgb;
-  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.55, colorSpill * 0.5));
+  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.32, colorSpill * 0.45));
+
+  // Classic chroma spill (virtual/green-screen path): pull green tint toward BG
+  // near the matte edge — despill only, never force alpha to zero.
+  float edgeBand = person * (1.0 - person) * 4.0;
+  float gLead = max(0.0, sharp.g - max(sharp.r, sharp.b));
+  float chromaSpill = (u_useVirtual > 0.5)
+    ? edgeBand * smoothstep(0.015, 0.10, gLead)
+    : 0.0;
+  float despillG = mix((sharpUse.r + sharpUse.b) * 0.5, bg.g, 0.55);
+  sharpUse.g = mix(sharpUse.g, despillG, clamp(chromaSpill * 0.85, 0.0, 1.0));
+  sharpUse = mix(sharpUse, bg.rgb, chromaSpill * 0.25);
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);
@@ -389,11 +463,15 @@ export class QbgGl {
   private composite: WebGLProgram | null = null;
   private jbf: WebGLProgram | null = null;
   private chromaMask: WebGLProgram | null = null;
+  private chromaMorph: WebGLProgram | null = null;
+  private chromaEma: WebGLProgram | null = null;
 
   private frameTex: WebGLTexture | null = null;
   private maskTex: WebGLTexture | null = null;
   private bgTex: WebGLTexture | null = null;
   private refinedMaskTex: WebGLTexture | null = null;
+  private chromaScratchTex: WebGLTexture | null = null;
+  private chromaPrevTex: WebGLTexture | null = null;
   private jbfFbo: WebGLFramebuffer | null = null;
 
   private fboA: WebGLFramebuffer | null = null;
@@ -411,6 +489,8 @@ export class QbgGl {
   private readyFlag = false;
   /** True after a successful runJbf this session/frame. */
   private jbfLive = false;
+  /** True after at least one chroma matte was stored in chromaPrevTex. */
+  private chromaHasPrev = false;
 
   get isReady(): boolean { return this.readyFlag && !!this.gl; }
 
@@ -450,12 +530,17 @@ export class QbgGl {
       // Chroma mask is required for green-screen Reliable; fail init of chroma
       // path later if missing, but do not block blur/image init.
       const chromaProg = link(gl, VERT_SRC, FRAG_CHROMA_MASK);
+      // Morph + EMA optional — raw chroma still works if either fails to link.
+      const chromaMorphProg = link(gl, VERT_SRC, FRAG_CHROMA_MORPH);
+      const chromaEmaProg = link(gl, VERT_SRC, FRAG_CHROMA_EMA);
       if (!blurH || !blurV || !composite) {
         if (blurH) gl.deleteProgram(blurH);
         if (blurV) gl.deleteProgram(blurV);
         if (composite) gl.deleteProgram(composite);
         if (jbfProg) gl.deleteProgram(jbfProg);
         if (chromaProg) gl.deleteProgram(chromaProg);
+        if (chromaMorphProg) gl.deleteProgram(chromaMorphProg);
+        if (chromaEmaProg) gl.deleteProgram(chromaEmaProg);
         return false;
       }
 
@@ -481,10 +566,14 @@ export class QbgGl {
       this.composite = composite;
       this.jbf = jbfProg;
       this.chromaMask = chromaProg;
+      this.chromaMorph = chromaMorphProg;
+      this.chromaEma = chromaEmaProg;
       this.frameTex = this.createTexture();
       this.maskTex = this.createTexture();
       this.bgTex = this.createTexture();
       this.refinedMaskTex = this.createTexture();
+      this.chromaScratchTex = this.createTexture();
+      this.chromaPrevTex = this.createTexture();
       this.jbfFbo = gl.createFramebuffer();
       this.readyFlag = true;
       return true;
@@ -507,6 +596,7 @@ export class QbgGl {
       this.canvas.width = W;
       this.canvas.height = H;
     }
+    this.chromaHasPrev = false;
     this.rebuildPingPong();
   }
 
@@ -522,12 +612,16 @@ export class QbgGl {
         if (this.maskTex) gl.deleteTexture(this.maskTex);
         if (this.bgTex) gl.deleteTexture(this.bgTex);
         if (this.refinedMaskTex) gl.deleteTexture(this.refinedMaskTex);
+        if (this.chromaScratchTex) gl.deleteTexture(this.chromaScratchTex);
+        if (this.chromaPrevTex) gl.deleteTexture(this.chromaPrevTex);
         if (this.jbfFbo) gl.deleteFramebuffer(this.jbfFbo);
         if (this.blurH) gl.deleteProgram(this.blurH);
         if (this.blurV) gl.deleteProgram(this.blurV);
         if (this.composite) gl.deleteProgram(this.composite);
         if (this.jbf) gl.deleteProgram(this.jbf);
         if (this.chromaMask) gl.deleteProgram(this.chromaMask);
+        if (this.chromaMorph) gl.deleteProgram(this.chromaMorph);
+        if (this.chromaEma) gl.deleteProgram(this.chromaEma);
         if (this.quad) gl.deleteBuffer(this.quad);
         if (this.vao) gl.deleteVertexArray(this.vao);
       } catch { /* teardown best-effort */ }
@@ -537,7 +631,9 @@ export class QbgGl {
     this.vao = null;
     this.quad = null;
     this.blurH = this.blurV = this.composite = this.jbf = this.chromaMask = null;
+    this.chromaMorph = this.chromaEma = null;
     this.frameTex = this.maskTex = this.bgTex = this.refinedMaskTex = null;
+    this.chromaScratchTex = this.chromaPrevTex = null;
     this.jbfFbo = null;
     this.fboA = this.fboB = null;
     this.texA = this.texB = null;
@@ -546,6 +642,7 @@ export class QbgGl {
     this.maskBuf = null;
     this.readyFlag = false;
     this.jbfLive = false;
+    this.chromaHasPrev = false;
   }
 
   /**
@@ -655,44 +752,132 @@ export class QbgGl {
     }
   }
 
-  /** Write person alpha (1 = not green) into maskTex at full frame size. */
+  /** Write person alpha (1 = not green) into refinedMaskTex at full frame size.
+   *  Pipeline: raw key → morphological close (fill holes) → light open (kill
+   *  sparkles) → temporal EMA with previous matte. */
   private runChromaMask(): boolean {
     const gl = this.gl;
     if (!gl || !this.chromaMask || !this.maskTex || !this.frameTex) return false;
     const W = this.w, H = this.h;
-    // Reuse refinedMaskTex FBO as a scratch target, then copy R into maskTex —
-    // or render directly into an RGBA FBO and sample .r. Simplest: render into
-    // refinedMaskTex via jbfFbo, then set maskTex from a fullscreen copy is
-    // heavy. Instead: bind jbfFbo → refinedMaskTex, run chroma, then treat
-    // refined as the active person mask (jbfLive=true) WITHOUT JBF.
     if (!this.refinedMaskTex || !this.jbfFbo) return false;
 
-    gl.bindTexture(gl.TEXTURE_2D, this.refinedMaskTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.allocFullMask(this.refinedMaskTex, W, H);
+    if (this.chromaScratchTex) this.allocFullMask(this.chromaScratchTex, W, H);
+    if (this.chromaPrevTex) this.allocFullMask(this.chromaPrevTex, W, H);
 
+    // 1) Raw chroma key → refinedMaskTex
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.jbfFbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.refinedMaskTex, 0);
     gl.viewport(0, 0, W, H);
     gl.useProgram(this.chromaMask);
-
     const locFrame = gl.getUniformLocation(this.chromaMask, "u_frame");
     const locFlip = gl.getUniformLocation(this.chromaMask, "u_flipY");
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
     gl.uniform1i(locFrame, 0);
     gl.uniform1f(locFlip, 0);
-
     this.drawQuad();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    // Also stash into maskTex so activePersonMask can fall back if needed.
-    // Point maskTex at the same content by sampling refined as person mask:
+    // 2) Close then open (SE ~2px) when morph program + scratch are available.
+    if (this.chromaMorph && this.chromaScratchTex) {
+      const R = CHROMA_MORPH_RADIUS;
+      // close: dilate → erode
+      this.runChromaMorph(this.refinedMaskTex, this.chromaScratchTex, R, /* dilate */ 0);
+      this.runChromaMorph(this.chromaScratchTex, this.refinedMaskTex, R, /* erode */ 1);
+      // open: erode → dilate (slightly lighter SE keeps person edges)
+      const openR = Math.max(1, R - 0.5);
+      this.runChromaMorph(this.refinedMaskTex, this.chromaScratchTex, openR, /* erode */ 1);
+      this.runChromaMorph(this.chromaScratchTex, this.refinedMaskTex, openR, /* dilate */ 0);
+    }
+
+    // 3) Temporal EMA with previous matte → scratch, then identity-copy to refined+prev.
+    if (this.chromaEma && this.chromaScratchTex && this.chromaPrevTex) {
+      this.runChromaEmaPass(
+        this.refinedMaskTex,
+        this.chromaPrevTex,
+        this.chromaScratchTex,
+        CHROMA_MASK_EMA,
+        this.chromaHasPrev,
+      );
+      // Identity copy (hasPrev=0) into refined (composite samples this) and prev.
+      this.runChromaEmaPass(this.chromaScratchTex, this.chromaScratchTex, this.refinedMaskTex, 0, false);
+      this.runChromaEmaPass(this.chromaScratchTex, this.chromaScratchTex, this.chromaPrevTex, 0, false);
+      this.chromaHasPrev = true;
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.jbfLive = true;
     return true;
+  }
+
+  /** Allocate / resize a full-frame RGBA8 mask texture. */
+  private allocFullMask(tex: WebGLTexture, W: number, H: number): void {
+    const gl = this.gl!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  /** One morph pass: sample src into dst FBO (dilate mode=0 / erode mode=1). */
+  private runChromaMorph(
+    src: WebGLTexture,
+    dst: WebGLTexture,
+    radius: number,
+    mode: number,
+  ): void {
+    const gl = this.gl!;
+    if (!this.chromaMorph || !this.jbfFbo) return;
+    const W = this.w, H = this.h;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.jbfFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.chromaMorph);
+    const locMask = gl.getUniformLocation(this.chromaMorph, "u_mask");
+    const locTexel = gl.getUniformLocation(this.chromaMorph, "u_texel");
+    const locR = gl.getUniformLocation(this.chromaMorph, "u_radius");
+    const locMode = gl.getUniformLocation(this.chromaMorph, "u_mode");
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src);
+    gl.uniform1i(locMask, 0);
+    gl.uniform2f(locTexel, 1 / Math.max(1, W), 1 / Math.max(1, H));
+    // Shader clamps radius to [1,3]; for identity copy use mode dilate with
+    // a tiny radius still samples neighbors — prefer EMA copy path instead.
+    gl.uniform1f(locR, Math.max(1, radius));
+    gl.uniform1f(locMode, mode);
+    this.drawQuad();
+  }
+
+  /** EMA (or identity when hasPrev=false / mix=0) from curr[/prev] into dst. */
+  private runChromaEmaPass(
+    curr: WebGLTexture,
+    prev: WebGLTexture,
+    dst: WebGLTexture,
+    mix: number,
+    hasPrev: boolean,
+  ): void {
+    const gl = this.gl!;
+    if (!this.chromaEma || !this.jbfFbo) return;
+    const W = this.w, H = this.h;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.jbfFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.chromaEma);
+    const locCurr = gl.getUniformLocation(this.chromaEma, "u_curr");
+    const locPrev = gl.getUniformLocation(this.chromaEma, "u_prev");
+    const locMix = gl.getUniformLocation(this.chromaEma, "u_mix");
+    const locHas = gl.getUniformLocation(this.chromaEma, "u_hasPrev");
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, curr);
+    gl.uniform1i(locCurr, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, prev);
+    gl.uniform1i(locPrev, 1);
+    gl.uniform1f(locMix, mix);
+    gl.uniform1f(locHas, hasPrev ? 1 : 0);
+    this.drawQuad();
   }
 
   // ── internals ──────────────────────────────────────────────────────────
