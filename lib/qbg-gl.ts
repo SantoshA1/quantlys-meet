@@ -71,11 +71,36 @@ void main() {
   if (wsum > 1e-3) {
     outColor = sum / wsum;
   } else {
-    // no valid room samples — use desaturated edge fill from far taps only, never raw person
-    vec4 far = texture(u_frame, v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
-    float mf = sampleMaskEroded(v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
-    float rf = 1.0 - smoothstep(0.15, 0.45, mf);
-    outColor = mix(vec4(0.15, 0.15, 0.16, 1.0), far, rf); // neutral if still person
+    // no valid local room samples — far-tap ROOM fill only (never sharp FG, never cool gray)
+    vec4 fill = vec4(0.0);
+    float fsum = 0.0;
+    vec2 o0 = vec2( u_texel.x,  u_texel.y) * u_radius;
+    vec2 o1 = vec2(-u_texel.x,  u_texel.y) * u_radius;
+    vec2 o2 = vec2( u_texel.x, -u_texel.y) * u_radius;
+    vec2 o3 = vec2(-u_texel.x, -u_texel.y) * u_radius;
+    vec2 o4 = vec2( u_texel.x, 0.0) * (u_radius * 1.5);
+    vec2 o5 = vec2(-u_texel.x, 0.0) * (u_radius * 1.5);
+    vec2 o6 = vec2(0.0,  u_texel.y) * (u_radius * 1.5);
+    vec2 o7 = vec2(0.0, -u_texel.y) * (u_radius * 1.5);
+    float mf; float rf;
+    mf = sampleMaskEroded(v_uv + o0); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o0) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o1); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o1) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o2); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o2) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o3); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o3) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o4); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o4) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o5); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o5) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o6); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o6) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o7); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o7) * rf; fsum += rf;
+    // Under opaque FG the composite ignores this; avoid inventing a cool plate color.
+    outColor = (fsum > 1e-3) ? (fill / fsum) : vec4(0.0);
   }
 }
 `;
@@ -121,11 +146,36 @@ void main() {
   if (wsum > 1e-3) {
     outColor = sum / wsum;
   } else {
-    // no valid room samples — use desaturated edge fill from far taps only, never raw person
-    vec4 far = texture(u_frame, v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
-    float mf = sampleMaskEroded(v_uv + vec2(u_texel.x, u_texel.y) * u_radius);
-    float rf = 1.0 - smoothstep(0.15, 0.45, mf);
-    outColor = mix(vec4(0.15, 0.15, 0.16, 1.0), far, rf); // neutral if still person
+    // no valid local room samples — far-tap ROOM fill only (never sharp FG, never cool gray)
+    vec4 fill = vec4(0.0);
+    float fsum = 0.0;
+    vec2 o0 = vec2( u_texel.x,  u_texel.y) * u_radius;
+    vec2 o1 = vec2(-u_texel.x,  u_texel.y) * u_radius;
+    vec2 o2 = vec2( u_texel.x, -u_texel.y) * u_radius;
+    vec2 o3 = vec2(-u_texel.x, -u_texel.y) * u_radius;
+    vec2 o4 = vec2( u_texel.x, 0.0) * (u_radius * 1.5);
+    vec2 o5 = vec2(-u_texel.x, 0.0) * (u_radius * 1.5);
+    vec2 o6 = vec2(0.0,  u_texel.y) * (u_radius * 1.5);
+    vec2 o7 = vec2(0.0, -u_texel.y) * (u_radius * 1.5);
+    float mf; float rf;
+    mf = sampleMaskEroded(v_uv + o0); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o0) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o1); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o1) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o2); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o2) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o3); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o3) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o4); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o4) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o5); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o5) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o6); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o6) * rf; fsum += rf;
+    mf = sampleMaskEroded(v_uv + o7); rf = 1.0 - smoothstep(0.15, 0.45, mf);
+    fill += texture(u_frame, v_uv + o7) * rf; fsum += rf;
+    // Under opaque FG the composite ignores this; avoid inventing a cool plate color.
+    outColor = (fsum > 1e-3) ? (fill / fsum) : vec4(0.0);
   }
 }
 `;
@@ -136,12 +186,12 @@ export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
 /** Blur-path light-wrap softEdge (virtual image/video stays 0). */
-export const LIGHT_WRAP_BLUR = 0.2;
+export const LIGHT_WRAP_BLUR = 0.1;
 /** Temporal EMA mix with previous chroma matte (kills sparkle flicker). */
 export const CHROMA_MASK_EMA = 0.68;
 /** Morphological SE radius (px) for close-then-open on chroma matte. */
 export const CHROMA_MORPH_RADIUS = 2;
-/** Dark-fringe decontam mix toward BG (blur path); kept mild for navy caps. */
+/** Dark-fringe decontam mix toward BG (virtual only); blur path gates this off. */
 export const DARK_FRINGE_MIX = 0.32;
 
 /**
@@ -350,8 +400,9 @@ void main() {
   float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.12);
   float a = clamp(person - wrap, 0.0, 1.0);
 
-  // Mid-edge spill suppression (dark fringe + color distance).
-  // Plant chroma force-zero removed — fought real greens (shirt/plants).
+  // Mid-edge spill suppression (dark fringe + color distance) — VIRTUAL only.
+  // On blur, mixing sharp toward the cool plant/blur plate caused cyan shoulder
+  // rim and navy-cap darkening (QA after #53).
   float sharpL = dot(sharp.rgb, vec3(0.299, 0.587, 0.114));
   float bgL = dot(bg.rgb, vec3(0.299, 0.587, 0.114));
   float mid = step(0.04, a) * step(a, 0.92);
@@ -363,18 +414,18 @@ void main() {
   float skinLike = step(sharp.g + 0.02, sharp.r) * step(sharp.b, sharp.r);
   float colorSpill = mid * (1.0 - skinLike) * smoothstep(0.15, 0.45, colorDist);
   vec3 sharpUse = sharp.rgb;
-  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.32, colorSpill * 0.45));
+  float virtGate = step(0.5, u_useVirtual);
+  sharpUse = mix(sharpUse, bg.rgb, max(darkFringe * 0.32, colorSpill * 0.45) * virtGate);
 
-  // Classic chroma spill (virtual/green-screen path): pull green tint toward BG
-  // near the matte edge — despill only, never force alpha to zero.
+  // Classic chroma despill (virtual/green-screen): when g > max(r,b), clamp green
+  // toward max(r,b) on FG — never mix virtual BG green into pink/cloth.
   float edgeBand = person * (1.0 - person) * 4.0;
-  float gLead = max(0.0, sharp.g - max(sharp.r, sharp.b));
+  float maxRB = max(sharpUse.r, sharpUse.b);
+  float gLead = max(0.0, sharpUse.g - maxRB);
   float chromaSpill = (u_useVirtual > 0.5)
     ? edgeBand * smoothstep(0.015, 0.10, gLead)
     : 0.0;
-  float despillG = mix((sharpUse.r + sharpUse.b) * 0.5, bg.g, 0.55);
-  sharpUse.g = mix(sharpUse.g, despillG, clamp(chromaSpill * 0.85, 0.0, 1.0));
-  sharpUse = mix(sharpUse, bg.rgb, chromaSpill * 0.25);
+  sharpUse.g = mix(sharpUse.g, maxRB, clamp(chromaSpill * 0.85, 0.0, 1.0));
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);
@@ -816,9 +867,9 @@ export class QbgGl {
       this.chromaHasPrev = true;
     }
 
-    // 4) Despeckle: erode small false-FG cloth flecks, then light dilate to restore edge.
+    // 4) Despeckle: balanced erode≈dilate (no net silhouette shrink / dark cap rim).
     if (this.chromaMorph && this.chromaScratchTex) {
-      this.runChromaMorph(this.refinedMaskTex, this.chromaScratchTex, 2.5, /* erode */ 1);
+      this.runChromaMorph(this.refinedMaskTex, this.chromaScratchTex, 1.5, /* erode */ 1);
       this.runChromaMorph(this.chromaScratchTex, this.refinedMaskTex, 1.5, /* dilate */ 0);
       if (this.chromaPrevTex && this.chromaEma) {
         this.runChromaEmaPass(this.refinedMaskTex, this.refinedMaskTex, this.chromaPrevTex, 0, false);
