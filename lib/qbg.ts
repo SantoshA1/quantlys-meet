@@ -39,6 +39,13 @@ import {
   plateDilatePx, webglCompositeReady,
 } from "./effects";
 import { QbgGl } from "./qbg-gl";
+import {
+  ModnetMatte,
+  resolveMattePreference,
+  chromaSkipsMlMatte,
+  wantsMlMatte,
+  type MatteBackend,
+} from "./matte-modnet";
 
 export type QbgOptions = {
   kind: "blur" | "chroma" | "image" | "video";
@@ -107,6 +114,13 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
   private gl: QbgGl | null = null;
   /** True when GL init succeeded; paintMasked prefers GL then falls back. */
   private useGl = false;
+  /** Active ML matte backend for blur/image/video. Null until init; chroma stays null. */
+  private matteBackend: MatteBackend | null = null;
+  private modnet: ModnetMatte | null = null;
+  /** True while an async MODNet infer is in flight (frame already copied). */
+  private modnetBusy = false;
+  /** Lazy MediaPipe init when MODNet fails after preferring it. */
+  private mediapipeWarming: Promise<void> | null = null;
 
   constructor(opts: QbgOptions) {
     super();
@@ -115,36 +129,29 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
 
   async init(o: any): Promise<void> {
     await super.init(o);
-    // Green screen Reliable: skip MediaPipe entirely — chroma key from camera RGB.
-    const skipSeg = this.opts.kind === "chroma";
-    if (!skipSeg) {
-      const vision = await import("@mediapipe/tasks-vision");
-      // Local assets when this deployment ships them; the CDN otherwise. The
-      // vendored copy is an optimisation, never a dependency — a missing file
-      // must degrade to "slower first blur", not to "no blur".
-      // Meet uses a landscape-variant selfie model; square mis-segments wide webcam scenes.
-      // Prefer local landscape tflite; if missing, fall back to CDN landscape (not square).
-      const local = assetPaths({ wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"), model: await head("/mediapipe/selfie_segmenter_landscape.tflite") });
-      const fileSet = await vision.FilesetResolver.forVisionTasks(
-        local?.tasksVisionFileSet ||
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
-      );
-      this.seg = await vision.ImageSegmenter.createFromOptions(fileSet, {
-        baseOptions: {
-          modelAssetPath: local?.modelAssetPath ||
-            SELFIE_LANDSCAPE_CDN,
-          delegate: "GPU",
-        },
-        runningMode: "VIDEO",
-        // BOTH. Confidence is what we want — a Float32 per pixel, which is the
-        // only thing that can draw a strand of hair — and the category mask is
-        // the fallback for a build or a model that does not return one. A
-        // fallback is behaviour, not a comment: paintMasked works either way,
-        // it just looks like 2026-08-20 on the old path.
-        outputCategoryMask: true,
-        outputConfidenceMasks: true,
-      });
+    // Green screen Reliable: skip ALL ML matte (MODNet + MediaPipe) — chroma key only.
+    const skipSeg = chromaSkipsMlMatte(this.opts.kind) || this.opts.kind === "chroma";
+    if (!skipSeg && wantsMlMatte(this.opts.kind)) {
+      const pref = resolveMattePreference();
+      if (pref === "modnet") {
+        try {
+          const m = new ModnetMatte();
+          if (await m.init()) {
+            this.modnet = m;
+            this.matteBackend = "modnet";
+          } else {
+            try { m.dispose(); } catch { /* ignore */ }
+          }
+        } catch {
+          this.modnet = null;
+        }
+      }
+      // MediaPipe = fallback if MODNet fails to load (or user forced ?matte=mediapipe).
+      if (this.matteBackend !== "modnet") {
+        await this.initMediapipe();
+      }
     }
+
     if ((this.opts.kind === "video" || this.opts.kind === "chroma") && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
     else if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
 
@@ -164,6 +171,11 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
 
   async destroy(): Promise<void> {
     await super.destroy();
+    try { this.modnet?.dispose(); } catch { /* best-effort */ }
+    this.modnet = null;
+    this.matteBackend = null;
+    this.modnetBusy = false;
+    this.mediapipeWarming = null;
     try { await this.seg?.close(); } catch { /* closing twice is not an error worth surfacing */ }
     this.seg = undefined;
     this.bg = null;
@@ -314,6 +326,61 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     }
   }
 
+  /** MediaPipe ImageSegmenter — used when MODNet is unavailable or forced off. */
+  private async initMediapipe(): Promise<void> {
+    if (this.seg) {
+      this.matteBackend = "mediapipe";
+      return;
+    }
+    const vision = await import("@mediapipe/tasks-vision");
+    const local = assetPaths({
+      wasm: await head("/mediapipe/wasm/vision_wasm_internal.js"),
+      model: await head("/mediapipe/selfie_segmenter_landscape.tflite"),
+    });
+    const fileSet = await vision.FilesetResolver.forVisionTasks(
+      local?.tasksVisionFileSet ||
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
+    );
+    this.seg = await vision.ImageSegmenter.createFromOptions(fileSet, {
+      baseOptions: {
+        modelAssetPath: local?.modelAssetPath || SELFIE_LANDSCAPE_CDN,
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO",
+      outputCategoryMask: true,
+      outputConfidenceMasks: true,
+    });
+    this.matteBackend = "mediapipe";
+  }
+
+  private ensureMediapipeFallback(): void {
+    if (this.seg || this.mediapipeWarming) return;
+    this.mediapipeWarming = this.initMediapipe()
+      .catch(() => { /* keep last mask / blur-all */ })
+      .finally(() => { this.mediapipeWarming = null; });
+  }
+
+  /** Apply soft MODNet alpha — no harden / open / island / plant / face-hull. */
+  private applyModnetMask(alpha: Uint8ClampedArray, mw: number, mh: number) {
+    const mix = adaptiveSmoothAlpha(this.smooth, alpha as any);
+    this.smooth = blendMask(this.smooth, alpha as any, mix) as Uint8ClampedArray;
+    if (!this.maskCanvas || this.maskCanvas.width !== mw || this.maskCanvas.height !== mh) {
+      this.maskCanvas = new OffscreenCanvas(mw, mh);
+      this.maskCtx = this.maskCanvas.getContext("2d", { willReadFrequently: false });
+      this.maskImage = new ImageData(mw, mh);
+    }
+    const px = this.maskImage!.data;
+    const sm = this.smooth!;
+    for (let i = 0, j = 0; i < sm.length; i++, j += 4) {
+      px[j] = 255; px[j + 1] = 255; px[j + 2] = 255; px[j + 3] = sm[i];
+    }
+    this.maskCtx!.putImageData(this.maskImage!, 0, 0);
+    this.haveMask = true;
+    this.maskAt = performance.now();
+    // MODNet alpha is person-opaque; skip polarity thrash.
+    this.polarity = "person";
+  }
+
   /** Run the model on a downscaled copy of the SAME frame about to be
    *  painted, then mix the result into the smoothed mask. Cap at SEGMENT_HZ
    *  (30) so CPU has headroom after dropping full-res pixel readback; paint
@@ -323,8 +390,40 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
    *  that belonged to a frame already gone. */
   private segmentFrame(src: CanvasImageSource, W: number, H: number) {
     const now = performance.now();
-    if (!this.seg) return;
     if (!shouldSegment(now, this.lastSegAt)) return;
+
+    // MODNet path (blur / Beta). Soft matte only — heuristics skipped.
+    if (this.matteBackend === "modnet" && this.modnet?.isReady) {
+      if (this.modnetBusy || this.modnet.busy) return;
+      const vw = Number((src as any).videoWidth || (src as any).codedWidth || (src as any).width || W) || W;
+      const vh = Number((src as any).videoHeight || (src as any).codedHeight || (src as any).height || H) || H;
+      if (!vw || !vh) return;
+      this.lastSegAt = now;
+      this.modnetBusy = true;
+      void this.modnet.infer(src, vw, vh).then((res) => {
+        this.modnetBusy = false;
+        if (!res) {
+          try { this.modnet?.dispose(); } catch { /* ignore */ }
+          this.modnet = null;
+          this.matteBackend = null;
+          this.ensureMediapipeFallback();
+          return;
+        }
+        this.applyModnetMask(res.alpha, res.w, res.h);
+      }).catch(() => {
+        this.modnetBusy = false;
+        try { this.modnet?.dispose(); } catch { /* ignore */ }
+        this.modnet = null;
+        this.matteBackend = null;
+        this.ensureMediapipeFallback();
+      });
+      return;
+    }
+
+    if (!this.seg) {
+      if (this.matteBackend !== "mediapipe") this.ensureMediapipeFallback();
+      return;
+    }
     // Prefer the source's intrinsic size; fall back to the output canvas.
     const vw = Number((src as any).videoWidth || (src as any).codedWidth || (src as any).width || W) || W;
     const vh = Number((src as any).videoHeight || (src as any).codedHeight || (src as any).height || H) || H;
@@ -370,6 +469,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         // the previous pose cannot linger beside the new one.
         const mix = adaptiveSmoothAlpha(this.smooth, raw as any);
         this.smooth = blendMask(this.smooth, raw as any, mix) as Uint8ClampedArray;
+        // MediaPipe-only post: MODNet path uses applyModnetMask (no heuristics).
         // Near-binary harden at SEGMENT RES (cheap). maskCanvas then already
         // carries a hard person alpha — no full-res pixel readback later.
         hardenPersonMatte(this.smooth);
