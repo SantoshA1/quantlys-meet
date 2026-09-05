@@ -148,7 +148,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
         outputConfidenceMasks: true,
       });
     }
-    if (this.opts.kind === "video" && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
+    if ((this.opts.kind === "video" || this.opts.kind === "chroma") && this.opts.videoPath) await this.loadVideo(this.opts.videoPath);
     else if (this.opts.imagePath) await this.loadBackground(this.opts.imagePath);
 
     // Prefer WebGL2 Meet-style compositor. Keep the LiveKit output canvas as
@@ -197,7 +197,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     const wasImage = this.opts.imagePath;
     const wasVideo = this.opts.videoPath;
     this.opts = opts;
-    if (opts.kind === "video" && opts.videoPath) {
+    if ((opts.kind === "video" || opts.kind === "chroma") && opts.videoPath) {
       if (opts.videoPath !== wasVideo) await this.loadVideo(opts.videoPath);
       this.bg = null;
     } else {
@@ -269,7 +269,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       }
       const W = this.canvas.width, H = this.canvas.height;
 
-      // Green screen Reliable: no MediaPipe — chroma key + blur plate each frame.
+      // Green screen Reliable: no MediaPipe — chroma key + virtual/gray plate each frame.
       if (this.opts.kind === "chroma") {
         this.paintChroma(frame, W, H);
       } else {
@@ -634,14 +634,17 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
    *  is source-over'd on top. destination-over under a soft black-fringed
    *  matte was the dark halo around hat and shoulders. */
 
-  /** Green screen Reliable: GL chroma key → blur plate → sharp person.
-   *  Canvas2d fallback: key green in CPU and composite over a bokeh plate. */
+  /** Green screen Reliable: GL chroma key → chosen virtual plate (or gray).
+   *  Canvas2d fallback: key green in CPU and composite over image/video/gray. */
   private paintChroma(frame: VideoFrame, W: number, H: number) {
     const ctx = this.ctx!;
     if (this.useGl && this.gl && this.gl.isReady) {
       try {
         this.gl.resize(W, H);
-        const ok = this.gl.drawChroma(frame as any, this.opts.blurRadius || BLUR_PX);
+        const bgSrc: any = (this.bgVideo && this.bgVideo.readyState >= 2)
+          ? this.bgVideo
+          : (this.bg || null);
+        const ok = this.gl.drawChroma(frame as any, bgSrc, 0);
         if (ok && this.gl.surface) {
           ctx.save();
           const Hi = H;
@@ -701,12 +704,17 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     }
     pc.putImageData(id, 0, 0);
 
-    const plate = this.blurred(frame, W, H, this.opts.blurRadius || BLUR_PX);
     ctx.save();
     ctx.globalCompositeOperation = "copy";
     ctx.filter = "none";
-    if (plate) ctx.drawImage(plate as any, 0, 0, W, H);
-    else ctx.drawImage(frame as any, 0, 0, W, H);
+    const bgSrc: any = (this.bgVideo && this.bgVideo.readyState >= 2)
+      ? this.bgVideo
+      : (this.bg || null);
+    if (bgSrc) drawCover(ctx, bgSrc, W, H);
+    else {
+      ctx.fillStyle = "#1c1f26";
+      ctx.fillRect(0, 0, W, H);
+    }
     if (!this.personCanvas || this.personCanvas.width !== W || this.personCanvas.height !== H) {
       this.personCanvas = new OffscreenCanvas(W, H);
       this.personCtx = this.personCanvas.getContext("2d", { willReadFrequently: false });

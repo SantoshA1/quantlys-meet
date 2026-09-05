@@ -347,7 +347,7 @@ export function effectSupport(env: {
 export function processorFor(effect: Effect, customDataUrl?: string, photoOk?: boolean):
   | { kind: "none" }
   | { kind: "blur"; blurRadius: number }
-  | { kind: "chroma" }
+  | { kind: "chroma"; imagePath?: string; videoPath?: string }
   | { kind: "image"; imagePath: string; photo?: string }
   | { kind: "video"; videoPath: string; poster?: string } {
   if (effect.kind === "blur") return { kind: "blur", blurRadius: BLUR_PX };
@@ -364,6 +364,40 @@ export function processorFor(effect: Effect, customDataUrl?: string, photoOk?: b
     }
   }
   return { kind: "none" };
+}
+
+/** Paths for the plate chroma paints onto (Glass dusk / Loop / custom). */
+export function chromaPaintPaths(
+  paint: Effect | null | undefined,
+  customDataUrl?: string,
+  photoOk?: boolean,
+): { imagePath?: string; videoPath?: string } {
+  if (!paint) return {};
+  if (paint.kind === "video" && paint.loop) return { videoPath: paint.loop };
+  if (paint.kind === "image") {
+    const src = effectSrc(paint, customDataUrl, photoOk);
+    if (src && customReady(paint, customDataUrl)) return { imagePath: src };
+  }
+  return {};
+}
+
+/** Default paint target when Green screen turns on: last Beta BG, else city. */
+export function defaultChromaPaint(
+  availablePhotoIds?: string[] | null,
+  availableLoopIds?: string[] | null,
+  lastPaint?: Effect | null,
+  customDataUrl?: string,
+): Effect | null {
+  if (lastPaint && (lastPaint.kind === "image" || lastPaint.kind === "video")) {
+    if (effectUsable(lastPaint, availablePhotoIds, availableLoopIds) && customReady(lastPaint, customDataUrl)) {
+      return lastPaint;
+    }
+  }
+  const photos = availablePhotoIds || [];
+  if (photos.includes("city")) return effectById("city");
+  const loops = availableLoopIds || [];
+  if (loops.includes("citylights")) return effectById("citylights");
+  return null;
 }
 
 /** LiveKit reports pre-join device failures as an enum WITHOUT saying which

@@ -37,8 +37,8 @@ import {
 } from "@/lib/media";
 import {
   camVerdict, lumaFrom, frameSignature, blameKind, joinErrorText, CAM_BLACK,
-  EFFECTS, restoreEffect, effectSupport, processorFor, effectSrc, customReady, type Effect,
-  shelfEffects, effectUsable,
+  EFFECTS, effectById, restoreEffect, effectSupport, processorFor, effectSrc, customReady, type Effect,
+  shelfEffects, effectUsable, chromaPaintPaths, defaultChromaPaint,
   camRetryDelay, camShouldKeepTrying, type CamVerdict,
 } from "@/lib/camera";
 import { SLOTS, LOOPS } from "@/lib/backgrounds";
@@ -77,6 +77,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   const [fxNote, setFxNote] = useState("");
   const [fxBusy, setFxBusy] = useState(false);
   const [customBg, setCustomBg] = useState("");
+  /** While Green screen (Reliable) is on, which Beta plate it paints onto. */
+  const [chromaPaintId, setChromaPaintId] = useState<string | null>(null);
+  const chromaPaintRef = useRef<Effect | null>(null);
   /** which room backdrops this deployment actually ships a PHOTOGRAPH for.
    *  Empty is the honest normal state until somebody adds the files — see
    *  shelfEffects in lib/camera.ts for why a drawn room is not offered. */
@@ -504,17 +507,55 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         if (!silent) setFxNote("Turn your camera on first — effects apply to a live picture.");
         return;
       }
-      const p = processorFor(effect, customBg, photoIdsRef.current.includes(effect.id));
-      if (effect.custom && !customReady(effect, customBg)) {
+      // Green screen on + Beta click → update paint only (stay Reliable).
+      const chromaOn = effectRef.current?.kind === "chroma";
+      let applyAs = effect;
+      let paint: Effect | null = chromaPaintRef.current;
+      if (effect.kind === "chroma") {
+        paint = defaultChromaPaint(photoIdsRef.current, loopIdsRef.current, chromaPaintRef.current, customBg);
+        applyAs = effectById("chroma");
+      } else if (chromaOn && (effect.kind === "image" || effect.kind === "video")) {
+        if (effect.custom && !customReady(effect, customBg)) {
+          if (!silent) setFxNote("Add a picture to this slot first — the ＋ button below picks one from your computer.");
+          return;
+        }
+        paint = effect;
+        applyAs = effectById("chroma");
+      } else if (effect.kind === "image" || effect.kind === "video") {
+        paint = effect; // remember for next Green screen turn-on
+      } else {
+        // blur / none leave Reliable; keep last paint remembered for next time
+      }
+
+      if (applyAs.kind !== "chroma" && effect.custom && !customReady(effect, customBg)) {
         if (!silent) setFxNote("Add a picture to this slot first — the ＋ button below picks one from your computer.");
         return;
       }
-      if (p.kind === "none") {
-        if (track.processor) await track.stopProcessor();
-        setFx("none"); effectRef.current = EFFECTS[0];
-        save(SAVED.effect, "none"); save(SAVED.blur, "");
-        return;
+
+      let opts: any;
+      if (applyAs.kind === "chroma") {
+        const paths = chromaPaintPaths(
+          paint,
+          customBg,
+          paint ? photoIdsRef.current.includes(paint.id) : false,
+        );
+        opts = { kind: "chroma", ...paths };
+      } else {
+        const p = processorFor(effect, customBg, photoIdsRef.current.includes(effect.id));
+        if (p.kind === "none") {
+          if (track.processor) await track.stopProcessor();
+          setFx("none"); effectRef.current = EFFECTS[0];
+          setChromaPaintId(null);
+          save(SAVED.effect, "none"); save(SAVED.blur, "");
+          return;
+        }
+        opts = p.kind === "blur"
+          ? { kind: "blur", blurRadius: BLUR_PX }
+          : p.kind === "video"
+            ? { kind: "video", videoPath: p.videoPath }
+            : { kind: "image", imagePath: p.imagePath };
       }
+
       const sup = effectSupport({
         trackGenerator: typeof (globalThis as any).MediaStreamTrackGenerator !== "undefined",
         trackProcessor: typeof (globalThis as any).MediaStreamTrackProcessor !== "undefined",
@@ -525,16 +566,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
         return;
       }
       const { quantlysBackground } = await import("@/lib/qbg");
-      const proc = quantlysBackground(
-        effect.id,
-        p.kind === "blur"
-          ? { kind: "blur", blurRadius: BLUR_PX }
-          : p.kind === "chroma"
-            ? { kind: "chroma", blurRadius: BLUR_PX }
-            : p.kind === "video"
-              ? { kind: "video", videoPath: p.videoPath }
-              : { kind: "image", imagePath: p.imagePath },
-      );
+      const procNameId = applyAs.kind === "chroma" ? "chroma" : effect.id;
+      const proc = quantlysBackground(procNameId, opts);
       // setProcessor replaces any active one AND swaps the published
       // MediaStreamTrack for a generated one. That swap is what used to
       // re-trigger the watcher below and re-apply the effect for ever —
@@ -542,13 +575,24 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       // the effect id, so the watcher can ask what the live track is
       // already wearing instead of guessing from track identity.
       await track.setProcessor(proc);
-      setFx(effect.id); effectRef.current = effect;
-      save(SAVED.effect, effect.id); save(SAVED.blur, "");
+      if (applyAs.kind === "chroma") {
+        chromaPaintRef.current = paint;
+        setChromaPaintId(paint?.id || null);
+        setFx("chroma"); effectRef.current = effectById("chroma");
+        save(SAVED.effect, "chroma"); save(SAVED.blur, "");
+      } else {
+        if (effect.kind === "image" || effect.kind === "video") {
+          chromaPaintRef.current = effect;
+        }
+        setChromaPaintId(null);
+        setFx(effect.id); effectRef.current = effect;
+        save(SAVED.effect, effect.id); save(SAVED.blur, "");
+      }
     } catch (e: any) {
       // THE RULE: an effect that fails degrades to PLAIN VIDEO, never to no
       // video. Being seen matters more than the nicer wall.
       try { if (track?.processor) await track.stopProcessor(); } catch { /* raw video is already flowing */ }
-      setFx("none"); effectRef.current = EFFECTS[0]; save(SAVED.effect, "none");
+      setFx("none"); effectRef.current = EFFECTS[0]; setChromaPaintId(null); save(SAVED.effect, "none");
       // The reason only appears when there IS one a person could read —
       // "[object Event]" is not a reason, it is debris.
       const why = String(e?.message || "").trim();
@@ -1029,13 +1073,13 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
             {shelf.map((e) => (
               <button
                 key={e.id}
-                className={`qmg-swatch${fx === e.id ? " qmg-son" : ""}`}
+                className={`qmg-swatch${(fx === e.id || (fx === "chroma" && chromaPaintId === e.id)) ? " qmg-son" : ""}`}
                 onClick={() => (e.custom && !customReady(e, customBg)
                   ? fileRef.current?.click()
                   : applyEffect(e))}
                 disabled={fxBusy}
                 title={e.custom && !customReady(e, customBg) ? "Add a picture of your own" : e.label}
-                aria-pressed={fx === e.id}
+                aria-pressed={fx === e.id || (fx === "chroma" && chromaPaintId === e.id)}
               >
                 {e.kind === "image" || e.kind === "video" ? (
                   // The swatch shows what you will ACTUALLY get, which is the
@@ -1053,11 +1097,11 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
                   </span>
                 )}
                 {e.badge ? <b className={"qmg-badge" + (e.badge === "Beta" ? " qmg-badge-beta" : "")}>{e.badge}</b> : null}
-                <i>{e.kind === "video" ? `Loop · ${e.label}` : e.label}</i>
+                <i>{e.label}</i>
               </button>
             ))}
           </div>
-          <p className="qmg-note">Green screen needs a green cloth behind you — it keys clean edges without the AI matte. Blur and replace still need Chrome or Edge.</p>
+          <p className="qmg-note">Green screen keys the cloth; pick Glass dusk or Loop City for what appears behind you. Blur and replace still need Chrome or Edge.</p>
 
           <div className="qmg-fxrow">
             <button className="qmg-addbg" onClick={() => fileRef.current?.click()} disabled={fxBusy}>
