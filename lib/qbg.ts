@@ -663,19 +663,45 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       return;
     }
     const d = id.data;
-    for (let i = 0; i < d.length; i += 4) {
+    const alpha = new Float32Array(W * H);
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
       const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
       const sat = mx > 1e-4 ? (mx - mn) / mx : 0;
       const greenDom = g - Math.max(r, b);
+      const olive = Math.min(g - r, g - b);
+      const greenAmt = Math.max(greenDom, olive * 0.9);
       let key = 0;
-      if (greenDom > 0.04 && sat > 0.12) {
-        const gd = Math.min(1, Math.max(0, (greenDom - 0.04) / 0.12));
-        const sd = Math.min(1, Math.max(0, (sat - 0.12) / 0.20));
+      if (greenAmt > 0.02 && sat > 0.08) {
+        const gd = Math.min(1, Math.max(0, (greenAmt - 0.02) / 0.12));
+        const sd = Math.min(1, Math.max(0, (sat - 0.08) / 0.20));
         key = gd * sd;
       }
-      const person = 1 - Math.min(1, Math.max(0, key));
-      d[i + 3] = Math.round(255 * person);
+      alpha[p] = 1 - Math.min(1, Math.max(0, key));
+    }
+    // Light morphological close (fill holes) then open (kill sparkles), SE=1.
+    const morph = (src: Float32Array, mode: "dilate" | "erode"): Float32Array => {
+      const out = new Float32Array(src.length);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          let v = src[y * W + x]!;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const xx = Math.min(W - 1, Math.max(0, x + dx));
+              const yy = Math.min(H - 1, Math.max(0, y + dy));
+              const n = src[yy * W + xx]!;
+              v = mode === "dilate" ? Math.max(v, n) : Math.min(v, n);
+            }
+          }
+          out[y * W + x] = v;
+        }
+      }
+      return out;
+    };
+    let matte = morph(morph(alpha, "dilate"), "erode"); // close
+    matte = morph(morph(matte, "erode"), "dilate"); // open
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+      d[i + 3] = Math.round(255 * matte[p]!);
     }
     pc.putImageData(id, 0, 0);
 
