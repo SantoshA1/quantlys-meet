@@ -187,6 +187,41 @@ void main() {
 }
 `;
 
+
+/** Chroma-key person mask from camera RGB (HSV/YCbCr-ish green).
+ *  person = 1 where NOT green screen; green cloth → 0 (background).
+ *  No MediaPipe — Reliable path when the user has a green backdrop. */
+export const FRAG_CHROMA_MASK = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_frame;
+uniform float u_flipY;
+
+vec2 maybeFlip(vec2 uv) {
+  return u_flipY > 0.5 ? vec2(uv.x, 1.0 - uv.y) : uv;
+}
+
+void main() {
+  vec3 c = texture(u_frame, maybeFlip(v_uv)).rgb;
+  float mx = max(c.r, max(c.g, c.b));
+  float mn = min(c.r, min(c.g, c.b));
+  float sat = mx > 1e-4 ? (mx - mn) / mx : 0.0;
+  // Green dominance (g above r and b). Soft thresholds tolerate cloth shade.
+  float greenDom = c.g - max(c.r, c.b);
+  float key = smoothstep(0.04, 0.16, greenDom) * smoothstep(0.12, 0.32, sat);
+  // Mild YCbCr assist: green screen sits in low Cr / mid-high Cb territory.
+  float y  = dot(c, vec3(0.299, 0.587, 0.114));
+  float cb = 0.5 + (c.b - y) * 0.564;
+  float cr = 0.5 + (c.r - y) * 0.713;
+  float ycbcrKey = smoothstep(0.42, 0.52, cb) * (1.0 - smoothstep(0.40, 0.48, cr))
+                 * smoothstep(0.10, 0.28, sat);
+  key = max(key, ycbcrKey * 0.85);
+  float person = 1.0 - clamp(key, 0.0, 1.0);
+  outColor = vec4(person, person, person, 1.0);
+}
+`;
+
 export const FRAG_COMPOSITE = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -356,6 +391,7 @@ export class QbgGl {
   private blurV: WebGLProgram | null = null;
   private composite: WebGLProgram | null = null;
   private jbf: WebGLProgram | null = null;
+  private chromaMask: WebGLProgram | null = null;
 
   private frameTex: WebGLTexture | null = null;
   private maskTex: WebGLTexture | null = null;
@@ -414,11 +450,15 @@ export class QbgGl {
       const composite = link(gl, VERT_SRC, FRAG_COMPOSITE);
       // JBF is optional — if link fails, skip refine (current behavior).
       const jbfProg = link(gl, VERT_SRC, FRAG_JBF);
+      // Chroma mask is required for green-screen Reliable; fail init of chroma
+      // path later if missing, but do not block blur/image init.
+      const chromaProg = link(gl, VERT_SRC, FRAG_CHROMA_MASK);
       if (!blurH || !blurV || !composite) {
         if (blurH) gl.deleteProgram(blurH);
         if (blurV) gl.deleteProgram(blurV);
         if (composite) gl.deleteProgram(composite);
         if (jbfProg) gl.deleteProgram(jbfProg);
+        if (chromaProg) gl.deleteProgram(chromaProg);
         return false;
       }
 
@@ -443,6 +483,7 @@ export class QbgGl {
       this.blurV = blurV;
       this.composite = composite;
       this.jbf = jbfProg;
+      this.chromaMask = chromaProg;
       this.frameTex = this.createTexture();
       this.maskTex = this.createTexture();
       this.bgTex = this.createTexture();
@@ -489,6 +530,7 @@ export class QbgGl {
         if (this.blurV) gl.deleteProgram(this.blurV);
         if (this.composite) gl.deleteProgram(this.composite);
         if (this.jbf) gl.deleteProgram(this.jbf);
+        if (this.chromaMask) gl.deleteProgram(this.chromaMask);
         if (this.quad) gl.deleteBuffer(this.quad);
         if (this.vao) gl.deleteVertexArray(this.vao);
       } catch { /* teardown best-effort */ }
@@ -497,7 +539,7 @@ export class QbgGl {
     this.canvas = null;
     this.vao = null;
     this.quad = null;
-    this.blurH = this.blurV = this.composite = this.jbf = null;
+    this.blurH = this.blurV = this.composite = this.jbf = this.chromaMask = null;
     this.frameTex = this.maskTex = this.bgTex = this.refinedMaskTex = null;
     this.jbfFbo = null;
     this.fboA = this.fboB = null;
@@ -587,6 +629,67 @@ export class QbgGl {
     } catch {
       return false;
     }
+  }
+
+
+  /**
+   * Green-screen Reliable: chroma-key mask from camera RGB → weighted blur of
+   * the FULL frame as BG plate → sharp person composite. Skips MediaPipe /
+   * JBF — the cloth IS the matte.
+   */
+  drawChroma(frame: CanvasImageSource, blurPx: number): boolean {
+    if (!this.isReady || !this.gl || !this.canvas || !this.chromaMask) return false;
+    if (this.w < 1 || this.h < 1) return false;
+    try {
+      this.uploadFrame(frame);
+      if (!this.runChromaMask()) return false;
+      // runChromaMask sets jbfLive so activePersonMask() uses the chroma matte.
+      this.runBlurPasses(Math.max(1, Number(blurPx) || 1));
+      this.runComposite(/* virtual */ false, null, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Write person alpha (1 = not green) into maskTex at full frame size. */
+  private runChromaMask(): boolean {
+    const gl = this.gl;
+    if (!gl || !this.chromaMask || !this.maskTex || !this.frameTex) return false;
+    const W = this.w, H = this.h;
+    // Reuse refinedMaskTex FBO as a scratch target, then copy R into maskTex —
+    // or render directly into an RGBA FBO and sample .r. Simplest: render into
+    // refinedMaskTex via jbfFbo, then set maskTex from a fullscreen copy is
+    // heavy. Instead: bind jbfFbo → refinedMaskTex, run chroma, then treat
+    // refined as the active person mask (jbfLive=true) WITHOUT JBF.
+    if (!this.refinedMaskTex || !this.jbfFbo) return false;
+
+    gl.bindTexture(gl.TEXTURE_2D, this.refinedMaskTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.jbfFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.refinedMaskTex, 0);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.chromaMask);
+
+    const locFrame = gl.getUniformLocation(this.chromaMask, "u_frame");
+    const locFlip = gl.getUniformLocation(this.chromaMask, "u_flipY");
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
+    gl.uniform1i(locFrame, 0);
+    gl.uniform1f(locFlip, 0);
+
+    this.drawQuad();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Also stash into maskTex so activePersonMask can fall back if needed.
+    // Point maskTex at the same content by sampling refined as person mask:
+    this.jbfLive = true;
+    return true;
   }
 
   // ── internals ──────────────────────────────────────────────────────────

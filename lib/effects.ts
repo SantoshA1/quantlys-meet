@@ -1397,16 +1397,13 @@ export function webglCompositeReady(probe?: { webgl2?: boolean } | null): boolea
 
 // ── the three tweaks asked for alongside the backdrops ───────────────────
 
-/** THE DEFAULT BACKGROUND. Somebody who has never chosen gets plain video.
+/** THE DEFAULT BACKGROUND. Somebody who has never chosen gets blur.
  *
- *  Not blur — and this is a deliberate refusal of the "privacy-safe default"
- *  argument. Blur costs a segmentation model on every frame of every meeting
- *  for every person, including the ones on a four-year-old laptop who would
- *  experience it as "this app is slow" rather than as a feature; and a person
- *  who has not asked to be hidden has not asked to be hidden. The choice is
- *  one click away and it is REMEMBERED, which is the part that actually
- *  matters. */
-export const DEFAULT_EFFECT_ID = "none";
+ *  Privacy-first: a green-screen cloth is optional, but most people join from
+ *  a real room and expect the room not to be readable. Blur is one click to
+ *  turn off and the choice is REMEMBERED. Green screen (chroma) is the
+ *  Reliable path when they have a cloth — no MediaPipe, no plant heuristics. */
+export const DEFAULT_EFFECT_ID = "blur";
 
 /** CONNECTION QUALITY. Effects are the most expensive thing in the room, and
  *  a machine that is struggling shows it as dropped frames — which people
