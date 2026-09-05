@@ -185,8 +185,8 @@ void main() {
 export const JBF_RADIUS = 5;
 export const JBF_SIGMA_SPACE = 2.5;
 export const JBF_SIGMA_RANGE = 0.1;
-/** Blur-path light-wrap softEdge (0: wrap revealed contaminated edges; Meet wrap later). */
-export const LIGHT_WRAP_BLUR = 0;
+/** Blur-path light-wrap softEdge (Meet-style RGB wrap; does not punch matte alpha). */
+export const LIGHT_WRAP_BLUR = 0.45;
 /** Temporal EMA mix with previous chroma matte (kills sparkle flicker). */
 export const CHROMA_MASK_EMA = 0.68;
 /** Morphological SE radius (px) for close-then-open on chroma matte. */
@@ -392,24 +392,37 @@ void main() {
     bg = texture(u_bg, v_uv);
   }
 
-  // Light wrap only for blur; virtual wrap added weird edge glow.
-  float edge = person * (1.0 - person) * 4.0;
-  float wrap = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edge * 0.12);
-  float a = clamp(person - wrap, 0.0, 1.0);
+  // Keep full person matte — Meet light wrap must NOT punch alpha (that caused
+  // pasted-on dark rims on navy/pink over bright blur when LIGHT_WRAP_BLUR>0).
+  float a = person;
+  float edgeBand = person * (1.0 - person) * 4.0;
 
   // Universal edge despill (blur + virtual): when g > max(r,b), clamp green
-  // toward max(r,b). Never mix FG toward bg.rgb — that invented cyan fringe on
-  // Glass dusk shoulders (QA after #54). Strong in soft edge band; virtual also
-  // mild on opaque person (green-screen bounce onto pink).
+  // toward max(r,b). Never mix FG toward bg.rgb for spill — that invented cyan
+  // fringe on Glass dusk shoulders (QA after #54). Strong in soft edge band;
+  // virtual also mild on opaque person (green-screen bounce onto pink).
   vec3 sharpUse = sharp.rgb;
   float maxRB = max(sharpUse.r, sharpUse.b);
   float gLead = max(0.0, sharpUse.g - maxRB);
-  float edgeBand = person * (1.0 - person) * 4.0;
   float despillAmt = clamp(edgeBand * smoothstep(0.0, 0.08, gLead) * 1.0, 0.0, 1.0);
   if (u_useVirtual > 0.5) {
     despillAmt = max(despillAmt, smoothstep(0.0, 0.06, gLead) * 0.55);
   }
   sharpUse.g = mix(sharpUse.g, maxRB, despillAmt);
+
+  // Cool-edge decontam (blur + virtual): cyan fringe has high B+G (green-only
+  // despill misses it). Pull cool channels toward red warmth in the soft edge.
+  float coolLead = max(0.0, max(sharpUse.g, sharpUse.b) - sharpUse.r);
+  float coolAmt = edgeBand * smoothstep(0.02, 0.12, coolLead);
+  float target = sharpUse.r;
+  sharpUse.g = mix(sharpUse.g, min(sharpUse.g, target + 0.02), coolAmt * 0.7);
+  sharpUse.b = mix(sharpUse.b, min(sharpUse.b, target + 0.04), coolAmt * 0.7);
+
+  // Meet light wrap (blur only): add background light into FG RGB at soft edge.
+  // Only lightens (lit = max); never punches alpha. Virtual wrapAmt stays 0.
+  float wrapAmt = (u_useVirtual > 0.5) ? 0.0 : (clamp(u_softEdge, 0.0, 1.0) * edgeBand * 0.35);
+  vec3 lit = max(sharpUse, mix(sharpUse, bg.rgb, 0.35));
+  sharpUse = mix(sharpUse, lit, wrapAmt);
 
   // out = mix(bgOrBlur, sharpFrame, personAlpha)
   outColor = mix(bg, vec4(sharpUse, 1.0), a);
