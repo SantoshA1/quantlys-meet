@@ -15,7 +15,7 @@ import type { InferenceSession } from "onnxruntime-web";
 export type MatteBackend = "modnet" | "mediapipe";
 
 /** Default preference when available. Overridden by ?matte= or localStorage. */
-export const PREFERRED_MATTE: MatteBackend = "modnet";
+export const PREFERRED_MATTE: MatteBackend = "mediapipe";
 
 export const MATTE_STORAGE_KEY = "quantlys-matte";
 export const MODNET_LOCAL_URL = "/models/modnet_webcam.onnx";
