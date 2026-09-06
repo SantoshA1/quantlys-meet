@@ -26,7 +26,7 @@ import { createClient } from "@supabase/supabase-js";
 import { chooseModel } from "@/lib/model";
 import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath, contextBlock, answeredKeys } from "@/lib/prd";
 import { readContext } from "../../project/route";
-import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
+import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, dropCoveredByRecent, detectIntents, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -126,10 +126,11 @@ export async function POST(req: Request) {
     open = open.filter((d) => !skip.has(d.key));
   }
 
-  // Rank by what the room is ALREADY talking about, then take the most
-  // blocking one that has not been worn out. A question that follows from the
-  // last thing said gets answered; one that arrives from nowhere gets ignored.
-  const ranked = rankOpen(open, recent);
+  // Skip dims the recent captions already covered in substance (anti-reask),
+  // then rank by topic + caption intent so the ask lands as a follow-up.
+  const stillOpen = dropCoveredByRecent(open, recent);
+  const intents = detectIntents(recent);
+  const ranked = rankOpen(stillOpen, recent);
   const key = pickDimension(ranked, askedKeys.map((k) => ({ key: k, label: "", question: "", options: [], why: "", at: 0 })), maxPer);
   if (!key) {
     return Response.json({ ask: false, reason: "The open parts have all been raised already." });
@@ -163,12 +164,14 @@ export async function POST(req: Request) {
     artifact: meta.artifact,
     key: dim.key, label: dim.label, desc: dim.desc,
     // The last few minutes, not the whole meeting: the question has to land
-    // in the conversation that is happening now.
+    // in the conversation that is happening now. Intent tags bias the model
+    // to write a follow-up to what was JUST said, not a checklist row.
     recent: recent.slice(-6000),
     alreadyAsked: asked,
     brief,
     context: ctxBlock,
     spec,
+    intents,
   });
 
   try {

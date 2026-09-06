@@ -267,6 +267,108 @@ const DIMENSION_CUES: Record<string, string[]> = {
  *  boundary rule for mode detection ("landscaper" is not "landscape") and
  *  this file did not; one module learning a lesson is not the codebase
  *  learning it. */
+/** Live-caption intents — light local tags, not the brain.
+ *
+ *  The model still writes the question. These only REORDER which open PRD
+ *  dimension to raise next, so a decision in the last few turns biases the
+ *  ask toward scope/tradeoffs, a named persona toward users, a "park it for
+ *  v2" toward deferral/scope — FSD-style: intent + context, not checklist. */
+export const CAPTION_INTENTS = [
+  "decision",
+  "constraint",
+  "user_story",
+  "risk",
+  "deferral",
+  "acceptance",
+  "persona",
+  "metric",
+] as const;
+export type CaptionIntent = (typeof CAPTION_INTENTS)[number];
+
+const INTENT_CUES: Record<CaptionIntent, string[]> = {
+  decision: ["decide", "decided", "decision", "going with", "we'll go", "we will go", "pick", "chosen", "settled on", "locking in"],
+  constraint: ["must", "have to", "can't", "cannot", "constraint", "budget", "deadline", "limited to", "nonnegotiable", "hard requirement"],
+  user_story: ["user story", "as a", "they need to", "want to be able", "so that they", "journey", "use case"],
+  risk: ["risk", "worry", "worried", "concern", "what if", "might fail", "blocker", "afraid", "fragile"],
+  deferral: ["later", "not now", "v2", "out of scope", "park", "defer", "postpone", "after launch", "next version", "phase two"],
+  acceptance: ["done when", "acceptance", "definition of done", "ship when", "ready when", "pass if", "accept if"],
+  persona: ["persona", "who is this for", "target user", "customer is", "for people who", "audience", "buyer"],
+  metric: ["metric", "kpi", "measure", "success if", "track", "conversion", "retention", "north star", "number we"],
+};
+
+/** Which open dimensions a detected intent should nudge toward. Boost only —
+ *  never invents a dim that is not already open. */
+const INTENT_TO_DIMS: Record<CaptionIntent, string[]> = {
+  decision: ["scope", "architecture", "options", "recommendation", "next_step", "tradeoffs", "goal"],
+  constraint: ["scope", "goal", "architecture", "tech", "problem"],
+  user_story: ["users", "ui_flows", "problem", "players", "core_loop"],
+  risk: ["risks", "counterpoints", "tradeoffs", "quality"],
+  deferral: ["scope", "next_step", "options"],
+  acceptance: ["metrics", "success", "goal", "quality"],
+  persona: ["users", "players", "problem"],
+  metric: ["metrics", "success", "quality", "decisions"],
+};
+
+function cueHits(textNorm: string, cues: string[]): number {
+  let hits = 0;
+  for (const c of cues) {
+    const k = String(c || "").toLowerCase().trim();
+    if (!k) continue;
+    const pat = k.includes(" ")
+      ? `\\s${k.replace(/\s+/g, "\\s")}\\s`
+      : k.endsWith("y")
+        ? `\\s${k.slice(0, -1)}(y|ies|ied|ying)\\s`
+        : `\\s${k}(s|es|ed|ing)?\\s`;
+    if (new RegExp(pat).test(textNorm)) hits++;
+  }
+  return hits;
+}
+
+function normalizeCaptionText(recentText: string): string {
+  return ` ${String(recentText || "").toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+}
+
+/** Dominant intents in the recent caption window, strongest first. */
+export function detectIntents(recentText: string): Array<{ intent: CaptionIntent; hits: number }> {
+  const t = normalizeCaptionText(recentText);
+  if (!t.trim()) return [];
+  const scored: Array<{ intent: CaptionIntent; hits: number }> = [];
+  for (const intent of CAPTION_INTENTS) {
+    const hits = cueHits(t, INTENT_CUES[intent]);
+    if (hits > 0) scored.push({ intent, hits });
+  }
+  return scored.sort((a, b) => (b.hits - a.hits) || a.intent.localeCompare(b.intent));
+}
+
+/** Extra ranking weight from caption intents → related open dims. */
+export function intentDimBoost(
+  key: string,
+  intents: Array<{ intent: CaptionIntent; hits: number }>
+): number {
+  const k = String(key || "");
+  if (!k || !intents?.length) return 0;
+  let boost = 0;
+  for (const { intent, hits } of intents) {
+    const dims = INTENT_TO_DIMS[intent] || [];
+    if (dims.includes(k)) boost += hits;
+  }
+  return boost;
+}
+
+/** Drop open dims the room just covered in substance — reinforce anti-reask.
+ *  High bar: enough recent speech AND strong topic match. Never empties the
+ *  list (falls back to the original open set). */
+export function dropCoveredByRecent(
+  open: Array<{ key: string; label: string; status: string }>,
+  recentText: string
+): Array<{ key: string; label: string; status: string }> {
+  const list = open || [];
+  const words = String(recentText || "").trim().split(/\s+/).filter(Boolean);
+  if (words.length < 40 || !list.length) return list;
+  const kept = list.filter((d) => d && relevance(d.key, recentText) < 3);
+  return kept.length ? kept : list;
+}
+
 export function relevance(key: string, recentText: string): number {
   const cues = DIMENSION_CUES[String(key || "")] || [];
   if (!cues.length) return 0;
@@ -292,13 +394,19 @@ export function relevance(key: string, recentText: string): number {
 }
 
 /** The rubric decides WHAT is still open; the conversation decides WHICH of
- *  those to raise now. Stable: equal relevance keeps rubric order. */
+ *  those to raise now. Topic cues + caption-intent boosts reorder; equal
+ *  scores keep rubric order. */
 export function rankOpen(
   open: Array<{ key: string; label: string; status: string }>,
   recentText: string
 ): Array<{ key: string; label: string; status: string }> {
+  const intents = detectIntents(recentText);
   return (open || [])
-    .map((d, i) => ({ d, i, r: relevance(d.key, recentText) }))
+    .map((d, i) => ({
+      d,
+      i,
+      r: relevance(d.key, recentText) + intentDimBoost(d.key, intents),
+    }))
     .sort((a, b) => (b.r - a.r) || (a.i - b.i))
     .map((x) => x.d);
 }
@@ -392,6 +500,8 @@ export function agentQuestionPrompt(opts: {
   context?: string;
   /** a spec session: pull a missing detail, do not recap. */
   spec?: boolean;
+  /** light local intent tags from the recent caption window — hint only. */
+  intents?: Array<{ intent: CaptionIntent; hits: number }>;
 }): string {
   const brief = String(opts.brief || "").trim();
   const context = String(opts.context || "").trim();
@@ -400,8 +510,15 @@ export function agentQuestionPrompt(opts: {
     : brief
       ? `\nThe team describes the project this way, in their own words:\n\n  ${brief}\n`
       : "";
+  const intents = (opts.intents && opts.intents.length)
+    ? opts.intents
+    : detectIntents(opts.recent);
+  const intentLine = intents.length
+    ? `Dominant intents in what they JUST said (local tags, verify against the transcript): ${intents.map((x) => x.intent).slice(0, 4).join(", ")}.`
+    : "";
   return [
     `You are sitting in a live meeting about ${String(opts.projectName || "this project").trim() || "this project"}.`,
+    "You are driving to a complete PRD. Ask the single highest-leverage missing detail given what was JUST said. Never ignore recent context for a random rubric row.",
     stated,
     `The team is building a ${opts.artifact}, and one part of it is still open:`,
     "",
@@ -411,10 +528,12 @@ export function agentQuestionPrompt(opts: {
     "",
     String(opts.recent || "").trim() || "(nothing yet)",
     "",
+    intentLine,
+    "",
     opts.alreadyAsked.length
       ? `You have already asked these — do not repeat them:\n${opts.alreadyAsked.map((q) => `  - ${q}`).join("\n")}\n`
       : "",
-    "Ask ONE question that closes that gap.",
+    "Ask ONE concrete follow-up that closes that gap — grounded in their recent words, not a checklist prompt.",
     "",
     opts.spec
       ? "This is a solo spec interview. Pull a MISSING detail — specific users, v1 vs out of scope, a success metric, or the top risk. Do not recap what they already said. If almost nothing has been said yet, ask the most useful opening question for this dimension."
@@ -426,9 +545,14 @@ export function agentQuestionPrompt(opts: {
     "- The people answering are NOT developers. Ask in the product's language —",
     "  what a person using this would see, feel or do. Never 'data model',",
     "  'schema', 'architecture' or 'success metric'.",
-    "- Build on what they were JUST saying where you can. A question that",
-    "  follows from the last thing said gets answered; one that arrives from",
-    "  nowhere gets ignored.",
+    "- Prefer a follow-up that quotes a short phrase they just used (a few",
+    "  words in quotes) over an abstract rubric prompt. If they named a",
+    "  decision, constraint, persona, risk, deferral, acceptance bar, or",
+    "  metric — dig into THAT, tied to the open dimension above.",
+    "- Build on what they were JUST saying. A question that follows from the",
+    "  last thing said gets answered; one that arrives from nowhere gets ignored.",
+    "- If the recent talk already answered this dimension, do not restate it —",
+    "  ask the next missing detail on this dim, or say the gap is closed in why.",
     (context || brief)
       ? "- Ask about THEIR product, using their own nouns from the description above. A generic question about this dimension is one they could have got from a checklist. Do not re-ask a decision they already took deliberately."
       : "",
