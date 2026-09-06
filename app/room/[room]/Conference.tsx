@@ -1386,7 +1386,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             it speaks lives in lib/agent.ts, which refuses far more often than
             it agrees — see the header of Agent.tsx for why that is the whole
             design. */}
-        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} />
+        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} isHost={isHost} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>

@@ -48,7 +48,7 @@ type Broadcast =
   | { kind: "dismiss"; key: string; at: number };
 
 export default function Agent({
-  room, project, log, myName, spec = false,
+  room, project, log, myName, spec = false, isHost = false,
   captionsOn, enableCaptions, captionEpoch, captionNote,
 }: {
   room: string;
@@ -59,6 +59,8 @@ export default function Agent({
   myName: string;
   /** a spec session starts the interviewer on */
   spec?: boolean;
+  /** only the host may enable generation — guests still see & answer the card */
+  isHost?: boolean;
   captionsOn: boolean;
   enableCaptions: () => void;
   captionEpoch?: number;
@@ -99,6 +101,8 @@ export default function Agent({
       } else if (b?.kind === "answer") {
         setCurrent((c) => (c && c.key === b.key ? null : c));
         setAsked((a) => a.map((x) => (x.key === b.key ? { ...x, answered: true } : x)));
+        // Live answer closes that dim for the next ask — do not re-ask it.
+        setOpen((o) => o.filter((d) => d.key !== b.key));
       }
     } catch { /* a malformed frame is not worth a broken panel */ }
   });
@@ -132,9 +136,13 @@ export default function Agent({
         const j = await r.json().catch(() => null);
         if (!alive) return;
         const dims = Array.isArray(j?.dimensions) ? j.dimensions : [];
-        setOpen(dims.length
+        const answered = new Set(
+          (Array.isArray(j?.answered) ? j.answered : []).map((k: any) => String(k || "")).filter(Boolean)
+        );
+        const openDims = dims.length
           ? dims.filter((d: any) => d?.status !== "present").map((d: any) => ({ key: d.key, label: d.label, status: d.status }))
-          : rubric.map((d) => ({ key: d.key, label: d.label, status: "missing" })));
+          : rubric.map((d) => ({ key: d.key, label: d.label, status: "missing" }));
+        setOpen(openDims.filter((d: { key: string }) => !answered.has(d.key)));
       } catch {
         if (alive) setOpen(rubric.map((d) => ({ key: d.key, label: d.label, status: "missing" })));
       }
@@ -203,7 +211,9 @@ export default function Agent({
   // shortest interval is three minutes, and it keeps the status line honest
   // rather than frozen.
   useEffect(() => {
-    if (!on) { setStatus(""); return; }
+    // Generation is host-only. Guests still receive ask broadcasts and can
+    // answer the card — they must never burn /api/agent/question.
+    if (!isHost || !on) { setStatus(""); return; }
     if (!startedAt.current) startedAt.current = Date.now();
     const tick = () => {
       const n = words(log);
@@ -239,7 +249,7 @@ export default function Agent({
     tick();
     const iv = window.setInterval(tick, 5000);
     return () => window.clearInterval(iv);
-  }, [on, log, asked, open, current, ask, spec, captionsOn]);
+  }, [isHost, on, log, asked, open, current, ask, spec, captionsOn]);
 
   // A question the room talked straight past is not a question that needs
   // repeating on the screen for ever.
@@ -247,9 +257,11 @@ export default function Agent({
     if (!current) return;
     const since = finals(log).slice(sinceMark.current).map((c) => c.text).join(" ");
     if (looksAnswered(current, since)) {
-      shout({ kind: "answer", key: current.key, text: since.slice(-400), who: "the room" });
+      const key = current.key;
+      shout({ kind: "answer", key, text: since.slice(-400), who: "the room" });
       setCurrent(null);
-      setAsked((a) => a.map((x) => (x.key === current.key ? { ...x, answered: true } : x)));
+      setAsked((a) => a.map((x) => (x.key === key ? { ...x, answered: true } : x)));
+      setOpen((o) => o.filter((d) => d.key !== key));
     }
   }, [log, current, shout]);
 
@@ -268,8 +280,10 @@ export default function Agent({
         { reliable: true, topic: "qm-cc" }
       );
     } catch { /* the broadcast below still records it for this meeting */ }
-    shout({ kind: "answer", key: current.key, text: option, who: myName });
-    setAsked((a) => a.map((x) => (x.key === current.key ? { ...x, answered: true } : x)));
+    const key = current.key;
+    shout({ kind: "answer", key, text: option, who: myName });
+    setAsked((a) => a.map((x) => (x.key === key ? { ...x, answered: true } : x)));
+    setOpen((o) => o.filter((d) => d.key !== key));
     setCurrent(null);
   }
 
@@ -277,26 +291,35 @@ export default function Agent({
 
   return (
     <>
-      <button
-        className={`qmr-ghost qa-btn${on ? " qmr-on" : ""}`}
-        onClick={() => {
-          const next = !on;
-          setOn(next);
-          if (next && !captionsOn) enableCaptions();
-          setNote(next ? openingLine(project, rubric.length, { spec, turnedCaptionsOn: !captionsOn }) : "");
-          if (next && !startedAt.current) startedAt.current = Date.now();
-        }}
-        aria-pressed={on}
-        title={
-          project
-            ? `Ask follow-up questions so ${project}'s ${meta.artifact} comes out complete`
-            : "This meeting has no project, so the agent asks the standard PRD questions"
-        }
-      >
-        {on ? `Agent · ${asked.length}/${spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS}` : "PRD agent"}
-      </button>
+      {isHost ? (
+        <button
+          className={`qmr-ghost qa-btn${on ? " qmr-on" : ""}`}
+          onClick={() => {
+            const next = !on;
+            setOn(next);
+            if (next && !captionsOn) enableCaptions();
+            setNote(next ? openingLine(project, rubric.length, { spec, turnedCaptionsOn: !captionsOn }) : "");
+            if (next && !startedAt.current) startedAt.current = Date.now();
+          }}
+          aria-pressed={on}
+          title={
+            project
+              ? `Ask follow-up questions so ${project}'s ${meta.artifact} comes out complete`
+              : "This meeting has no project, so the agent asks the standard PRD questions"
+          }
+        >
+          {on ? `Agent · ${asked.length}/${spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS}` : "PRD agent"}
+        </button>
+      ) : current ? (
+        <span className="qmr-ghost qa-btn qa-readonly" title="The host's PRD agent is asking the room">
+          Agent asking…
+        </span>
+      ) : null}
 
-      {on && current ? (
+      {/* Room-wide: everyone who received the ask broadcast sees the card —
+          not only the host who toggled the agent on. Guests answer without
+          auth; only generation (/api/agent/question) stays host-signed-in. */}
+      {current ? (
         <div className="qa-card" role="status">
           <div className="qa-head">
             <span className="qa-tag">{meta.artifact} · {current.label}</span>
@@ -314,7 +337,7 @@ export default function Agent({
         </div>
       ) : null}
 
-      {on && !current ? (
+      {isHost && on && !current ? (
         <div className="qa-status" role="status">
           <b>PRD agent{project ? ` · ${project}` : ""}</b>
           <span>{busy ? "Thinking of a question…" : status}</span>
@@ -362,6 +385,7 @@ function recentText(log: Caption[]): string {
 
 export const AGENT_CSS = `
 .qa-btn { white-space:nowrap; }
+.qa-readonly { opacity:.85; cursor:default; pointer-events:none; }
 .qa-card { position:absolute; right:12px; bottom:96px; z-index:70; width:min(380px, calc(100vw - 24px));
   background:#0d1b1a; border:1px solid #14706a; border-radius:13px; padding:13px 14px;
   display:flex; flex-direction:column; gap:9px; box-shadow:0 18px 44px rgba(0,0,0,.6); }

@@ -24,7 +24,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { chooseModel } from "@/lib/model";
-import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath } from "@/lib/prd";
+import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath, contextBlock, answeredKeys } from "@/lib/prd";
 import { readContext } from "../../project/route";
 import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
 
@@ -87,10 +87,19 @@ export async function POST(req: Request) {
   // THE FIRST MEETING'S FIX. Without a brief the agent knows a project NAME
   // and nothing else, so its opening questions are the generic ones for each
   // dimension — which is a checklist, not an assistant. Two sentences the team
-  // wrote once change every question it asks from here on.
+  // wrote once change every question it asks from here on. Between-meeting
+  // decisions (host console) travel the same path via contextBlock, and those
+  // keys are excluded from open so the agent never re-asks a settled answer.
   let brief = "";
+  let ctxBlock = "";
+  let settled: string[] = [];
   if (user && process.env.SUPABASE_SERVICE_ROLE_KEY && project) {
-    try { brief = (await readContext(admin(), user.id, project)).brief; } catch { /* a project with no brief is the normal first state */ }
+    try {
+      const ctx = await readContext(admin(), user.id, project);
+      brief = ctx.brief;
+      ctxBlock = contextBlock(ctx);
+      settled = answeredKeys(ctx);
+    } catch { /* a project with no brief is the normal first state */ }
   }
 
   if (!open.length && user && process.env.SUPABASE_SERVICE_ROLE_KEY && project) {
@@ -111,6 +120,10 @@ export async function POST(req: Request) {
   const meta = metaFor(mode);
   if (!open.length) {
     open = dims.map((d) => ({ key: d.key, label: d.label, status: "missing" }));
+  }
+  if (settled.length) {
+    const skip = new Set(settled);
+    open = open.filter((d) => !skip.has(d.key));
   }
 
   // Rank by what the room is ALREADY talking about, then take the most
@@ -154,6 +167,7 @@ export async function POST(req: Request) {
     recent: recent.slice(-6000),
     alreadyAsked: asked,
     brief,
+    context: ctxBlock,
     spec,
   });
 
