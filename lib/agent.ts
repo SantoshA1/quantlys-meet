@@ -386,13 +386,23 @@ export function agentQuestionPrompt(opts: {
    *  the dimension; with it the question is about their actual product, which
    *  is the difference between an assistant and a form. */
   brief?: string;
+  /** full host-console context (brief + between-meeting decisions), from
+   *  lib/prd contextBlock. Prefer this over brief alone — decisions already
+   *  answered outside the room must not be re-asked as if they were open. */
+  context?: string;
   /** a spec session: pull a missing detail, do not recap. */
   spec?: boolean;
 }): string {
   const brief = String(opts.brief || "").trim();
+  const context = String(opts.context || "").trim();
+  const stated = context
+    ? `\n${context}\n`
+    : brief
+      ? `\nThe team describes the project this way, in their own words:\n\n  ${brief}\n`
+      : "";
   return [
     `You are sitting in a live meeting about ${String(opts.projectName || "this project").trim() || "this project"}.`,
-    brief ? `\nThe team describes the project this way, in their own words:\n\n  ${brief}\n` : "",
+    stated,
     `The team is building a ${opts.artifact}, and one part of it is still open:`,
     "",
     `  ${opts.key}: ${opts.label} — ${opts.desc}`,
@@ -419,8 +429,8 @@ export function agentQuestionPrompt(opts: {
     "- Build on what they were JUST saying where you can. A question that",
     "  follows from the last thing said gets answered; one that arrives from",
     "  nowhere gets ignored.",
-    brief
-      ? "- Ask about THEIR product, using their own nouns from the description above. A generic question about this dimension is one they could have got from a checklist."
+    (context || brief)
+      ? "- Ask about THEIR product, using their own nouns from the description above. A generic question about this dimension is one they could have got from a checklist. Do not re-ask a decision they already took deliberately."
       : "",
     "- Offer 2 or 3 short answers they could pick, most likely first. Each one",
     "  is a complete answer, not a category.",
