@@ -34,6 +34,7 @@ import { surfaceFor, penLabel } from "@/lib/draw";
 import { getBoardStrokes } from "@/lib/boardshare";
 import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
+import { shouldFlushOnPageHide } from "@/lib/recording-flush";
 import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
@@ -681,6 +682,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   const startRecordingRef = useRef<() => void>(() => {});
   const specCcOnce = useRef(false);
   const [elapsed, setElapsed] = useState(0);
+  const elapsedRef = useRef(0);
+  // Set by beforeunload; cleared if the person stays (cancel, focus, pageshow).
+  const unloadStarted = useRef(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err" | "busy"; text: string } | null>(null);
 
   const vRec = useRef<MediaRecorder | null>(null);
@@ -765,25 +769,53 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   }, [control, signedIn]);
 
   useEffect(() => {
-    const recStop = () => {
-      try { aRec.current?.stop(); } catch { /* already stopped */ }
-      try { vRec.current?.stop(); } catch { /* already stopped */ }
+    const live = () => {
+      const rec = vRec.current;
+      return Boolean(recording || (rec && rec.state === "recording") || status?.kind === "busy");
     };
     const guard = (e: BeforeUnloadEvent) => {
-      if (status?.kind === "busy" || recording) {
-        recStop();
-        e.preventDefault();
-        e.returnValue = recording ? "a recording is still saving" : "";
-      }
+      if (!live()) return;
+      // Warn, but do not stop. Cancelling the dialog must leave the recording
+      // running. pagehide flushes only if this navigation actually discards.
+      unloadStarted.current = true;
+      e.preventDefault();
+      e.returnValue = recording ? "a recording is still saving" : "";
     };
-    const onHide = () => { recStop(); };
+    const onPageHide = (e: PageTransitionEvent) => {
+      const flush = shouldFlushOnPageHide({
+        persisted: Boolean(e.persisted),
+        visibilityState: document.visibilityState,
+        unloadStarted: unloadStarted.current,
+      });
+      if (!flush) return;
+      const rec = vRec.current;
+      if (!rec || rec.state !== "recording") return;
+      try { aRec.current?.stop(); } catch { /* already stopped */ }
+      try { rec.stop(); } catch { /* already stopped */ }
+    };
+    const stay = () => { unloadStarted.current = false; };
     window.addEventListener("beforeunload", guard);
-    window.addEventListener("pagehide", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", stay);
+    window.addEventListener("focus", stay);
     return () => {
       window.removeEventListener("beforeunload", guard);
-      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", stay);
+      window.removeEventListener("focus", stay);
     };
   }, [status, recording]);
+
+  // Leaving this room (Leave, End, or navigating away from this room route)
+  // saves the recording. Tab hide does not unmount Conference, so it does not
+  // come through here — that is what used to cut a standup at ~55s.
+  const flushOnLeaveRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    return () => {
+      const rec = vRec.current;
+      if (rec && rec.state === "recording") void flushOnLeaveRef.current();
+    };
+  }, [room]);
 
   const invite = useMemo(
     () => (typeof window === "undefined" ? "" : `${window.location.origin}/room/${room}`),
@@ -1070,8 +1102,13 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
     }
 
     setRecording(true);
+    elapsedRef.current = 0;
     setElapsed(0);
-    ticker.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+    ticker.current = setInterval(() => setElapsed((s) => {
+      const n = s + 1;
+      elapsedRef.current = n;
+      return n;
+    }), 1000);
     announce(true);
   }
 
@@ -1151,6 +1188,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
     setStatus({ kind: "busy", text: "Saving the recording…" });
     await stopRecording();
   }
+  flushOnLeaveRef.current = () => { void flushRecording(); };
 
   startRecordingRef.current = startRecording;
 
@@ -1208,6 +1246,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
         // "Speaker 2". A commitment made by a number is one nobody can chase.
         body: JSON.stringify({
           room, videoPath, audioPath, people: names, title,
+          // On-screen elapsed seconds (the Stop recording clock), not a guess
+          // from file size. Meeting history reads this off the summary.
+          duration_s: Math.max(0, Math.floor(elapsedRef.current || 0)),
           // Everything that was captioned, as timed lines. If Deepgram can't
           // transcribe the file afterwards — no key, silence, a rejected
           // upload — these ARE the transcript, and the notes are written from
