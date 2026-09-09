@@ -16,6 +16,7 @@ import {
 } from "@/lib/notes";
 import { chooseModel } from "@/lib/model";
 import { sendSpecIfDue, appUrl } from "@/lib/spec-email-send";
+import { durationSecondsFromSummary } from "@/lib/recording-flush";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -177,6 +178,7 @@ export async function POST(req: Request) {
   const room = String(body.room || "").trim();
   const videoPath = String(body.videoPath || "").trim();
   const audioPath = body.audioPath ? String(body.audioPath) : "";
+  const duration_s = durationSecondsFromSummary(body);
   if (!room || !videoPath) {
     return Response.json({ error: "Missing the recording details." }, { status: 400 });
   }
@@ -413,6 +415,9 @@ export async function POST(req: Request) {
     // it never reaches the transcript because nobody reads a picture aloud.
     workflow: (body.workflow && typeof body.workflow === "object") ? body.workflow : null,
     people: Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [],
+    // On-screen elapsed seconds from the recorder. Meeting history reads this
+    // so length is not always blank. Null if the client omitted it.
+    duration_s,
     fromCaptions: !ccLines.length ? false : notes.transcript === (ccText.trim() || ccLines.map((l) => l.transcript).join("\n")),
     createdAt: new Date().toISOString(),
   };
@@ -542,5 +547,6 @@ export async function POST(req: Request) {
     emailed,
     steps,
     health: headline(steps),
+    duration_s,
   });
 }

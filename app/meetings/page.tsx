@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Search from "../host/Search";
 import { gb, hms, deletesOn, deletesLabel } from "@/lib/intelligence";
+import { durationSecondsFromSummary } from "@/lib/recording-flush";
 
 let _db: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -113,7 +114,7 @@ export default function MeetingHistory() {
           title: meta[folder.name]?.title || "",
           project: meta[folder.name]?.project ?? null,
           when: stem, bytes: 0, format: "", hasNotes: false,
-          actions: counts[folder.name] || 0, people: null, duration: null,
+          actions: counts[folder.name] || 0, people: null, duration: null as number | null,
           createdISO: null,
         };
         if (SUMMARY_EXT.test(f.name)) r.hasNotes = true;
@@ -132,6 +133,21 @@ export default function MeetingHistory() {
     setRows(out);
     setProjects(Array.from(new Set(out.map((r) => (r.project || "").trim()).filter(Boolean))).sort());
     setNote(out.length ? "" : "No recorded meetings yet — press Record during one and it lands here.");
+    // Length lives on the summary written at finish (duration_s). The list
+    // used to leave duration null forever, so every meeting looked untimed.
+    const stamped = await Promise.all(out.map(async (r) => {
+      if (!r.hasNotes) return r;
+      const path = `${user.id}/${r.room}/${r.when}.summary.json`;
+      const { data, error } = await db().storage.from("recordings").download(path);
+      if (error || !data) return r;
+      try {
+        const secs = durationSecondsFromSummary(JSON.parse(await data.text()));
+        return secs == null ? r : { ...r, duration: secs };
+      } catch {
+        return r;
+      }
+    }));
+    setRows(stamped);
   }, [user]);
 
   useEffect(() => { load(); }, [load]);

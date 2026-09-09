@@ -5,6 +5,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { hms } from "@/lib/intelligence";
+import { durationSecondsFromSummary } from "@/lib/recording-flush";
 
 let _db: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -22,6 +24,7 @@ type Rec = {
   room: string;
   when: string;
   size: number;
+  duration?: number | null;
   audioPath?: string;
   summaryPath?: string;
 };
@@ -97,8 +100,19 @@ export default function Recordings({ userId }: { userId: string }) {
       byStem.forEach((r) => r.path && out.push(r));
     }
     out.sort((a, b) => (a.when < b.when ? 1 : -1));
-    setItems(out);
-    setNote(out.length ? "" : "No recordings yet — press Record during a meeting.");
+    const stamped = await Promise.all(out.map(async (r) => {
+      if (!r.summaryPath) return r;
+      const { data, error } = await db().storage.from("recordings").download(r.summaryPath);
+      if (error || !data) return r;
+      try {
+        const secs = durationSecondsFromSummary(JSON.parse(await data.text()));
+        return secs == null ? r : { ...r, duration: secs };
+      } catch {
+        return r;
+      }
+    }));
+    setItems(stamped);
+    setNote(stamped.length ? "" : "No recordings yet — press Record during a meeting.");
   }, [userId]);
 
   useEffect(() => {
@@ -188,6 +202,7 @@ export default function Recordings({ userId }: { userId: string }) {
                 {" · "}
                 {r.room}
                 {r.size ? ` · ${pretty(r.size)}` : ""}
+                {r.duration ? ` · ${hms(r.duration)}` : ""}
                 {r.path.endsWith(".webm") ? " · WebM (opens in Chrome)" : ""}
               </span>
             </span>
