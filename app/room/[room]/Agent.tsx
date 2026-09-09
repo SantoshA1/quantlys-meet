@@ -34,6 +34,7 @@ import { supabaseBrowser } from "@/lib/supabase-browser";
 import { finals, type Caption } from "@/lib/captions";
 import {
   shouldAsk, statusLine, openingLine, specOpeningLine, looksAnswered, observe,
+  dropCoveredByRecent, specGapStrip, gapChipLabel,
   MAX_QUESTIONS, SPEC_MAX_QUESTIONS, type AgentAsk, type AgentState,
 } from "@/lib/agent";
 import { rubricFor, metaFor, detectMode } from "@/lib/prd";
@@ -42,10 +43,30 @@ import { rubricFor, metaFor, detectMode } from "@/lib/prd";
  *  hour; sharing a channel would mean parsing every caption to find them. */
 export const AGENT_TOPIC = "qm-agent";
 
+type GapDim = { key: string; label: string; status: string };
+
 type Broadcast =
-  | { kind: "ask"; ask: AgentAsk }
-  | { kind: "answer"; key: string; text: string; who: string }
-  | { kind: "dismiss"; key: string; at: number };
+  | { kind: "ask"; ask: AgentAsk; open?: GapDim[]; highlightKey?: string }
+  | { kind: "answer"; key: string; text: string; who: string; open?: GapDim[] }
+  | { kind: "dismiss"; key: string; at: number }
+  | { kind: "gaps"; open: GapDim[]; highlightKey: string; agentOn: boolean };
+
+function normalizeGaps(list: unknown): GapDim[] {
+  const seen = new Set<string>();
+  const out: GapDim[] = [];
+  for (const d of Array.isArray(list) ? list : []) {
+    const row = d as { key?: string; label?: string; status?: string };
+    const key = String(row?.key || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      label: gapChipLabel({ key, label: row?.label }),
+      status: String(row?.status || "missing"),
+    });
+  }
+  return out;
+}
 
 export default function Agent({
   room, project, log, myName, spec = false, isHost = false,
@@ -73,6 +94,11 @@ export default function Agent({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<Array<{ key: string; label: string; status: string }>>([]);
+  // Guests do not generate. They learn that the host's agent is on — and which
+  // dims are still open — from the room broadcast, so the strip is the same
+  // for everyone.
+  const [roomOn, setRoomOn] = useState(false);
+  const [remoteHighlight, setRemoteHighlight] = useState("");
 
   const startedAt = useRef(0);
   const lastAskAt = useRef(0);
@@ -81,6 +107,10 @@ export default function Agent({
   const wordsSeen = useRef(0);
   const sinceMark = useRef(0);
   const inFlight = useRef(false);
+  const isHostRef = useRef(isHost);
+  isHostRef.current = isHost;
+  const openRef = useRef(open);
+  openRef.current = open;
   const { localParticipant } = useLocalParticipant();
 
   const mode = detectMode(`${project} ${room}`);
@@ -96,13 +126,33 @@ export default function Agent({
       if (b?.kind === "ask" && b.ask?.key) {
         setCurrent(b.ask);
         setAsked((a) => (a.some((x) => x.at === b.ask.at) ? a : [...a, b.ask]));
+        setRemoteHighlight(b.ask.key);
+        // Guests take the open list that travelled with the ask so the
+        // highlighted chip and the question arrive together.
+        if (!isHostRef.current) {
+          setRoomOn(true);
+          if (Array.isArray(b.open)) setOpen(normalizeGaps(b.open));
+        }
       } else if (b?.kind === "dismiss") {
         setCurrent((c) => (c && c.key === b.key ? null : c));
+        setRemoteHighlight((h) => (h === b.key ? "" : h));
       } else if (b?.kind === "answer") {
         setCurrent((c) => (c && c.key === b.key ? null : c));
         setAsked((a) => a.map((x) => (x.key === b.key ? { ...x, answered: true } : x)));
+        setRemoteHighlight((h) => (h === b.key ? "" : h));
         // Live answer closes that dim for the next ask — do not re-ask it.
-        setOpen((o) => o.filter((d) => d.key !== b.key));
+        // Guests apply the host's remaining list when it rode along; otherwise
+        // drop the answered key locally so the chip still leaves the strip.
+        if (!isHostRef.current && Array.isArray(b.open)) setOpen(normalizeGaps(b.open));
+        else setOpen((o) => o.filter((d) => d.key !== b.key));
+      } else if (b?.kind === "gaps") {
+        // Host is the source of truth for the open list. Applying our own
+        // echo can resurrect a dim a local answer already dropped.
+        if (!isHostRef.current) {
+          setOpen(normalizeGaps(b.open));
+          setRoomOn(Boolean(b.agentOn));
+          setRemoteHighlight(String(b.highlightKey || ""));
+        }
       }
     } catch { /* a malformed frame is not worth a broken panel */ }
   });
@@ -116,7 +166,9 @@ export default function Agent({
   // yet — a project's first meeting — means everything is open, which is
   // exactly right.
   useEffect(() => {
-    if (!on) return;
+    // Only the host loads the assessment. Guests paint the strip from the
+    // broadcast so they never need to generate, and they still see the same chips.
+    if (!isHost || !on) return;
     // No project yet still means the whole rubric is open — otherwise shouldAsk
     // sees an empty list and says nothing is left to ask, so a spec session
     // never interviews.
@@ -148,7 +200,7 @@ export default function Agent({
       }
     })();
     return () => { alive = false; };
-  }, [on, project, rubric]);
+  }, [isHost, on, project, rubric]);
 
   // Spec sessions start with the agent already on, so the opening line has to
   // land without a click. Captions are the ears — turn them on if they aren't.
@@ -198,7 +250,7 @@ export default function Agent({
       setAsked((a) => [...a, item]);
       setCurrent(item);
       setNote(String(j.model_note || ""));
-      shout({ kind: "ask", ask: item });
+      shout({ kind: "ask", ask: item, open: openRef.current, highlightKey: item.key });
     } catch (e: any) {
       setNote(`The agent hit an error: ${e?.message || String(e)}`);
     } finally {
@@ -231,11 +283,24 @@ export default function Agent({
         wordsNow: n,
         wordsAtAsk: wordsAtLastAsk.current,
       });
+      // Same anti-reask the next question uses: a dim the room just covered
+      // in substance leaves the open list, so the chip leaves the strip for
+      // everyone. Never drop the dim whose card is still up — that chip stays
+      // highlighted until the answer lands.
+      const covered = dropCoveredByRecent(open, recentText(log));
+      let liveOpen = covered;
+      if (current?.key && open.some((d) => d.key === current.key) && !covered.some((d) => d.key === current.key)) {
+        const held = open.find((d) => d.key === current.key);
+        liveOpen = held ? [held, ...covered] : covered;
+      }
+      if (liveOpen.map((d) => d.key).join("|") !== open.map((d) => d.key).join("|")) {
+        setOpen(liveOpen);
+      }
       const state: AgentState = {
         on: true,
         ...clock,
         asked,
-        open,
+        open: liveOpen,
         pending: Boolean(current),
         spec: Boolean(spec),
         hearing: Boolean(captionsOn),
@@ -258,10 +323,11 @@ export default function Agent({
     const since = finals(log).slice(sinceMark.current).map((c) => c.text).join(" ");
     if (looksAnswered(current, since)) {
       const key = current.key;
-      shout({ kind: "answer", key, text: since.slice(-400), who: "the room" });
+      const nextOpen = openRef.current.filter((d) => d.key !== key);
+      shout({ kind: "answer", key, text: since.slice(-400), who: "the room", open: nextOpen });
       setCurrent(null);
       setAsked((a) => a.map((x) => (x.key === key ? { ...x, answered: true } : x)));
-      setOpen((o) => o.filter((d) => d.key !== key));
+      setOpen(nextOpen);
     }
   }, [log, current, shout]);
 
@@ -281,13 +347,24 @@ export default function Agent({
       );
     } catch { /* the broadcast below still records it for this meeting */ }
     const key = current.key;
-    shout({ kind: "answer", key, text: option, who: myName });
+    const nextOpen = openRef.current.filter((d) => d.key !== key);
+    shout({ kind: "answer", key, text: option, who: myName, open: nextOpen });
     setAsked((a) => a.map((x) => (x.key === key ? { ...x, answered: true } : x)));
-    setOpen((o) => o.filter((d) => d.key !== key));
+    setOpen(nextOpen);
     setCurrent(null);
   }
 
   const doneCount = asked.filter((a) => a.answered).length;
+  const agentOn = isHost ? on : roomOn;
+  const highlightKey = current?.key || (!isHost ? remoteHighlight : "");
+  const gaps = specGapStrip({
+    open,
+    highlightKey,
+    agentOn,
+    askOnScreen: Boolean(current),
+  });
+
+  useGapBroadcast(shout, isHost, on, open, current?.key || "", Boolean(current));
 
   return (
     <>
@@ -319,6 +396,24 @@ export default function Agent({
       {/* Room-wide: everyone who received the ask broadcast sees the card —
           not only the host who toggled the agent on. Guests answer without
           auth; only generation (/api/agent/question) stays host-signed-in. */}
+      {gaps.visible ? (
+        <div className="qa-gaps" role="status" aria-label="Spec gaps still open">
+          <span className="qa-gaps-kicker">Still open</span>
+          <span className="qa-gapchips">
+            {gaps.chips.map((c) => (
+              <span
+                key={c.key}
+                className={`qa-gap${c.highlight ? " is-on" : ""}`}
+                title={c.highlight ? `This question closes ${c.label}` : c.label}
+              >
+                {c.label}
+              </span>
+            ))}
+            {gaps.more > 0 ? <span className="qa-gap qa-gapmore">+{gaps.more}</span> : null}
+          </span>
+        </div>
+      ) : null}
+
       {current ? (
         <div className="qa-card" role="status">
           <div className="qa-head">
@@ -347,12 +442,6 @@ export default function Agent({
               job is to wait needs to show what it is waiting FOR. Naming the
               parts of the PRD still open turns a blinking box into a
               checklist somebody can see progress against. */}
-          {open.length ? (
-            <span className="qa-open">
-              STILL OPEN — {open.map((d) => d.label).slice(0, 6).join(" · ")}
-              {open.length > 6 ? ` · +${open.length - 6}` : ""}
-            </span>
-          ) : null}
           {doneCount ? <span className="qa-done">{doneCount} answered</span> : null}
           {note ? <span className="qa-note">{note}</span> : null}
           {captionNote ? <span className="qa-note">{captionNote}</span> : null}
@@ -360,6 +449,50 @@ export default function Agent({
       ) : null}
     </>
   );
+}
+
+function useGapBroadcast(
+  shout: (b: Broadcast) => void,
+  isHost: boolean,
+  on: boolean,
+  open: GapDim[],
+  highlightKey: string,
+  askOnScreen: boolean,
+) {
+  const shoutRef = useRef(shout);
+  shoutRef.current = shout;
+  const openRef = useRef(open);
+  openRef.current = open;
+  const hiRef = useRef(highlightKey);
+  hiRef.current = highlightKey;
+  const onRef = useRef(on);
+  onRef.current = on;
+
+  const sig = `${on ? 1 : 0}|${highlightKey}|${open.map((d) => d.key).join("|")}`;
+  useEffect(() => {
+    if (!isHost) return;
+    shoutRef.current({
+      kind: "gaps",
+      open: openRef.current,
+      highlightKey: hiRef.current,
+      // An ask still on screen keeps the strip up for the room even if the
+      // host just switched generation off.
+      agentOn: onRef.current || Boolean(hiRef.current),
+    });
+  }, [isHost, sig]);
+
+  useEffect(() => {
+    if (!isHost || (!on && !askOnScreen)) return;
+    const iv = window.setInterval(() => {
+      shoutRef.current({
+        kind: "gaps",
+        open: openRef.current,
+        highlightKey: hiRef.current,
+        agentOn: onRef.current || Boolean(hiRef.current),
+      });
+    }, 12000);
+    return () => window.clearInterval(iv);
+  }, [isHost, on, askOnScreen]);
 }
 
 function words(log: Caption[]): number {
@@ -409,4 +542,20 @@ export const AGENT_CSS = `
 .qa-note { color:#f0d9a6 !important; }
 .qa-open { color:#6c7688 !important; font-size:10.5px !important; letter-spacing:.06em;
   text-transform:uppercase; line-height:1.5 !important; }
+.qa-gaps { position:fixed; top:60px; left:50%; transform:translateX(-50%); z-index:68;
+  display:flex; align-items:center; gap:8px; max-width:min(760px, calc(100vw - 24px));
+  padding:6px 10px 6px 12px; background:#0d1b1a; border:1px solid #14706a; border-radius:999px;
+  box-shadow:0 10px 28px rgba(0,0,0,.45); pointer-events:none; }
+.qa-gaps-kicker { flex:0 0 auto; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+  color:#7fe0d6; font-weight:600; }
+.qa-gapchips { display:flex; gap:5px; min-width:0; overflow:hidden; }
+.qa-gap { flex:0 1 auto; max-width:148px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:11.5px; color:#cfe9e6; background:#123130; border:1px solid #1d4f4c;
+  border-radius:999px; padding:3px 9px; line-height:1.3; }
+.qa-gap.is-on { color:#06110f; background:#7fe0d6; border-color:#7fe0d6; font-weight:600; }
+.qa-gapmore { flex:0 0 auto; color:#8b93a5; background:transparent; border-color:#2b3240; }
+@media (max-width: 720px) {
+  .qa-gaps { top:52px; max-width:calc(100vw - 16px); padding:5px 8px; }
+  .qa-gaps-kicker { display:none; }
+}
 `;

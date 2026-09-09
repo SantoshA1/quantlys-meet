@@ -464,6 +464,86 @@ export function openingLine(projectName: string, total: number, opts?: { spec?: 
   return base + " Captions just came on so I can hear the room.";
 }
 
+/** How many open dims the live strip shows before it collapses the rest to "+N". */
+export const SPEC_GAP_CAP = 6;
+
+export type SpecGapDim = { key: string; label?: string; status?: string };
+
+export type SpecGapChip = { key: string; label: string; highlight: boolean };
+
+export type SpecGapView = {
+  /** room should paint the strip — agent on, or an ask still on screen */
+  visible: boolean;
+  chips: SpecGapChip[];
+  /** open dims past the cap, for a "+N" chip */
+  more: number;
+  /** the dim the current ask is closing, if that dim is still on the strip */
+  highlightKey: string;
+};
+
+/** Chip text. Rubric label when we have one — never a raw key if a label exists. */
+export function gapChipLabel(dim: { key?: string; label?: string } | null | undefined): string {
+  const label = String(dim?.label || "").trim();
+  if (label) return label;
+  return String(dim?.key || "").trim().replace(/_/g, " ");
+}
+
+/**
+ * Which dims the live spec-gap strip shows, and which chip the current ask highlights.
+ *
+ * Visible when the agent is on OR an ask is on screen — host toggle still decides
+ * whether questions are generated; this only decides whether the room can see the
+ * remaining gaps. Caps at 6. The highlighted dim is pinned into the visible set
+ * even if it would have fallen past the cap, so the question on screen always
+ * points at a chip. Answered / dropped dims are simply absent from `open` — they
+ * leave the strip. Never invents a chip for a key that is not still open.
+ */
+export function specGapStrip(opts: {
+  open?: Array<SpecGapDim> | null;
+  highlightKey?: string | null;
+  agentOn?: boolean;
+  askOnScreen?: boolean;
+  cap?: number;
+}): SpecGapView {
+  const agentOn = Boolean(opts?.agentOn);
+  const askOnScreen = Boolean(opts?.askOnScreen);
+  const wanted = String(opts?.highlightKey || "").trim();
+  const capRaw = opts?.cap;
+  const cap = Number.isFinite(capRaw) && (capRaw as number) > 0
+    ? Math.floor(capRaw as number)
+    : SPEC_GAP_CAP;
+
+  const seen = new Set<string>();
+  const open: SpecGapDim[] = [];
+  for (const d of opts?.open || []) {
+    const key = String(d?.key || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    open.push({ key, label: String(d?.label || "").trim(), status: d?.status });
+  }
+
+  if ((!agentOn && !askOnScreen) || !open.length) {
+    return { visible: false, chips: [], more: 0, highlightKey: "" };
+  }
+
+  const hi = wanted && seen.has(wanted) ? wanted : "";
+  const pinned = hi ? open.filter((d) => d.key === hi) : [];
+  const rest = open.filter((d) => d.key !== hi);
+  const ordered = [...pinned, ...rest];
+  const shown = ordered.slice(0, cap);
+  const chips: SpecGapChip[] = shown.map((d) => ({
+    key: d.key,
+    label: gapChipLabel(d),
+    highlight: Boolean(hi) && d.key === hi,
+  }));
+  return {
+    visible: chips.length > 0,
+    chips,
+    more: Math.max(0, ordered.length - shown.length),
+    highlightKey: hi,
+  };
+}
+
 /** What the host sees while it is on and quiet. An assistant with no visible
  *  state is indistinguishable from a broken one. */
 export function statusLine(s: AgentState, verdict: AgentVerdict): string {
