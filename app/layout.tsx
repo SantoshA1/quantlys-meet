@@ -3,6 +3,7 @@ import "./globals.css";
 import Image from "next/image";
 import { THEME_BOOT } from "@/lib/theme";
 import ThemeToggle from "./ThemeToggle";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata = {
   metadataBase: new URL("https://quantlys-meeting.com"),
@@ -48,6 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {children}
           </main>
         </div>
+        <Analytics />
       </body>
     </html>
   );
