@@ -35,6 +35,7 @@ type Prd = {
   meetings_used: number; meetings_dropped: number;
   brief?: string; decisions?: Decision[]; answered?: string[];
   assessment_error?: string; model?: string; model_note?: string; at?: string;
+  shareId?: string;
 };
 type Decision = { key: string; question: string; answer: string; at: string };
 
@@ -55,6 +56,10 @@ export default function Prd({ projects }: { projects: string[] }) {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [answering, setAnswering] = useState("");
   const [custom, setCustom] = useState<Record<string, string>>({});
+  // Shareable link — anyone with it can open the PRD without signing in.
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     if (!project && projects.length) setProject(projects[0]);
@@ -64,17 +69,32 @@ export default function Prd({ projects }: { projects: string[] }) {
 
   // Read back the last assessment for free before offering to pay for a new
   // one — a person opening this panel twice should not be billed twice.
+  const loadShare = useCallback(async (p: string) => {
+    if (!p) { setShareUrl(""); return; }
+    try {
+      const t = await token();
+      if (!t) { setShareUrl(""); return; }
+      const r = await fetch("/api/prd/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project: p, action: "status" }),
+      });
+      const j = await r.json().catch(() => null);
+      setShareUrl(r.ok && j?.sharing && j?.url ? String(j.url) : "");
+    } catch { setShareUrl(""); }
+  }, []);
+
   const loadSaved = useCallback(async (p: string) => {
     if (!p) return;
-    setData(null); setNote("");
+    setData(null); setNote(""); setShareUrl("");
     try {
       const t = await token();
       if (!t) return;
       const r = await fetch(`/api/prd?project=${encodeURIComponent(p)}`, { headers: { Authorization: `Bearer ${t}` } });
       const j = await r.json().catch(() => null);
-      if (r.ok && j && !j.error) { setData(j); setNote(""); }
+      if (r.ok && j && !j.error) { setData(j); setNote(""); await loadShare(p); }
     } catch { /* no saved assessment is the normal first state */ }
-  }, []);
+  }, [loadShare]);
 
   const loadContext = useCallback(async (p: string) => {
     if (!p) return;
@@ -169,6 +189,62 @@ export default function Prd({ projects }: { projects: string[] }) {
     a.href = url; a.download = data.filename || "prd.md";
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function enableShare() {
+    if (!project || shareBusy) return;
+    setShareBusy(true); setNote("");
+    try {
+      const t = await token();
+      const r = await fetch("/api/prd/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project, action: "enable" }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.url) {
+        setNote(j?.error || "Couldn't create the shareable link.");
+        return;
+      }
+      setShareUrl(String(j.url));
+      try {
+        await navigator.clipboard.writeText(String(j.url));
+        setLinkCopied(true);
+        setTimeout(() => setLinkCopied(false), 2200);
+      } catch {
+        setNote("Link ready — copy it from the box below.");
+      }
+    } catch (e: any) {
+      setNote(`Couldn't share it: ${e?.message || String(e)}`);
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function revokeShare() {
+    if (!project || shareBusy) return;
+    setShareBusy(true); setNote("");
+    try {
+      const t = await token();
+      await fetch("/api/prd/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project, action: "revoke" }),
+      });
+      setShareUrl("");
+    } catch (e: any) {
+      setNote(`Couldn't turn sharing off: ${e?.message || String(e)}`);
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  function copyLink() {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText(shareUrl).then(
+      () => { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2200); },
+      () => setNote("Your browser blocked the clipboard — select the link and copy it by hand.")
+    );
   }
 
   const pct = data ? Math.round(data.score * 100) : 0;
@@ -338,6 +414,32 @@ export default function Prd({ projects }: { projects: string[] }) {
             <button className="qh-ghost" onClick={() => setShowDoc((v) => !v)}>
               {showDoc ? "Hide it" : "Read it"}
             </button>
+            {shareUrl ? (
+              <button className="qh-btn" onClick={copyLink}>{linkCopied ? "Link copied" : "Copy shareable link"}</button>
+            ) : (
+              <button className="qh-btn" disabled={shareBusy} onClick={enableShare}>
+                {shareBusy ? "Creating link…" : "Shareable link"}
+              </button>
+            )}
+          </div>
+
+          <div className="qp-share">
+            <h3 className="qp-h3">Shareable link</h3>
+            {shareUrl ? (
+              <>
+                <p className="qh-fine">Anyone with this link can open the {data.artifact} in a browser — no account.</p>
+                <div className="qp-sharerow">
+                  <input className="qh-input qp-shareurl" readOnly value={shareUrl} onFocus={(e) => e.currentTarget.select()} />
+                  <button className="qh-ghost" onClick={copyLink}>{linkCopied ? "Copied" : "Copy"}</button>
+                  <button className="qh-ghost" disabled={shareBusy} onClick={revokeShare}>Turn sharing off</button>
+                </div>
+              </>
+            ) : (
+              <p className="qh-fine">
+                Turn on a shareable link to paste into Slack or email. You can revoke it any time.
+                Email-the-spec from the room still works for guest requests.
+              </p>
+            )}
           </div>
 
           <div className="qp-handoff">
@@ -348,7 +450,7 @@ export default function Prd({ projects }: { projects: string[] }) {
                 <b>Paste this as the first message</b>
                 <span>
                   Conclave reads the first message to pick its crew, so the document itself is the right
-                  thing to paste. The .md file works as an attachment too.
+                  thing to paste. The .md file works as an attachment too. Or share the link above.
                 </span>
               </li>
               <li>
@@ -362,7 +464,7 @@ export default function Prd({ projects }: { projects: string[] }) {
             </ol>
             <p className="qh-fine">
               THERE IS NO ONE-CLICK SEND: CONCLAVE HAS NO ENDPOINT THAT ACCEPTS A PRD, SO A BUTTON CLAIMING TO
-              DO THIS WOULD BE PRETENDING. THE PASTE IS THE REAL HANDOFF.
+              DO THIS WOULD BE PRETENDING. THE PASTE (OR THE SHAREABLE LINK) IS THE REAL HANDOFF.
             </p>
           </div>
 
@@ -406,6 +508,9 @@ export const PRD_CSS = `
   border-radius:7px; padding:4px 9px; }
 .qp-q em { color:#8b93a5; font-size:11.5px; font-style:normal; }
 .qp-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.qp-share { border-top:1px solid #1c2430; padding-top:12px; display:flex; flex-direction:column; gap:8px; }
+.qp-sharerow, .qp-share.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.qp-shareurl { flex:1 1 240px; font-size:12.5px; }
 .qp-handoff { border-top:1px solid #1c2430; padding-top:12px; display:flex; flex-direction:column; gap:9px; }
 .qp-steps { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:8px; }
 .qp-steps li { color:#8b93a5; font-size:12.5px; }

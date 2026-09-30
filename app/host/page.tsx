@@ -157,6 +157,7 @@ export default function HostConsole() {
   const [itemsTotal, setItemsTotal] = useState(0);
   const [digestNote, setDigestNote] = useState("");
   const [sending, setSending] = useState(false);
+  const [handoffNote, setHandoffNote] = useState("");
   // Who's coming. One free-text box on purpose: people paste addresses out of
   // a calendar, a spreadsheet or an Outlook To: line, and every one of those
   // uses a different separator. The parser takes them all.
@@ -174,6 +175,25 @@ export default function HostConsole() {
   // and it trains people to click through warnings.
   const [confirmDel, setConfirmDel] = useState("");
   const [deleting, setDeleting] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get("handoff") === "1") {
+        setHandoffNote(
+          "Session ended. Copy, download, or share the project PRD below — or email the spec from the room if guests requested it."
+        );
+        // Drop the query so a refresh does not keep nagging, keep #prd.
+        const url = new URL(window.location.href);
+        url.searchParams.delete("handoff");
+        window.history.replaceState({}, "", url.pathname + url.search + "#prd");
+        setTimeout(() => {
+          document.getElementById("prd")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 120);
+      }
+    } catch { /* private mode / odd URL */ }
+  }, []);
 
   useEffect(() => {
     db()
@@ -777,7 +797,17 @@ export default function HostConsole() {
             {/* Every recorded meeting on a project, read together, scored on
                 the same rubric Quantlys Conclave scores a PRD on. See Prd.tsx
                 for why there is no one-click "send to Conclave" button. */}
-            <Prd projects={projectNames} />
+            <div id="prd">
+              {handoffNote ? (
+                <div className="qh-panel qh-handoff" role="status">
+                  <p className="qh-eyebrow">POST-MEETING HANDOFF</p>
+                  <p className="qh-dim" style={{ margin: 0 }}>{handoffNote}</p>
+                  <button className="qh-ghost qh-btn" style={{ marginTop: 10 }}
+                    onClick={() => setHandoffNote("")}>Dismiss</button>
+                </div>
+              ) : null}
+              <Prd projects={projectNames} />
+            </div>
 
             {/* ── YOUR MEETINGS ──────────────────────────────────────── */}
             <section className="qh-panel">
@@ -1085,6 +1115,7 @@ const QH = `
      are the way into a room; burying them under Prd reads as "can't host". */ }
 .qh-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .24em;
   color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
+.qh-handoff { border: 1px solid #1d4f4c; background: #0d3d39; }
 .qh-h1 { font-size: 30px; font-weight: 600; margin: 2px 0 8px; letter-spacing: -0.01em; }
 .qh-dim { color: var(--muted, #7b8aa0); font-size: 14px; line-height: 1.55; margin: 4px 0 14px; }
 .qh-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 0; }
