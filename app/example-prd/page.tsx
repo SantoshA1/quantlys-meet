@@ -90,6 +90,9 @@ export default function ExamplePrdPage() {
           <Link className="qml-btn qml-btn-ghost" href="/recap-vs-prd">
             Recap vs a PRD
           </Link>
+          <Link className="qml-btn qml-btn-ghost" href="/notes-vs-prd">
+            Notes vs a PRD
+          </Link>
         </div>
       </section>
 
@@ -183,6 +186,9 @@ export default function ExamplePrdPage() {
         <span>
           <Link href="/">Home</Link>
           <Link href="/host">Host</Link>
+          <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
+          <Link href="/prd-from-meeting">PRD from meeting</Link>
+          <Link href="/notes-vs-prd">Notes vs PRD</Link>
           <Link href="/recap-vs-prd">Recap vs a PRD</Link>
           <Link href="/privacy">Privacy</Link>
         </span>

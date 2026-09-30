@@ -355,6 +355,9 @@ export default function HomeLanding() {
         <span>
           <Link href="/host">Host</Link>
           <a href="#own">Stack</a>
+          <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
+          <Link href="/prd-from-meeting">PRD from meeting</Link>
+          <Link href="/notes-vs-prd">Notes vs PRD</Link>
           <Link href="/recap-vs-prd">Recap vs a PRD</Link>
           <Link href="/example-prd">Example PRD</Link>
           <Link href="/privacy">Privacy</Link>

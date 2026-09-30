@@ -91,6 +91,14 @@ const jsonLd = {
             text: "No. Quantlys Meeting is a spec-session video product at quantlys-meeting.com. Quantalys is an unrelated fund-data company.",
           },
         },
+        {
+          "@type": "Question",
+          name: "Does Quantlys Meeting write a PRD from the meeting?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "Yes. Recorded sessions on a project roll into one markdown PRD: problem, user stories, acceptance criteria, decisions, and open questions. It is not a transcript or AI notes page.",
+          },
+        },
       ],
     },
   ],

@@ -125,6 +125,8 @@ export default function RecapVsPrdPage() {
         <span>
           <Link href="/">Home</Link>
           <Link href="/host">Host</Link>
+          <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
+          <Link href="/notes-vs-prd">Notes vs PRD</Link>
           <Link href="/example-prd">Example PRD</Link>
           <Link href="/privacy">Privacy</Link>
         </span>
