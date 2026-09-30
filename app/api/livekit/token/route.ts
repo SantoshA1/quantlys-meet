@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
 import { createServerClient } from "@supabase/ssr";
+import { GUEST_JOIN_CLOSED, guestJoinAllowed } from "@/lib/guest-join";
 export const runtime = "nodejs";
 
 const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN;
@@ -28,6 +29,12 @@ export async function POST(req: NextRequest) {
       { cookies: { getAll: () => [], setAll: () => {} } });
     const { data: m } = await svc.from("meetings").select("created_by").eq("room_name", room).maybeSingle();
     isHost = !!m && m.created_by === user.id;
+  }
+
+  // Global kill switch before per-room approval. Unsigned guests stop here
+  // when ALLOW_GUEST_JOIN is false; signed-in non-hosts continue.
+  if (!isHost && !user && !guestJoinAllowed()) {
+    return NextResponse.json({ error: GUEST_JOIN_CLOSED }, { status: 403 });
   }
 
   // Host always enters. Guests enter directly UNLESS this room requires approval.
