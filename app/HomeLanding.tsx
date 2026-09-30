@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import Link from "next/link";
+import { guestJoinUiAllowed } from "@/lib/guest-join";
 
 let _db: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -23,6 +24,10 @@ function db(): SupabaseClient {
 
 export default function HomeLanding() {
   const router = useRouter();
+  // Build-time public mirror of ALLOW_GUEST_JOIN — keeps the landing card honest.
+  const guestsOk = guestJoinUiAllowed({
+    NEXT_PUBLIC_ALLOW_GUEST_JOIN: process.env.NEXT_PUBLIC_ALLOW_GUEST_JOIN,
+  });
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -266,24 +271,34 @@ export default function HomeLanding() {
         <div className="qml-join">
           <section className="qml-card">
             <h3>Join a meeting</h3>
-            <p className="qml-muted">Paste a meeting link or code — no account needed.</p>
-            <div className="qml-row">
-              <input
-                className="qml-input"
-                placeholder="Meeting link or code"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && joinAsGuest()}
-              />
-              <button
-                className="qml-btn qml-btn-primary"
-                onClick={joinAsGuest}
-                disabled={busy || !code.trim()}
-              >
-                {busy ? "Finding…" : "Join as guest"}
-              </button>
-            </div>
-            {note ? <p className="qml-note">{note}</p> : null}
+            {guestsOk ? (
+              <>
+                <p className="qml-muted">Paste a meeting link or code — no account needed.</p>
+                <div className="qml-row">
+                  <input
+                    className="qml-input"
+                    placeholder="Meeting link or code"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && joinAsGuest()}
+                  />
+                  <button
+                    className="qml-btn qml-btn-primary"
+                    onClick={joinAsGuest}
+                    disabled={busy || !code.trim()}
+                  >
+                    {busy ? "Finding…" : "Join as guest"}
+                  </button>
+                </div>
+                {note ? <p className="qml-note">{note}</p> : null}
+              </>
+            ) : (
+              <p className="qml-muted">
+                Guest join is off on this deployment. Sign in to host, or ask
+                the operator to set ALLOW_GUEST_JOIN=true (and the NEXT_PUBLIC_
+                mirror) and redeploy.
+              </p>
+            )}
           </section>
 
           <section className="qml-card">

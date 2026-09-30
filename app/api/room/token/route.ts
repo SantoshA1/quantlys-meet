@@ -4,6 +4,8 @@
 
 import { AccessToken } from "livekit-server-sdk";
 import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
+import { GUEST_JOIN_CLOSED, guestJoinAllowed } from "@/lib/guest-join";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +88,41 @@ function livekitUrl(): string {
   );
 }
 
+
+/** Signed-in caller via Bearer JWT or session cookies. Guests have neither. */
+async function signedInUser(req: Request): Promise<{ id: string } | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anon) return null;
+  try {
+    const bearer = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+    if (bearer) {
+      const sb = createClient(url, anon, { auth: { persistSession: false } });
+      const who = await sb.auth.getUser(bearer);
+      if (who.data?.user?.id) return { id: who.data.user.id };
+    }
+    const raw = req.headers.get("cookie") || "";
+    const jar = new Map<string, string>();
+    for (const part of raw.split(";")) {
+      const i = part.indexOf("=");
+      if (i < 0) continue;
+      const k = part.slice(0, i).trim();
+      const v = part.slice(i + 1).trim();
+      if (k) jar.set(k, decodeURIComponent(v));
+    }
+    const s = createServerClient(url, anon, {
+      cookies: {
+        getAll: () => [...jar.entries()].map(([name, value]) => ({ name, value })),
+        setAll: () => {},
+      },
+    });
+    const { data } = await s.auth.getUser();
+    return data.user?.id ? { id: data.user.id } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   let body: any = {};
   try {
@@ -108,6 +145,15 @@ export async function POST(req: Request) {
       { error: "This app's LiveKit settings are missing — connect LiveKit and relaunch." },
       { status: 503 }
     );
+  }
+
+  // Global kill switch. Product default is guests ON; ALLOW_GUEST_JOIN=false
+  // refuses unsigned callers. Hosts and other signed-in people still enter.
+  if (!guestJoinAllowed()) {
+    const user = await signedInUser(req);
+    if (!user) {
+      return Response.json({ error: GUEST_JOIN_CLOSED }, { status: 403 });
+    }
   }
 
   const door = await doorState(room);

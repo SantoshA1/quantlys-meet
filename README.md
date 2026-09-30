@@ -1,24 +1,42 @@
 # Quantlys Meeting
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/YOUR_ORG/quantlys-meeting)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/SantoshA1/quantlys-meet)
 
-The button goes live once these files sit in YOUR GitHub repo (replace YOUR_ORG).
+Browser video meeting that writes a markdown PRD from the recorded session. Guests join from a link; only the host signs in.
 
-## Setup (~10 min, all copy-paste)
-1. **LiveKit Cloud** → project → Settings→Keys → copy URL/KEY/SECRET.
+## Setup (~10 min)
+
+1. **LiveKit Cloud** → project → Settings→Keys → copy URL / API key / secret.
    Settings→Webhooks → add `https://YOUR-APP.vercel.app/api/livekit/webhook`.
 2. **Supabase** → new project → API keys (url, anon, service_role).
    Auth→Providers→Email: enable magic link. SQL Editor: run `supabase/schema.sql`.
-3. **Cloudflare R2** → private bucket `quantlys-recordings` → API token → keys+endpoint.
+3. **Cloudflare R2** → private bucket `quantlys-recordings` → API token → keys + endpoint.
 4. **Deepgram** → API key.
-5. Click **Deploy**, paste all vars from `.env.example` into Vercel, redeploy.
+5. **Vercel** → click **Deploy** above (or `vercel`), paste vars from `.env.example`, redeploy.
+   Set `APP_URL` to the deployment URL. Optional: Resend for invites / email-the-spec.
 
-## This week's 5-person test
-- Set ALLOW_GUEST_JOIN=true (both vars). New meeting → Copy meeting link → send to 5.
-- Watch per-person quality bars: one red = their wifi, all red = the app.
-- Spot-check 3 standups incl. one overlap moment. Transcript accurate+useful? → drop Zoom.
-- After test: set ALLOW_GUEST_JOIN=false, redeploy. Drop `/standup` in the calendar.
+Self-hosting the SFU (no LiveKit Cloud account) is documented under `selfhost/`.
+
+## Local smoke path
+
+1. `git clone https://github.com/SantoshA1/quantlys-meet.git && cd quantlys-meet`
+2. `cp .env.example .env.local` — fill **LiveKit**, **Deepgram**, **Supabase**, and (for deploy) **Vercel**/R2 vars
+3. `npm install`
+4. `npm test` — offline Maya / lib guards (needs Node 22+ for `.ts` import stripping)
+5. `npm run dev` → open two browser tabs: `/host` (sign in, create meeting, copy link) and paste the link in the second tab as a guest
+
+## Guest join flag
+
+- `ALLOW_GUEST_JOIN` (server) gates unsigned token mint. **Unset / true = guests ON** (product default). Set `false` to require sign-in.
+- `NEXT_PUBLIC_ALLOW_GUEST_JOIN` mirrors that for the landing guest card — keep both in sync on Vercel.
+- Waiting room, meeting lock, and host admit still apply when guests are allowed.
 
 ## MODNet matte spike
-See public/models/README.md and scripts/download-modnet.sh.
-Toggle: matte query param or quantlys-matte storage key. Chroma path unchanged.
+
+See `public/models/README.md` and `scripts/download-modnet.sh`.
+Toggle: matte query param or `quantlys-matte` storage key. Chroma path unchanged.
+
+## Sample PRD
+
+In-app specimen: `/example-prd` (labeled not a customer recording).
+In-repo mirror for OSS pin: [`examples/sample-prd.md`](examples/sample-prd.md).
