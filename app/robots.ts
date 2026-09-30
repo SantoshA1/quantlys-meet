@@ -13,6 +13,7 @@ export default function robots(): MetadataRoute.Robots {
         "/room",
         "/auth",
         "/standup",
+        "/prd",
       ],
     },
     sitemap: "https://quantlys-meeting.com/sitemap.xml",

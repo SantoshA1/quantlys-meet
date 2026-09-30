@@ -1626,7 +1626,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
                       return;
                     }
                     ctx.disconnect();
-                    window.location.href = "/host";
+                    // Post-meeting handoff: land on the PRD panel with a clear cue.
+                    window.location.href = "/host?handoff=1#prd";
                   }}
                 >
                   {ending ? (endPhase === "saving" ? "Saving…" : "Ending…") : "Yes — end this session"}
