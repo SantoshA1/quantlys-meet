@@ -25,11 +25,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
 import {
   COLORS, WIDTHS, EMPTY_BOARD, applyEvent, catchUp, canUndo,
-  toSurface, shouldKeepPoint, isShape, constrain, arrowHead, rectOf, hitStroke,
-  strokePx, alphaFor, widthFor,
+  toSurface, shouldKeepPoint, isShape, constrain, hitStroke,
   type Board as BoardState, type Stroke, type Tool, type Pt,
 } from "@/lib/draw";
-import { setBoardStrokes } from "@/lib/boardshare";
+import { paintStroke } from "@/lib/boardpaint";
+import { setBoardStrokes, setBoardSurface } from "@/lib/boardshare";
 import { toWorkflow, captureNote } from "@/lib/workflow";
 
 const DRAW_TOPIC = "qm-draw";
@@ -40,7 +40,13 @@ const TOOLS: Array<{ id: Tool; glyph: string; label: string }> = [
   { id: "arrow", glyph: "↗", label: "Arrow" },
   { id: "line", glyph: "╱", label: "Line" },
   { id: "rect", glyph: "▭", label: "Rectangle" },
+  { id: "roundrect", glyph: "▢", label: "Rounded rect" },
   { id: "ellipse", glyph: "◯", label: "Ellipse" },
+  { id: "diamond", glyph: "◇", label: "Diamond" },
+  { id: "parallelogram", glyph: "▱", label: "Parallelogram" },
+  { id: "triangle", glyph: "△", label: "Triangle" },
+  { id: "cylinder", glyph: "⛁", label: "Cylinder" },
+  { id: "sticky", glyph: "📝", label: "Sticky note" },
   { id: "text", glyph: "T", label: "Text" },
   { id: "eraser", glyph: "🩹", label: "Eraser" },
 ];
@@ -66,7 +72,7 @@ export default function Board({
   const [tool, setTool] = useState<Tool>("pen");
   const [color, setColor] = useState(COLORS[0]);
   const [width, setWidth] = useState(WIDTHS[1]);
-  const [typing, setTyping] = useState<{ at: Pt; value: string } | null>(null);
+  const [typing, setTyping] = useState<{ at: Pt; value: string; stickyId?: string } | null>(null);
 
   const cvs = useRef<HTMLCanvasElement | null>(null);
   const wrap = useRef<HTMLDivElement | null>(null);
@@ -80,6 +86,7 @@ export default function Board({
   // component and cannot see its state. Hand it a snapshot on every change so
   // a diagram drawn here reaches the PRD — see lib/boardshare.ts.
   setBoardStrokes(board.strokes);
+  setBoardSurface(open ? surface : "none");
 
   const bytes = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 
@@ -148,7 +155,7 @@ export default function Board({
     g.lineJoin = "round";
 
     const all = live.current ? board.strokes.concat(live.current) : board.strokes;
-    for (const s of all) drawStroke(g, s, W, H);
+    for (const s of all) paintStroke(g, s, W, H);
   }, [board]);
 
   useEffect(() => { paint(); }, [paint]);
@@ -243,6 +250,17 @@ export default function Board({
       const d = Math.hypot(s.pts[1].x - s.pts[0].x, s.pts[1].y - s.pts[0].y);
       if (d < 0.006) { paint(); return; }
     }
+    // Sticky notes need a label: after the pad is drawn, open the text box
+    // at its centre and stamp the text onto the same stroke id.
+    if (s.tool === "sticky" && s.pts.length >= 2) {
+      push({ t: "stroke", s });
+      const mid = {
+        x: (s.pts[0].x + s.pts[1].x) / 2,
+        y: (s.pts[0].y + s.pts[1].y) / 2,
+      };
+      setTyping({ at: mid, value: "", stickyId: s.id });
+      return;
+    }
     push({ t: "stroke", s });
   }
 
@@ -255,6 +273,13 @@ export default function Board({
     const t = typing;
     setTyping(null);
     if (!t || !t.value.trim()) return;
+    if (t.stickyId) {
+      const existing = boardRef.current.strokes.find((s) => s.id === t.stickyId);
+      if (existing) {
+        push({ t: "stroke", s: { ...existing, text: t.value.trim() } });
+      }
+      return;
+    }
     push({
       t: "stroke",
       s: {
@@ -285,7 +310,7 @@ export default function Board({
           className="qmb-text"
           autoFocus
           value={typing.value}
-          placeholder="Type, then Enter"
+          placeholder={typing.stickyId ? "Sticky note text, then Enter" : "Type, then Enter"}
           style={{
             left: `${typing.at.x * 100}%`, top: `${typing.at.y * 100}%`,
             color, borderColor: color,
@@ -391,72 +416,6 @@ export default function Board({
   );
 }
 
-/** One stroke, in device pixels. Surface coordinates in, canvas out — the
- *  only place in the drawing code where a pixel is allowed to exist. */
-function drawStroke(g: CanvasRenderingContext2D, s: Stroke, W: number, H: number) {
-  const px = (p: Pt) => [p.x * W, p.y * H] as const;
-  g.save();
-  g.globalAlpha = alphaFor(s.tool);
-  g.strokeStyle = s.color;
-  g.fillStyle = s.color;
-  g.lineWidth = strokePx(widthFor(s.tool, s.width), H);
-  const aspect = W / Math.max(1, H);
-
-  if (s.tool === "text") {
-    const [x, y] = px(s.pts[0]);
-    const size = Math.max(14, strokePx(s.width, H) * 6);
-    g.globalAlpha = 1;
-    g.font = `600 ${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-    g.textBaseline = "middle";
-    // A dark halo so text stays readable over a bright slide and a photo
-    // alike — the surface underneath is never knowable in advance.
-    g.lineWidth = Math.max(2, size / 8);
-    g.strokeStyle = "rgba(0,0,0,.55)";
-    g.strokeText(s.text || "", x, y);
-    g.fillText(s.text || "", x, y);
-    g.restore();
-    return;
-  }
-
-  if (s.tool === "rect" && s.pts.length >= 2) {
-    const r = rectOf(s.pts[0], s.pts[1]);
-    g.strokeRect(r.x * W, r.y * H, r.w * W, r.h * H);
-    g.restore();
-    return;
-  }
-
-  if (s.tool === "ellipse" && s.pts.length >= 2) {
-    const r = rectOf(s.pts[0], s.pts[1]);
-    g.beginPath();
-    g.ellipse((r.x + r.w / 2) * W, (r.y + r.h / 2) * H, (r.w / 2) * W, (r.h / 2) * H, 0, 0, Math.PI * 2);
-    g.stroke();
-    g.restore();
-    return;
-  }
-
-  g.beginPath();
-  const first = px(s.pts[0]);
-  g.moveTo(first[0], first[1]);
-  for (let i = 1; i < s.pts.length; i++) {
-    const [x, y] = px(s.pts[i]);
-    g.lineTo(x, y);
-  }
-  if (s.pts.length === 1) g.lineTo(first[0] + 0.01, first[1]);   // a dot is a mark
-  g.stroke();
-
-  if (s.tool === "arrow" && s.pts.length >= 2) {
-    const [tip, a, b] = arrowHead(s.pts[0], s.pts[1], aspect);
-    g.beginPath();
-    const t = px(tip), pa = px(a), pb = px(b);
-    g.moveTo(t[0], t[1]);
-    g.lineTo(pa[0], pa[1]);
-    g.lineTo(pb[0], pb[1]);
-    g.closePath();
-    g.fill();
-  }
-  g.restore();
-}
-
 export const BOARD_CSS = `
 /* The drawing surface sits over the video area. Pointer events land on the
    canvas ONLY while drawing is open — an annotation layer that swallows
@@ -509,9 +468,10 @@ export const BOARD_CSS = `
 .qmb-solid .qmb-hint { color: #3a4354; background: rgba(255,255,255,.92);
   border-color: #d5d9e2; }
 @media (max-width: 720px) {
-  .qmb-tools { gap: 6px; padding: 6px; bottom: 10px; }
-  .qmb-group { padding-right: 6px; }
-  .qmb-tool { width: 30px; height: 30px; font-size: 14px; }
-  .qmb-color { width: 18px; height: 18px; }
+  .qmb-tools { gap: 4px; padding: 6px; bottom: 10px; max-width: calc(100% - 12px); }
+  .qmb-group { padding-right: 4px; flex-wrap: wrap; max-width: 100%; }
+  .qmb-tool { width: 28px; height: 28px; font-size: 13px; }
+  .qmb-color { width: 16px; height: 16px; }
+  .qmb-act { padding: 6px 8px; font-size: 12px; }
 }
 `;

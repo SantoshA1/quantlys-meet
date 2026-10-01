@@ -32,7 +32,9 @@ export type Stroke = {
 };
 
 export type Box = { x0: number; y0: number; x1: number; y1: number };
-export type WfNode = { id: string; label: string; shape: "box" | "round"; box: Box; who?: string };
+export type WfShape =
+  | "box" | "round" | "diamond" | "stadium" | "parallelogram" | "cylinder" | "triangle";
+export type WfNode = { id: string; label: string; shape: WfShape; box: Box; who?: string };
 export type WfEdge = { from: string; to: string; directed: boolean; label?: string };
 export type Workflow = {
   nodes: WfNode[];
@@ -69,8 +71,24 @@ export function distanceTo(b: Box, p: Pt): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-const NODE_TOOLS = new Set(["rect", "ellipse"]);
+const NODE_TOOLS = new Set([
+  "rect", "ellipse", "roundrect", "diamond", "parallelogram",
+  "triangle", "cylinder", "sticky",
+]);
 const EDGE_TOOLS = new Set(["arrow", "line"]);
+
+function shapeOf(tool: string): WfShape {
+  switch (String(tool)) {
+    case "ellipse": return "round";
+    case "roundrect": return "stadium";
+    case "diamond": return "diamond";
+    case "parallelogram": return "parallelogram";
+    case "cylinder": return "cylinder";
+    case "triangle": return "triangle";
+    case "sticky": return "stadium";
+    default: return "box";
+  }
+}
 
 /** Read a board as a workflow. Pure: same strokes in, same graph out. */
 export function toWorkflow(strokes: Stroke[]): Workflow {
@@ -80,8 +98,10 @@ export function toWorkflow(strokes: Stroke[]): Workflow {
   const shapes = all.filter((s) => NODE_TOOLS.has(String(s.tool)) && s.pts.length >= 2);
   const nodes: WfNode[] = shapes.map((s, i) => ({
     id: `n${i + 1}`,
-    label: "",
-    shape: String(s.tool) === "ellipse" ? "round" : "box",
+    label: String(s.tool) === "sticky" && String(s.text || "").trim()
+      ? String(s.text).trim()
+      : "",
+    shape: shapeOf(s.tool),
     box: box(s.pts[0], s.pts[s.pts.length - 1]),
     who: s.who,
   }));
@@ -175,7 +195,13 @@ export function toMermaid(w: Workflow, title = ""): string {
     (centre(a.box).x - centre(b.box).x) || (centre(a.box).y - centre(b.box).y));
   for (const n of ordered) {
     const label = mermaidSafe(n.label) || n.id;
-    lines.push(n.shape === "round" ? `  ${n.id}(${label})` : `  ${n.id}[${label}]`);
+    if (n.shape === "round") lines.push(`  ${n.id}(${label})`);
+    else if (n.shape === "diamond") lines.push(`  ${n.id}{${label}}`);
+    else if (n.shape === "stadium") lines.push(`  ${n.id}([${label}])`);
+    else if (n.shape === "parallelogram") lines.push(`  ${n.id}[/${label}/]`);
+    else if (n.shape === "cylinder") lines.push(`  ${n.id}[(${label})]`);
+    else if (n.shape === "triangle") lines.push(`  ${n.id}[${label}]`);
+    else lines.push(`  ${n.id}[${label}]`);
   }
   for (const e of w.edges) lines.push(`  ${e.from} ${e.directed ? "-->" : "---"} ${e.to}`);
   return (title ? `%% ${mermaidSafe(title)}\n` : "") + lines.join("\n");
@@ -223,4 +249,45 @@ export function captureNote(w: Workflow): string {
   if (w.edges.length) bits.push(`${w.edges.length} connection${w.edges.length === 1 ? "" : "s"}`);
   const head = `Captured ${bits.join(" and ")} from the whiteboard — it goes into this project's PRD.`;
   return w.loose.length ? `${head} Not included: ${w.loose.join("; ")}.` : head;
+}
+
+
+/** OCR-less heuristics: labels, sticky text, freehand evidence that a diagram
+ *  existed — used when the strict 2-box+edge grammar does not fire, and as
+ *  extra context beside a Vision-model read of the snapshot. */
+export function whiteboardNotes(strokes: Stroke[]): string {
+  const all = (strokes || []).filter((s) => s && Array.isArray(s.pts) && s.pts.length);
+  if (!all.length) return "";
+  const w = toWorkflow(all);
+  const bits: string[] = [];
+  bits.push(`Whiteboard capture: ${all.length} stroke(s) on the board.`);
+  if (w.nodes.length) {
+    bits.push(`Recognized ${w.nodes.length} shape(s)` +
+      (w.edges.length ? ` and ${w.edges.length} connection(s)` : "") + ":");
+    for (const n of w.nodes) {
+      bits.push(`- ${n.label ? `“${n.label}”` : `unlabelled ${n.shape}`} (${n.shape})`);
+    }
+  }
+  const stickies = all.filter((s) => String(s.tool) === "sticky" && String(s.text || "").trim());
+  for (const s of stickies) {
+    const note = String(s.text).trim();
+    if (!w.nodes.some((n) => n.label === note)) bits.push(`- sticky note: “${note}”`);
+  }
+  const texts = all.filter((s) => String(s.tool) === "text" && String(s.text || "").trim());
+  for (const t of texts) {
+    const note = String(t.text).trim();
+    if (w.loose.some((l) => l.includes(note))) continue;
+    if (w.nodes.some((n) => n.label.includes(note))) continue;
+    bits.push(`- text: “${note}”`);
+  }
+  for (const l of w.loose) bits.push(`- ${l}`);
+  const free = all.filter((s) => s.tool === "pen" || s.tool === "marker").length;
+  if (free) bits.push(`Also ${free} freehand mark(s) — a diagram or annotation existed even if it did not parse as a formal flow.`);
+  if (!w.found) {
+    bits.push(
+      "No formal workflow (needs 2+ labelled shapes joined by a line/arrow) was recovered from geometry. " +
+      "Treat these whiteboard notes as evidence of what was shown; do not invent a tidy process from freehand alone."
+    );
+  }
+  return bits.join("\n");
 }

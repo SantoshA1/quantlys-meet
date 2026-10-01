@@ -40,3 +40,12 @@ Toggle: matte query param or `quantlys-matte` storage key. Chroma path unchanged
 
 In-app specimen: `/example-prd` (labeled not a customer recording).
 In-repo mirror for OSS pin: [`examples/sample-prd.md`](examples/sample-prd.md).
+
+## Whiteboard recording sidecars
+
+When a meeting was drawn on, stopping the recording also uploads (same stem as the video):
+
+- `*.board.jpg` — JPEG snapshot of the board (for multimodal PRD)
+- `*.board.json` — raw stroke JSON (kept even after workflow conversion)
+
+The meeting summary (`.summary.json`) also stores `strokes`, `workflow`, and `boardSnapshotPath`.

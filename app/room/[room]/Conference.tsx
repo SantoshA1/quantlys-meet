@@ -31,7 +31,8 @@ import type { Caption, Engine } from "@/lib/captions";
 import { catchLive, caughtCounts, talked, atLabel, flagAt } from "@/lib/live";
 import { BAR, dockAnchor } from "@/lib/dock";
 import { surfaceFor, penLabel } from "@/lib/draw";
-import { getBoardStrokes } from "@/lib/boardshare";
+import { getBoardStrokes, getBoardSurface } from "@/lib/boardshare";
+import { compositeBoardOnto, snapshotBoardDataUrl, dataUrlToBlob } from "@/lib/boardpaint";
 import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
 import { shouldFlushOnPageHide } from "@/lib/recording-flush";
@@ -1029,25 +1030,42 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
 
     const draw = () => {
       const vids = liveVideos();
-      g.fillStyle = "#0b0d13";
+      const boardSurf = getBoardSurface();
+      const boardStrokes = getBoardStrokes();
+      const liveBoard = document.querySelector(".qmb-canvas") as HTMLCanvasElement | null;
+      // Standalone whiteboard: the mosaic is the board, not the camera tiles
+      // underneath. Annotations over a shared screen sit on top of the mosaic.
+      const boardOnly = boardSurf === "board" && (liveBoard || boardStrokes.length > 0);
+      g.fillStyle = boardOnly ? "#f6f7fb" : "#0b0d13";
       g.fillRect(0, 0, canvas.width, canvas.height);
-      const n = Math.max(vids.length, 1);
-      const cols = Math.ceil(Math.sqrt(n));
-      const rows = Math.ceil(n / cols);
-      const cw = canvas.width / cols;
-      const ch = canvas.height / rows;
-      vids.forEach((v, i) => {
-        const cx = (i % cols) * cw;
-        const cy = Math.floor(i / cols) * ch;
-        const scale = Math.min(cw / v.videoWidth, ch / v.videoHeight);
-        const w = v.videoWidth * scale;
-        const h = v.videoHeight * scale;
-        try {
-          g.drawImage(v, cx + (cw - w) / 2, cy + (ch - h) / 2, w, h);
-        } catch {
-          /* a frame that isn't ready is skipped, not fatal */
-        }
-      });
+      if (!boardOnly) {
+        const n = Math.max(vids.length, 1);
+        const cols = Math.ceil(Math.sqrt(n));
+        const rows = Math.ceil(n / cols);
+        const cw = canvas.width / cols;
+        const ch = canvas.height / rows;
+        vids.forEach((v, i) => {
+          const cx = (i % cols) * cw;
+          const cy = Math.floor(i / cols) * ch;
+          const scale = Math.min(cw / v.videoWidth, ch / v.videoHeight);
+          const w = v.videoWidth * scale;
+          const h = v.videoHeight * scale;
+          try {
+            g.drawImage(v, cx + (cw - w) / 2, cy + (ch - h) / 2, w, h);
+          } catch {
+            /* a frame that isn't ready is skipped, not fatal */
+          }
+        });
+      }
+      // Composite annotations into the A/V recording whenever the board is
+      // visible — screen-share annotate mode AND standalone whiteboard.
+      if (boardSurf !== "none" || liveBoard) {
+        compositeBoardOnto(g, canvas.width, canvas.height, {
+          strokes: boardStrokes,
+          surface: boardOnly ? "board" : (boardSurf === "screen" ? "screen" : "none"),
+          liveCanvas: liveBoard,
+        });
+      }
       raf.current = requestAnimationFrame(draw);
     };
     draw();
@@ -1231,6 +1249,35 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
     }
 
     setStatus({ kind: "busy", text: `Saved ${mb} MB. Writing the summary…` });
+    // Persist the whiteboard as raw strokes + a JPEG snapshot next to the
+    // recording. Workflow conversion still runs, but stroke data is no longer
+    // dropped after that conversion.
+    const boardStrokesForSave = getBoardStrokes();
+    let boardSnapshotPath: string | null = null;
+    if (boardStrokesForSave.length) {
+      try {
+        const dataUrl = snapshotBoardDataUrl(boardStrokesForSave, {
+          width: 1280, height: 720, solid: true, quality: 0.82,
+        });
+        const blob = dataUrl ? dataUrlToBlob(dataUrl) : null;
+        if (blob && blob.size > 64) {
+          const snapPath = `${base}.board.jpg`;
+          const us = await client.storage.from("recordings").upload(snapPath, blob, {
+            contentType: "image/jpeg", upsert: false,
+          });
+          if (!us.error) boardSnapshotPath = snapPath;
+        }
+        const strokesPath = `${base}.board.json`;
+        const uj = await client.storage.from("recordings").upload(
+          strokesPath,
+          new Blob([JSON.stringify({ strokes: boardStrokesForSave, at: new Date().toISOString() })], {
+            type: "application/json",
+          }),
+          { contentType: "application/json", upsert: false },
+        );
+        if (uj.error) { /* summary still carries strokes inline */ }
+      } catch { /* snapshot is a convenience; strokes still go in the finish body */ }
+    }
     try {
       const { data: sess } = await client.auth.getSession();
       const r = await fetch("/api/recording/finish", {
@@ -1265,7 +1312,11 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
           // board is stored as STRUCTURE, not pixels — a rect knows it is a
           // rect — so the diagram is recovered from geometry rather than
           // guessed at. See lib/workflow.ts.
-          workflow: toWorkflow(getBoardStrokes() as any),
+          // Raw strokes are kept alongside the workflow so a later PRD can
+          // re-read the board without needing a formal 2-box+arrow grammar.
+          strokes: boardStrokesForSave,
+          workflow: toWorkflow(boardStrokesForSave as any),
+          boardSnapshotPath,
         }),
       });
       const out = await r.json();

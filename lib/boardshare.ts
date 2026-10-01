@@ -16,6 +16,8 @@ import type { Stroke } from "./draw";
 
 let strokes: Stroke[] = [];
 let at = 0;
+/** Which surface the pen is on right now — drives recording composite. */
+let surface: "screen" | "board" | "none" = "none";
 
 export function setBoardStrokes(next: Stroke[]) {
   strokes = Array.isArray(next) ? next : [];
@@ -24,6 +26,14 @@ export function setBoardStrokes(next: Stroke[]) {
 
 export function getBoardStrokes(): Stroke[] {
   return strokes;
+}
+
+export function setBoardSurface(next: "screen" | "board" | "none") {
+  surface = next === "screen" || next === "board" ? next : "none";
+}
+
+export function getBoardSurface(): "screen" | "board" | "none" {
+  return surface;
 }
 
 /** When the board last changed — so a meeting where nobody drew can be told
@@ -36,4 +46,5 @@ export function boardTouchedAt(): number {
 export function clearBoardStrokes() {
   strokes = [];
   at = 0;
+  surface = "none";
 }

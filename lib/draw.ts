@@ -30,7 +30,23 @@
 // ZERO-IMPORT, pure, and every decision below is guarded — the canvas half
 // is a thin renderer over these functions.
 
-export type Tool = "pen" | "marker" | "line" | "arrow" | "rect" | "ellipse" | "text" | "eraser";
+export type Tool =
+  | "pen" | "marker" | "line" | "arrow"
+  | "rect" | "ellipse" | "roundrect" | "diamond" | "parallelogram"
+  | "triangle" | "cylinder" | "sticky"
+  | "text" | "eraser";
+
+/** Closed shapes that become workflow nodes when labelled. */
+export const NODE_SHAPE_TOOLS: ReadonlySet<Tool> = new Set([
+  "rect", "ellipse", "roundrect", "diamond", "parallelogram", "triangle", "cylinder", "sticky",
+]);
+
+export const ALL_TOOLS: readonly Tool[] = [
+  "pen", "marker", "line", "arrow",
+  "rect", "ellipse", "roundrect", "diamond", "parallelogram",
+  "triangle", "cylinder", "sticky",
+  "text", "eraser",
+];
 
 export type Pt = { x: number; y: number };
 
@@ -120,7 +136,12 @@ export function shouldKeepPoint(last: Pt | null, next: Pt, minDist = 0.004): boo
  *  now. Recording the whole drag for a rectangle is how a "shape" ends up
  *  with 400 points in it. */
 export function isShape(tool: Tool): boolean {
-  return tool === "line" || tool === "arrow" || tool === "rect" || tool === "ellipse";
+  return tool === "line" || tool === "arrow" || NODE_SHAPE_TOOLS.has(tool);
+}
+
+/** Sticky notes are filled; eraser should hit the whole pad, not just the rim. */
+export function isFilledShape(tool: Tool): boolean {
+  return tool === "sticky";
 }
 
 /** Hold Shift and a line snaps to 15°, a rectangle to a square, an ellipse to
@@ -129,7 +150,8 @@ export function isShape(tool: Tool): boolean {
 export function constrain(from: Pt, to: Pt, tool: Tool, shift: boolean): Pt {
   if (!shift) return to;
   const dx = to.x - from.x, dy = to.y - from.y;
-  if (tool === "rect" || tool === "ellipse") {
+  if (tool === "rect" || tool === "ellipse" || tool === "roundrect" || tool === "diamond"
+      || tool === "parallelogram" || tool === "triangle" || tool === "cylinder" || tool === "sticky") {
     const m = Math.max(Math.abs(dx), Math.abs(dy));
     return { x: from.x + Math.sign(dx || 1) * m, y: from.y + Math.sign(dy || 1) * m };
   }
@@ -173,11 +195,12 @@ export function hitStroke(s: Stroke, p: Pt, tol = 0.02): boolean {
   if (!s || !s.pts?.length) return false;
   if (isShape(s.tool) && s.pts.length >= 2) {
     const [a, b] = s.pts;
-    if (s.tool === "rect" || s.tool === "ellipse") {
+    if (NODE_SHAPE_TOOLS.has(s.tool)) {
       const r = rectOf(a, b);
+      const inOuter = p.x >= r.x - tol && p.x <= r.x + r.w + tol && p.y >= r.y - tol && p.y <= r.y + r.h + tol;
+      if (isFilledShape(s.tool)) return inOuter;
       // the outline, not the fill — an unfilled shape is not a target the
       // size of its area
-      const inOuter = p.x >= r.x - tol && p.x <= r.x + r.w + tol && p.y >= r.y - tol && p.y <= r.y + r.h + tol;
       const inInner = p.x > r.x + tol && p.x < r.x + r.w - tol && p.y > r.y + tol && p.y < r.y + r.h - tol;
       return inOuter && !inInner;
     }
@@ -282,7 +305,7 @@ export function normalizeStroke(raw: any): Stroke | null {
   const id = String(raw.id || "");
   const tool = String(raw.tool || "") as Tool;
   if (!id) return null;
-  if (!["pen", "marker", "line", "arrow", "rect", "ellipse", "text", "eraser"].includes(tool)) return null;
+  if (!(ALL_TOOLS as readonly string[]).includes(tool)) return null;
   const pts = (Array.isArray(raw.pts) ? raw.pts : [])
     .map((p: any) => ({ x: Number(p?.x), y: Number(p?.y) }))
     .filter((p: Pt) => Number.isFinite(p.x) && Number.isFinite(p.y))

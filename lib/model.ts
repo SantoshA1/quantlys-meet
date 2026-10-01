@@ -136,3 +136,14 @@ export async function chooseModel(opts: {
   );
   return pickModel(list, opts.wanted, opts.openrouter ? PREFERRED : PREFERRED_OPENAI);
 }
+
+/** Heuristic: models we know accept image_url parts via OpenRouter / OpenAI. */
+export function modelLikelyVision(id: string): boolean {
+  const m = String(id || "").toLowerCase();
+  if (!m) return false;
+  if (m.includes("claude")) return true;
+  if (m.includes("gpt-4o") || m.includes("gpt-4.1") || m.includes("gpt-5")) return true;
+  if (m.includes("gemini")) return true;
+  if (m.includes("vision")) return true;
+  return false;
+}
