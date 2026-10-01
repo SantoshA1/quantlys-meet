@@ -209,3 +209,96 @@ export function hostMemoryRedirectNote(project: string): string {
   const name = String(project || "this project").trim() || "this project";
   return `${name} is tagged Memory. Use Build Memory below (or the Memory package panel) — story chapters, quotes, and open threads, not a PRD rubric.`;
 }
+
+// ── Host Launch card (Meeting vs Memory before start) ─────────────────────
+
+const LAUNCH_FOCUS_KEY = "qm.host.launchFocus";
+
+/** Persist last Host Launch focus so the rail softens on return. */
+export function readLaunchFocus(fallback: SessionMode = DEFAULT_SESSION_MODE): SessionMode {
+  if (typeof window === "undefined") return fallback;
+  try {
+    return resolveSessionMode(window.localStorage.getItem(LAUNCH_FOCUS_KEY), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeLaunchFocus(mode: SessionMode): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAUNCH_FOCUS_KEY, mode);
+  } catch { /* private mode */ }
+}
+
+export function hostLaunchTitle(mode: SessionMode): string {
+  return mode === "memory" ? "Start a memory session" : "Start a spec session";
+}
+
+export function hostLaunchBlurb(mode: SessionMode): string {
+  return mode === "memory"
+    ? "Tell the story out — no one else has to join. The oral-historian agent and recording turn on."
+    : "Talk the spec out — no one else has to join. The agent and recording turn on.";
+}
+
+export function hostLaunchPrimaryCta(mode: SessionMode, busy = false): string {
+  if (busy) return "STARTING…";
+  return mode === "memory" ? "START MEMORY SESSION" : "START SPEC SESSION";
+}
+
+export function hostLaunchNamePlaceholder(mode: SessionMode): string {
+  return mode === "memory" ? "Session name (story, podcast, or book)" : "Meeting name";
+}
+
+export function hostLaunchProjectTitle(mode: SessionMode): string {
+  return mode === "memory"
+    ? "Memory sessions in the same project roll into one story package"
+    : "Meetings in the same project are rolled up together in your weekly digest";
+}
+
+export function hostLaunchDefaultTitle(mode: SessionMode): string {
+  return mode === "memory" ? "Memory session" : "Spec session";
+}
+
+export function hostLaunchDefaultProject(mode: SessionMode): string {
+  return mode === "memory" ? "memory" : "spec";
+}
+
+/** Query string that opens the room with agent/recording on and the right mode. */
+export function hostLaunchRoomQuery(mode: SessionMode): string {
+  return mode === "memory" ? "spec=1&mode=memory" : "spec=1";
+}
+
+export function hostLaunchFailNote(mode: SessionMode, detail: string): string {
+  const kind = mode === "memory" ? "memory session" : "spec session";
+  return `Could not start the ${kind}: ${detail}`;
+}
+
+export function hostLaunchInviteStuckNote(mode: SessionMode, link: string): string {
+  const kind = mode === "memory" ? "memory session" : "spec session";
+  return `The ${kind} is open at ${link} — open it when you're ready.`;
+}
+
+/** Soften pipeline step labels when Host Launch last focus is Memory. */
+export function hostPipeLabel(mode: SessionMode, key: string, label: string): string {
+  if (mode !== "memory") return label;
+  if (key === "notes") return "Write the story notes";
+  if (key === "email") return "Email you the story notes and a link";
+  if (key === "items") return "Capture open threads";
+  return label;
+}
+
+export function hostChipLabel(mode: SessionMode, key: string, meetingLabel: string): string {
+  if (mode === "memory" && key === "items") return "THREADS";
+  return meetingLabel;
+}
+
+export function hostRailStillOpenEmpty(mode: SessionMode): string {
+  return mode === "memory"
+    ? "Nothing open. Open threads land here after a recorded Memory session."
+    : "Nothing open. Commitments land here after a recorded meeting.";
+}
+
+export function hostMeetingsEyebrow(mode: SessionMode): string {
+  return mode === "memory" ? "YOUR SESSIONS" : "YOUR MEETINGS";
+}

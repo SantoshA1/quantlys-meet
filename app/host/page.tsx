@@ -14,6 +14,25 @@ import Prd, { PRD_CSS } from "./Prd";
 import Memory from "./Memory";
 import { nextUp, inWords, stillOpen } from "@/lib/intelligence";
 import { newRoomId } from "@/lib/ids";
+import type { SessionMode } from "@/lib/memory";
+import {
+  hostChipLabel,
+  hostLaunchBlurb,
+  hostLaunchDefaultProject,
+  hostLaunchDefaultTitle,
+  hostLaunchFailNote,
+  hostLaunchInviteStuckNote,
+  hostLaunchNamePlaceholder,
+  hostLaunchPrimaryCta,
+  hostLaunchProjectTitle,
+  hostLaunchRoomQuery,
+  hostLaunchTitle,
+  hostMeetingsEyebrow,
+  hostPipeLabel,
+  hostRailStillOpenEmpty,
+  readLaunchFocus,
+  writeLaunchFocus,
+} from "@/lib/session-ui";
 
 type Meeting = {
   id: string;
@@ -176,13 +195,24 @@ export default function HostConsole() {
   // and it trains people to click through warnings.
   const [confirmDel, setConfirmDel] = useState("");
   const [deleting, setDeleting] = useState("");
+  // Meeting (PRD/spec) vs Memory (story/podcast/book) — chosen on the Launch card
+  // before start so Memory users do not hunt the in-room toggle.
+  const [launchMode, setLaunchMode] = useState<SessionMode>("meeting");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       const q = new URLSearchParams(window.location.search);
+      const fromQuery = q.get("mode") === "memory" || window.location.hash === "#memory";
+      const focus = fromQuery ? "memory" as SessionMode : readLaunchFocus("meeting");
+      setLaunchMode(focus);
+      if (fromQuery) writeLaunchFocus("memory");
       if (q.get("handoff") === "1") {
         const memoryHandoff = q.get("mode") === "memory" || window.location.hash === "#memory";
+        if (memoryHandoff) {
+          setLaunchMode("memory");
+          writeLaunchFocus("memory");
+        }
         setHandoffNote(
           memoryHandoff
             ? "Session ended. Build, copy, download, or share the Memory package below — a story / manuscript outline from this room."
@@ -441,20 +471,27 @@ export default function HostConsole() {
     }
   }
 
+  function pickLaunchMode(mode: SessionMode) {
+    setLaunchMode(mode);
+    writeLaunchFocus(mode);
+  }
+
   async function startSpecSession() {
     if (!user || busy) return;
+    const mode = launchMode;
+    writeLaunchFocus(mode);
     setBusy(true);
     setNote("");
     try {
       const room = newRoomId();
       const { error } = await db().from("meetings").insert({
         room_name: room,
-        title: title.trim() || "Spec session",
+        title: title.trim() || hostLaunchDefaultTitle(mode),
         created_by: user.id,
-        project: project.trim() || title.trim() || "spec",
+        project: project.trim() || title.trim() || hostLaunchDefaultProject(mode),
       });
       if (error) {
-        setNote(`Could not start the spec session: ${error.message}`);
+        setNote(hostLaunchFailNote(mode, error.message));
         return;
       }
       try {
@@ -465,15 +502,15 @@ export default function HostConsole() {
       if (guests.trim()) {
         const said = await sendInvites(room, guests, new Date().toISOString());
         if (said && !said.startsWith("Invitation sent")) {
-          setNote(`${said} The spec session is open at ${inviteLink(room)} — open it when you're ready.`);
+          setNote(`${said} ${hostLaunchInviteStuckNote(mode, inviteLink(room))}`);
           return;
         }
         setGuests("");
       }
       setTitle("");
-      router.push(`/room/${room}?spec=1`);
+      router.push(`/room/${room}?${hostLaunchRoomQuery(mode)}`);
     } catch (e: any) {
-      setNote(`Could not start the spec session: ${e?.message || "Something went wrong."}`);
+      setNote(hostLaunchFailNote(mode, e?.message || "Something went wrong."));
     } finally {
       setBusy(false);
     }
@@ -693,7 +730,7 @@ export default function HostConsole() {
                 <span key={st.key} className="q-chip" title={st.detail}
                       style={{ color: st.ok ? "var(--muted)" : "var(--danger)",
                                borderColor: st.ok ? "var(--fieldline)" : "var(--dangerLine)" }}>
-                  {CHIP[st.key]} {st.ok ? "READY" : "OFF"}
+                  {hostChipLabel(launchMode, st.key, CHIP[st.key])} {st.ok ? "READY" : "OFF"}
                 </span>
               ))}
             </span>
@@ -743,19 +780,33 @@ export default function HostConsole() {
             {/* ── LAUNCH ─────────────────────────────────────────────── */}
             <section className="qh-panel qh-launch">
               <p className="qh-eyebrow">LAUNCH</p>
-              <h1 className="qh-h1">Start a spec session</h1>
-              <p className="qh-dim">
-                Talk the spec out — no one else has to join. The agent and recording turn on.
-              </p>
+              <div className="qh-launchmodes" role="group" aria-label="Session type">
+                <button type="button"
+                  className={`qh-modebtn${launchMode === "meeting" ? " is-on" : ""}`}
+                  aria-pressed={launchMode === "meeting"}
+                  onClick={() => pickLaunchMode("meeting")}
+                  title="Meeting — PRD / spec path (default)">
+                  Meeting
+                </button>
+                <button type="button"
+                  className={`qh-modebtn${launchMode === "memory" ? " is-on" : ""}`}
+                  aria-pressed={launchMode === "memory"}
+                  onClick={() => pickLaunchMode("memory")}
+                  title="Memory — story, podcast, or book (oral historian)">
+                  Memory
+                </button>
+              </div>
+              <h1 className="qh-h1">{hostLaunchTitle(launchMode)}</h1>
+              <p className="qh-dim">{hostLaunchBlurb(launchMode)}</p>
               <div className="qh-row">
-                <input className="qh-input qh-grow" placeholder="Meeting name" value={title}
+                <input className="qh-input qh-grow" placeholder={hostLaunchNamePlaceholder(launchMode)} value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && startSpecSession()} />
                 <input className="qh-input qh-mid" placeholder="Project" value={project}
                   onChange={(e) => setProject(e.target.value)}
-                  title="Meetings in the same project are rolled up together in your weekly digest" />
+                  title={hostLaunchProjectTitle(launchMode)} />
                 <button className="qh-primary" onClick={startSpecSession} disabled={busy}>
-                  {busy ? "STARTING…" : "START SPEC SESSION"}
+                  {hostLaunchPrimaryCta(launchMode, busy)}
                 </button>
                 <button className="qh-ghost qh-btn" onClick={startMeeting} disabled={busy}
                   title="Start a normal team meeting — agent and recording stay off until you turn them on">
@@ -829,7 +880,7 @@ export default function HostConsole() {
             {/* ── YOUR MEETINGS ──────────────────────────────────────── */}
             <section className="qh-panel">
               <div className="qh-panelhead">
-                <span className="qh-eyebrow">YOUR MEETINGS</span>
+                <span className="qh-eyebrow">{hostMeetingsEyebrow(launchMode)}</span>
                 {mineTotal > mine.length ? (
                   <span className="qh-fine">SHOWING {mine.length} OF {mineTotal} — OLDER ONES STAY SEARCHABLE</span>
                 ) : null}
@@ -961,7 +1012,7 @@ export default function HostConsole() {
                 in Supabase and this list starts filling itself after each recording.
               </p>
             ) : items.length === 0 ? (
-              <p className="qh-dim qh-railnote">Nothing open. Commitments land here after a recorded meeting.</p>
+              <p className="qh-dim qh-railnote">{hostRailStillOpenEmpty(launchMode)}</p>
             ) : (
               <>
                 {groups.map((g) => (
@@ -992,7 +1043,7 @@ export default function HostConsole() {
               {(health?.steps || []).map((st) => (
                 <div key={st.key} className={`qh-pipestep ${st.ok ? "is-ok" : "is-bad"}`} title={st.detail}>
                   <span className="qh-pipemark">{st.ok ? "✓" : "✗"}</span>
-                  <span className="qh-pipelabel">{st.label}</span>
+                  <span className="qh-pipelabel">{hostPipeLabel(launchMode, st.key, st.label)}</span>
                 </div>
               ))}
               {!health ? <p className="qh-dim qh-railnote">Checking your setup…</p> : null}
@@ -1130,6 +1181,13 @@ const QH = `
 .qh-launch { padding: 26px 30px 24px; position: sticky; top: 56px; z-index: 20;
   /* Stay visible while scrolling the PRD / meetings below — the Launch CTAs
      are the way into a room; burying them under Prd reads as "can't host". */ }
+.qh-launchmodes { display: inline-flex; gap: 6px; margin: 0 0 10px; }
+.qh-modebtn { background: transparent; border: 1px solid var(--fieldline, #1e2937);
+  color: var(--text2, #c3cddb); padding: 7px 14px; font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; letter-spacing: .12em; cursor: pointer; }
+.qh-modebtn:hover { border-color: var(--accent, #00A99D); color: var(--accentBright, #7ff0e8); }
+.qh-modebtn.is-on { border-color: var(--accent, #00A99D); color: var(--onAccent, #031310);
+  background: var(--accent, #00A99D); }
 .qh-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .24em;
   color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
 .qh-handoff { border: 1px solid #1d4f4c; background: #0d3d39; }
