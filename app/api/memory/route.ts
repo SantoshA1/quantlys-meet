@@ -12,6 +12,7 @@ import {
   memoryUserPrompt, normalizeMemoryPackage, fallbackMemoryPackage,
   acceptSessionMode, type MemoryIntent,
 } from "@/lib/memory";
+import { memoryChaptersPath, acceptChapterOrder } from "@/lib/memory-chapters";
 import { describeWorkflow, toMermaid, whiteboardNotes, type Workflow } from "@/lib/workflow";
 import {
   myRooms, roomsForProject, resolveProject, roomFromPath, mayReadRecording, type MeetingRow,
@@ -65,6 +66,11 @@ export async function POST(req: Request) {
     return Response.json({ error: "Which project? Tag your meetings with a project name and try again." }, { status: 400 });
   }
   const intent: MemoryIntent = acceptMemoryIntent(body?.intent);
+  // Optional: build from one chapter/episode (summary path) instead of the whole show.
+  const chapterPath = String(body?.chapterPath || body?.episodeId || "").trim();
+  if (chapterPath.includes("..") || chapterPath.startsWith("/")) {
+    return Response.json({ error: "That chapter path looks invalid." }, { status: 400 });
+  }
 
   let meetings: MeetingRow[] = [];
   try {
@@ -134,7 +140,37 @@ export async function POST(req: Request) {
 
   const forProject = all.filter((m) => norm(m.project) === norm(project));
   const memoryOnly = forProject.filter((m) => m.sessionMode === "memory");
-  const pool = memoryOnly.length ? memoryOnly : forProject;
+  let pool = memoryOnly.length ? memoryOnly : forProject;
+
+  // Apply saved chapter order when building the whole show (oldest-first book order).
+  if (!chapterPath && pool.length > 1) {
+    try {
+      const { data: orderBlob } = await sb.storage.from("recordings").download(memoryChaptersPath(user.id, project));
+      if (orderBlob) {
+        const doc = JSON.parse(await orderBlob.text());
+        const order = acceptChapterOrder(doc?.order);
+        if (order.length) {
+          const rank = new Map(order.map((id: string, i: number) => [id, i]));
+          pool = [...pool].sort((a, b) => {
+            const ra = rank.has(a.path) ? rank.get(a.path)! : 9999;
+            const rb = rank.has(b.path) ? rank.get(b.path)! : 9999;
+            if (ra !== rb) return ra - rb;
+            return (a.at || "").localeCompare(b.at || "");
+          });
+        }
+      }
+    } catch { /* order is convenience */ }
+  }
+
+  if (chapterPath) {
+    const one = pool.filter((m) => m.path === chapterPath);
+    if (!one.length) {
+      return Response.json({
+        error: "That chapter is not in this project's Memory recordings. Refresh the chapter list and try again.",
+      }, { status: 404 });
+    }
+    pool = one;
+  }
 
   if (!pool.length) {
     const hostedTagged = wanted.length;
@@ -162,6 +198,8 @@ export async function POST(req: Request) {
       memory_sessions_used: memoryOnly.length,
       filename: memoryFilename(project),
       sessionMode: "memory",
+      buildScope: chapterPath ? "chapter" : "show",
+      episodeId: chapterPath || null,
     });
   }
 
@@ -265,6 +303,8 @@ export async function POST(req: Request) {
     project,
     intent,
     sessionMode: "memory" as const,
+    buildScope: chapterPath ? "chapter" : "show",
+    episodeId: chapterPath || null,
     meetings: newest.map((m) => ({
       title: m.title, at: m.at, room: m.room, path: m.path, sessionMode: m.sessionMode,
     })),
@@ -273,7 +313,12 @@ export async function POST(req: Request) {
     memory_sessions_used: memoryOnly.length,
     filename: memoryFilename(project),
     board_vision: visionUsed,
-    model_note: [chosen.exact ? "" : chosen.why, visionNote, modeNote].filter(Boolean).join(" "),
+    model_note: [
+      chosen.exact ? "" : chosen.why,
+      visionNote,
+      modeNote,
+      chapterPath ? "Built from one chapter/episode only." : "",
+    ].filter(Boolean).join(" "),
     at: new Date().toISOString(),
   };
 
