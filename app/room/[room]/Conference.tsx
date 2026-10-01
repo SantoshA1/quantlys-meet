@@ -40,6 +40,11 @@ import {
   acceptSessionMode, sessionModeGuestCue,
   type SessionMode,
 } from "@/lib/memory";
+import {
+  liveNotesSubtitle, liveNotesEmptyHint, liveNotesKindLabel,
+  liveNotesCountsLine, liveNotesFlagButton, liveNotesFooter,
+  roomPeopleLabel,
+} from "@/lib/session-ui";
 import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
@@ -1450,7 +1455,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
       ) : null}
 
       <span className="qmr-people" title={names.join(", ")}>
-        <b>{participants.length} IN THE MEETING</b>
+        <b>{roomPeopleLabel(sessionMode, participants.length)}</b>
         {names.length ? (
           <em className="qmr-names">
             {" │ "}
@@ -1512,7 +1517,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
           className={`qmr-ghost${railOpen ? " qmr-on" : ""}`}
           onClick={() => setRailOpen((v) => !v)}
           aria-pressed={railOpen}
-          title="What was just said, and what got caught as a decision or an action"
+          title={sessionMode === "memory"
+            ? "What was just said — quotes, turning points, and open threads"
+            : "What was just said, and what got caught as a decision or an action"}
         >
           Live notes
         </button>
@@ -1545,7 +1552,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             Memory mode
           </span>
         ) : null}
-        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} isHost={isHost} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} sessionMode={sessionMode} />
+        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} isHost={isHost} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} sessionMode={sessionMode} gapsTop={headroom} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -1775,6 +1782,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
           onClose={() => setRailOpen(false)}
           shifted={isHost && panel}
           top={headroom}
+          sessionMode={sessionMode}
         />
       ) : null}
 
@@ -1854,6 +1862,7 @@ type Held = { kind: "hand" | "brb"; who: string; at: number };
 // never disagree with what this rail showed in the room.
 function LiveRail({
   cc, recording, flags, onFlag, canFlag, onClose, shifted, top,
+  sessionMode = "meeting",
 }: {
   cc: CaptionsApi;
   recording: boolean;
@@ -1863,6 +1872,7 @@ function LiveRail({
   onClose: () => void;
   shifted?: boolean;
   top: number;
+  sessionMode?: SessionMode;
 }) {
   // The button answers the press even when the newest card is off-screen —
   // an action with no acknowledgement reads as a button that does nothing.
@@ -1870,6 +1880,7 @@ function LiveRail({
   const settled = finals(cc.log);
   const caught = catchLive(settled.map((c) => ({ who: c.who, text: c.text, at: c.at })));
   const counts = caughtCounts(caught);
+  const countLabels = liveNotesCountsLine(sessionMode, counts.decisions, counts.actions);
   const talk = talked(settled.map((c) => ({ who: c.who, text: c.text })));
   const talkers = Object.entries(talk).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const feed = [
@@ -1887,14 +1898,13 @@ function LiveRail({
     <aside className={`qmr-liverail${shifted ? " is-shifted" : ""}`} style={{ top }} aria-label="Live notes">
       <div className="qmr-lrhead">
         <span className="qmr-lrtitle"><span className="q-dot q-beat" /> LIVE NOTES</span>
-        <span className="qmr-lrsub">NOBODY TAKES MINUTES</span>
+        <span className="qmr-lrsub">{liveNotesSubtitle(sessionMode)}</span>
         <button className="qmr-lrclose" onClick={onClose} aria-label="Close live notes">×</button>
       </div>
 
       {!cc.on ? (
         <p className="qmr-lrnote">
-          Turn captions on and the meeting starts writing itself down here —
-          decisions and commitments get caught as they are said.
+          {liveNotesEmptyHint(sessionMode)}
         </p>
       ) : null}
 
@@ -1910,8 +1920,12 @@ function LiveRail({
             <div className={`qmr-lrcard ${f.kind === "decision" ? "is-dec" : f.kind === "flag" ? "is-flag" : "is-act"}`}
                  key={`${f.at}-${i}`}>
               <p className="qmr-lrkind">
-                {atLabel(f.at)} {f.kind === "decision" ? "DECISION CAUGHT"
-                  : f.kind === "flag" ? `FLAGGED BY ${f.who.toUpperCase()}` : `ACTION → ${f.who.toUpperCase()}`}
+                {atLabel(f.at)}{" "}
+                {liveNotesKindLabel(
+                  sessionMode,
+                  f.kind === "decision" ? "decision" : f.kind === "flag" ? "flag" : "action",
+                  f.who,
+                )}
               </p>
               {f.kind !== "flag" ? <p className="qmr-lrtext">{f.text}</p> : null}
             </div>
@@ -1931,18 +1945,17 @@ function LiveRail({
 
       <div className="qmr-lrfoot">
         <span className="qmr-lrcount">
-          CAUGHT SO FAR&nbsp;&nbsp;<b>{counts.decisions}</b> DECISION{counts.decisions === 1 ? "" : "S"} ·{" "}
-          <b>{counts.actions}</b> ACTION{counts.actions === 1 ? "" : "S"}
+          {countLabels.prefix}&nbsp;&nbsp;<b>{counts.decisions}</b> {countLabels.leftLabel} ·{" "}
+          <b>{counts.actions}</b> {countLabels.rightLabel}
         </span>
         <button className="qmr-lrflag" disabled={!canFlag}
           onClick={() => { onFlag(); setFlashed(true); setTimeout(() => setFlashed(false), 1200); }}
           title={canFlag ? "Mark this moment — it goes into the transcript and the notes"
                          : "Turn captions on (or record) first — a flag needs a clock to attach to"}>
-          {flashed ? "FLAGGED ✓" : "FLAG THIS MOMENT"}
+          {liveNotesFlagButton(sessionMode, flashed)}
         </button>
         <p className="qmr-lrfine">
-          Everyone here sees the recording badge for as long as it lasts. Notes and
-          the summary email go out the moment you stop.
+          {liveNotesFooter(sessionMode)}
         </p>
       </div>
     </aside>

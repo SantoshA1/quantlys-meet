@@ -177,12 +177,13 @@ export function hasShape(n: Notes): boolean {
   return n.topics.length > 0;
 }
 
-export function notesText(n: Notes): string {
+export function notesText(n: Notes, opts: { sessionMode?: "meeting" | "memory" } = {}): string {
+  const memory = opts.sessionMode === "memory";
   const out: string[] = [];
-  out.push((n.title || "Meeting notes").toUpperCase(), "");
+  out.push((n.title || (memory ? "Session notes" : "Meeting notes")).toUpperCase(), "");
   if (n.overview) out.push(plain(n.overview), "");
   if (n.topics.length) {
-    out.push("WHAT WAS DISCUSSED", "");
+    out.push(memory ? "WHAT WAS TOLD" : "WHAT WAS DISCUSSED", "");
     n.topics.forEach((t, i) => {
       out.push(`${i + 1}) ${plain(t.title)}`);
       t.points.forEach((pt) => out.push(`   - ${plain(pt)}`));
@@ -190,16 +191,27 @@ export function notesText(n: Notes): string {
     });
   }
   if (n.decisions.length) {
-    out.push("DECISIONS AND DIRECTION", ...n.decisions.map((d) => `- ${plain(d)}`), "");
+    out.push(
+      memory ? "TURNING POINTS & DIRECTION" : "DECISIONS AND DIRECTION",
+      ...n.decisions.map((d) => `- ${plain(d)}`),
+      "",
+    );
   }
-  out.push("ACTION ITEMS");
-  out.push(...(n.actions.length ? n.actions.map((a) => `- ${plain(a)}`) : ["- None were captured."]));
+  out.push(memory ? "OPEN THREADS" : "ACTION ITEMS");
+  out.push(...(n.actions.length
+    ? n.actions.map((a) => `- ${plain(a)}`)
+    : [memory ? "- No open threads were drawn out loud." : "- None were captured."]));
   out.push("");
   if (n.followups.length) {
-    out.push("FOLLOW-UP / NEXT STEPS", ...n.followups.map((f) => `- ${plain(f)}`), "");
+    out.push(
+      memory ? "OPEN THREADS / NEXT CHAPTERS" : "FOLLOW-UP / NEXT STEPS",
+      ...n.followups.map((f) => `- ${plain(f)}`),
+      "",
+    );
   }
   return out.join("\n");
 }
+
 
 const H = (t: string) =>
   `<div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#00a99d;font-weight:700;margin:30px 0 12px">${esc(t)}</div>`;
@@ -221,8 +233,9 @@ const UL = (items: string[], empty?: string) =>
  *  that arrives as one run-on column is a set of notes nobody reads. */
 export function notesHtml(
   n: Notes,
-  opts: { room?: string; watchUrl?: string; appUrl?: string; when?: string } = {}
+  opts: { room?: string; watchUrl?: string; appUrl?: string; when?: string; sessionMode?: "meeting" | "memory" } = {}
 ): string {
+  const memory = opts.sessionMode === "memory";
   const body: string[] = [];
 
   if (n.overview) {
@@ -232,7 +245,7 @@ export function notesHtml(
   }
 
   if (n.topics.length) {
-    body.push(H("What was discussed"));
+    body.push(H(memory ? "What was told" : "What was discussed"));
     n.topics.forEach((t, i) => {
       body.push(
         `<div style="margin:0 0 20px">` +
@@ -244,13 +257,13 @@ export function notesHtml(
   }
 
   if (n.decisions.length) {
-    body.push(H("Decisions and direction"), UL(n.decisions));
+    body.push(H(memory ? "Turning points & direction" : "Decisions and direction"), UL(n.decisions));
   }
 
-  body.push(H("Action items"), UL(n.actions, "Nothing was committed to out loud."));
+  body.push(H(memory ? "Open threads" : "Action items"), UL(n.actions, memory ? "No open threads were drawn out loud." : "Nothing was committed to out loud."));
 
   if (n.followups.length) {
-    body.push(H("Follow-up / next steps"), UL(n.followups));
+    body.push(H(memory ? "Open threads / next chapters" : "Follow-up / next steps"), UL(n.followups));
   }
 
   const watch = opts.watchUrl
@@ -263,7 +276,7 @@ export function notesHtml(
 
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#0b0d13;color:#e9edf5;padding:30px;max-width:660px;margin:0 auto">
   <div style="font-size:13px;color:#8b93a5;margin:0 0 4px">Quantlys Meeting${opts.when ? ` &middot; ${esc(opts.when)}` : ""}</div>
-  <h1 style="font-size:23px;font-weight:700;margin:0 0 18px;color:#e9edf5;line-height:1.3">${esc(n.title || "Meeting notes")}</h1>
+  <h1 style="font-size:23px;font-weight:700;margin:0 0 18px;color:#e9edf5;line-height:1.3">${esc(n.title || (memory ? "Session notes" : "Meeting notes"))}</h1>
   ${body.join("\n  ")}
   ${watch}
   ${
