@@ -125,7 +125,7 @@ const SESSION_TOPIC = "qm-session";
 const REC_BEAT_MS = 3000;
 const REC_STALE_MS = 9000;   // three missed beats → assume it stopped
 
-export default function Conference({ room, spec = false }: { room: string; spec?: boolean }) {
+export default function Conference({ room, spec = false, initialSessionMode = "meeting" }: { room: string; spec?: boolean; initialSessionMode?: SessionMode }) {
   const [name, setName] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [joined, setJoined] = useState(false);
@@ -505,7 +505,7 @@ export default function Conference({ room, spec = false }: { room: string; spec?
         onMediaDeviceFailure={(f) => setMediaFail(deviceFailText(f ? String(f) : ""))}
         className="qmr-lk"
       >
-        <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} spec={spec} />
+        <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} spec={spec} initialSessionMode={initialSessionMode} />
         <PlaybackGate />
         <MediaFailBanner text={mediaFail} onClear={() => setMediaFail("")} camWanted={choice.camOn} micWanted={choice.micOn} />
         <ConferenceStage />
@@ -639,8 +639,8 @@ function PlaybackGate() {
 // silently lose that person's voice, so the sources are kept and reused.
 const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
-function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }: {
-  room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean; spec?: boolean;
+function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, initialSessionMode = "meeting" }: {
+  room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean; spec?: boolean; initialSessionMode?: SessionMode;
 }) {
   const participants = useParticipants();
   const ctx = useRoomContext();
@@ -691,8 +691,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   const [acting, setActing] = useState("");
   // Meeting (PRD path) vs Memory (oral historian). Host toggles; guests see it.
   // Default remains Meeting/PRD. Persists for the session via LiveKit data.
-  const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
-  const sessionModeRef = useRef<SessionMode>("meeting");
+  const [sessionMode, setSessionMode] = useState<SessionMode>(() => acceptSessionMode(initialSessionMode));
+  const sessionModeRef = useRef<SessionMode>(acceptSessionMode(initialSessionMode));
   sessionModeRef.current = sessionMode;
   const isHostRef = useRef(isHost);
   isHostRef.current = isHost;
