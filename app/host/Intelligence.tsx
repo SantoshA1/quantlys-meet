@@ -112,18 +112,18 @@ export default function Intelligence({
   if (state === "loading") {
     return (
       <section className="qh-panel">
-        <div className="qh-panelhead"><span className="qh-eyebrow">MEETING INTELLIGENCE</span></div>
-        <p className="qh-dim">Reading your last meeting…</p>
+        <div className="qh-panelhead"><span className="qh-eyebrow">SESSION INTELLIGENCE</span></div>
+        <p className="qh-dim">Reading your latest session…</p>
       </section>
     );
   }
   if (state === "none" || !sum) {
     return (
       <section className="qh-panel">
-        <div className="qh-panelhead"><span className="qh-eyebrow">MEETING INTELLIGENCE</span></div>
+        <div className="qh-panelhead"><span className="qh-eyebrow">SESSION INTELLIGENCE</span></div>
         <p className="qh-dim">
-          Your first recorded meeting will be read back here — what happened, what was
-          decided, and who owes what. Record one and this panel writes itself.
+          Your first recorded session will be read back here — what happened, what was
+          told, and what remains open. Record one and this panel writes itself.
         </p>
       </section>
     );

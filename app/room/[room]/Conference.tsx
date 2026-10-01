@@ -1708,7 +1708,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
                       setStatus(
                         out?.error
                           ? { kind: "err", text: out.error }
-                          : { kind: "ok", text: `Removed ${p.name || "them"} from the meeting.` }
+                          : { kind: "ok", text: `Removed ${p.name || "them"} from the ${sessionMode === "memory" ? "session" : "meeting"}.` }
                       );
                       setActing("");
                     }}
