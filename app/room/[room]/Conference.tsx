@@ -36,6 +36,10 @@ import { compositeBoardOnto, snapshotBoardDataUrl, dataUrlToBlob } from "@/lib/b
 import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
 import { shouldFlushOnPageHide } from "@/lib/recording-flush";
+import {
+  acceptSessionMode, sessionModeGuestCue,
+  type SessionMode,
+} from "@/lib/memory";
 import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
@@ -111,6 +115,8 @@ function alreadyAgreed(room: string): boolean {
 // halfway through a recording has to learn about it too, and a single message
 // sent before they arrived would never reach them.
 const REC_TOPIC = "qm-recording";
+/** Host Meeting | Memory mode — guests see which surface this session is on. */
+const SESSION_TOPIC = "qm-session";
 const REC_BEAT_MS = 3000;
 const REC_STALE_MS = 9000;   // three missed beats → assume it stopped
 
@@ -678,6 +684,38 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
   const [waiting, setWaiting] = useState<Array<{ id: string; display_name: string }>>([]);
   const [panel, setPanel] = useState(false);
   const [acting, setActing] = useState("");
+  // Meeting (PRD path) vs Memory (oral historian). Host toggles; guests see it.
+  // Default remains Meeting/PRD. Persists for the session via LiveKit data.
+  const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
+  const sessionModeRef = useRef<SessionMode>("meeting");
+  sessionModeRef.current = sessionMode;
+  const isHostRef = useRef(isHost);
+  isHostRef.current = isHost;
+
+  const { send: sendSession } = useDataChannel(SESSION_TOPIC, (msg) => {
+    try {
+      const payload = JSON.parse(new TextDecoder().decode(msg.payload));
+      if (payload?.kind !== "mode") return;
+      const next = acceptSessionMode(payload.mode);
+      // Host is source of truth — ignore echoes that could fight a local toggle.
+      if (!isHostRef.current) setSessionMode(next);
+    } catch { /* ignore malformed */ }
+  });
+  const shoutMode = useCallback((mode: SessionMode) => {
+    try {
+      sendSession(
+        new TextEncoder().encode(JSON.stringify({ kind: "mode", mode })),
+        { reliable: true }
+      );
+    } catch { /* local still updates */ }
+  }, [sendSession]);
+  // Heartbeat so late joiners learn the mode without asking.
+  useEffect(() => {
+    if (!isHost) return;
+    shoutMode(sessionMode);
+    const iv = window.setInterval(() => shoutMode(sessionModeRef.current), 12000);
+    return () => window.clearInterval(iv);
+  }, [isHost, sessionMode, shoutMode]);
 
   const [recording, setRecording] = useState(false);
   const startRecordingRef = useRef<() => void>(() => {});
@@ -1317,6 +1355,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
           strokes: boardStrokesForSave,
           workflow: toWorkflow(boardStrokesForSave as any),
           boardSnapshotPath,
+          // Keep mode in summary JSON so Memory regenerate prefers these sessions.
+          sessionMode: sessionModeRef.current,
         }),
       });
       const out = await r.json();
@@ -1393,6 +1433,11 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
     <header className="qmr-bar" ref={barRef}>
       <span className="qmr-logo">Quantlys Meeting</span>
       {spec ? <span className="qmr-speccue">Spec session, agent on</span> : null}
+      {!spec && sessionMode === "memory" ? (
+        <span className="qmr-speccue" title="Oral historian path — leave with a story / manuscript outline">
+          Memory mode
+        </span>
+      ) : null}
 
       {/* Everyone in the room sees this, not just whoever pressed Record. It
           is the second half of the promise made on the join screen. */}
@@ -1478,7 +1523,29 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
             it speaks lives in lib/agent.ts, which refuses far more often than
             it agrees — see the header of Agent.tsx for why that is the whole
             design. */}
-        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} isHost={isHost} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} />
+        {isHost ? (
+          <span className="qmr-modetoggle" role="group" aria-label="Session mode">
+            <button
+              type="button"
+              className={`qmr-ghost${sessionMode === "meeting" ? " qmr-on" : ""}`}
+              aria-pressed={sessionMode === "meeting"}
+              onClick={() => { setSessionMode("meeting"); shoutMode("meeting"); }}
+              title="Meeting mode — PRD agent and PRD package (default)"
+            >Meeting</button>
+            <button
+              type="button"
+              className={`qmr-ghost${sessionMode === "memory" ? " qmr-on" : ""}`}
+              aria-pressed={sessionMode === "memory"}
+              onClick={() => { setSessionMode("memory"); shoutMode("memory"); }}
+              title="Memory mode — oral historian / podcast producer; leave with a story"
+            >Memory</button>
+          </span>
+        ) : sessionMode === "memory" ? (
+          <span className="qmr-ghost qmr-on" title={sessionModeGuestCue("memory")}>
+            Memory mode
+          </span>
+        ) : null}
+        <Agent room={room} project={project || ""} log={cc.log} myName={meName} spec={spec} isHost={isHost} captionsOn={cc.on} enableCaptions={cc.enable} captionEpoch={ccStartRef.current} captionNote={cc.note} sessionMode={sessionMode} />
         <button className="qmr-ghost" onClick={copyInvite} title={invite}>
           {copied ? "Copied" : "Copy invite link"}
         </button>
@@ -1677,8 +1744,12 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
                       return;
                     }
                     ctx.disconnect();
-                    // Post-meeting handoff: land on the PRD panel with a clear cue.
-                    window.location.href = "/host?handoff=1#prd";
+                    // Post-meeting handoff: Memory package or PRD panel.
+                    if (sessionModeRef.current === "memory") {
+                      window.location.href = "/host?handoff=1&mode=memory#memory";
+                    } else {
+                      window.location.href = "/host?handoff=1#prd";
+                    }
                   }}
                 >
                   {ending ? (endPhase === "saving" ? "Saving…" : "Ending…") : "Yes — end this session"}
@@ -2573,6 +2644,8 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
   gap: 12px; padding: 8px 14px; background: #12151d;
   border-bottom: 1px solid #262b36; flex-wrap: nowrap; overflow: visible; }
 .qmr-logo { font-weight: 600; }
+.qmr-modetoggle { display: inline-flex; gap: 4px; align-items: center; }
+.qmr-modetoggle .qmr-ghost { padding: 4px 9px; font-size: 12px; }
 .qmr-speccue { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
   color: #7fe0d6; font-weight: 600; white-space: nowrap; }
 .qmr-people { color: #8b93a5; font-size: 13px; }

@@ -38,6 +38,10 @@ import {
   MAX_QUESTIONS, SPEC_MAX_QUESTIONS, type AgentAsk, type AgentState,
 } from "@/lib/agent";
 import { rubricFor, metaFor, detectMode } from "@/lib/prd";
+import {
+  memoryRubric, memoryOpeningLine, memoryStatusLine, MEMORY_META,
+  type SessionMode,
+} from "@/lib/memory";
 
 /** Its own topic. Captions are a firehose and the agent speaks eight times an
  *  hour; sharing a channel would mean parsing every caption to find them. */
@@ -71,6 +75,7 @@ function normalizeGaps(list: unknown): GapDim[] {
 export default function Agent({
   room, project, log, myName, spec = false, isHost = false,
   captionsOn, enableCaptions, captionEpoch, captionNote,
+  sessionMode = "meeting",
 }: {
   room: string;
   /** the project this meeting belongs to, from /api/room/info */
@@ -86,6 +91,8 @@ export default function Agent({
   enableCaptions: () => void;
   captionEpoch?: number;
   captionNote?: string;
+  /** Meeting (PRD) vs Memory (oral historian). Default Meeting. */
+  sessionMode?: SessionMode;
 }) {
   const [on, setOn] = useState(!!spec);
   const [asked, setAsked] = useState<AgentAsk[]>([]);
@@ -113,9 +120,12 @@ export default function Agent({
   openRef.current = open;
   const { localParticipant } = useLocalParticipant();
 
+  const memory = sessionMode === "memory";
   const mode = detectMode(`${project} ${room}`);
-  const meta = metaFor(mode);
-  const rubric = rubricFor(mode);
+  const meta = memory
+    ? { artifact: MEMORY_META.artifact, gate: MEMORY_META.gate, crew: MEMORY_META.crew }
+    : metaFor(mode);
+  const rubric = memory ? memoryRubric() : rubricFor(mode);
 
   // Everyone in the room sees the same question at the same time. An agent
   // that whispers to the host is a note-taking tool; one that speaks into the
@@ -169,6 +179,11 @@ export default function Agent({
     // Only the host loads the assessment. Guests paint the strip from the
     // broadcast so they never need to generate, and they still see the same chips.
     if (!isHost || !on) return;
+    // Memory mode: oral-historian dims, not the PRD assessment.
+    if (memory) {
+      setOpen(rubric.map((d) => ({ key: d.key, label: d.label, status: "missing" })));
+      return;
+    }
     // No project yet still means the whole rubric is open — otherwise shouldAsk
     // sees an empty list and says nothing is left to ask, so a spec session
     // never interviews.
@@ -200,7 +215,7 @@ export default function Agent({
       }
     })();
     return () => { alive = false; };
-  }, [isHost, on, project, rubric]);
+  }, [isHost, on, project, rubric, memory]);
 
   // Spec sessions start with the agent already on, so the opening line has to
   // land without a click. Captions are the ears — turn them on if they aren't.
@@ -233,6 +248,7 @@ export default function Agent({
           asked: state.asked.map((a) => a.question),
           askedKeys: state.asked.map((a) => a.key),
           spec: Boolean(spec),
+          sessionMode,
         }),
       });
       const j = await r.json().catch(() => null);
@@ -257,7 +273,7 @@ export default function Agent({
       inFlight.current = false;
       setBusy(false);
     }
-  }, [project, mode, log, shout, spec]);
+  }, [project, mode, log, shout, spec, sessionMode]);
 
   // The clock. Once every five seconds is enough for a decision whose
   // shortest interval is three minutes, and it keeps the status line honest
@@ -306,7 +322,15 @@ export default function Agent({
         hearing: Boolean(captionsOn),
       };
       const verdict = shouldAsk(state);
-      setStatus(statusLine(state, verdict));
+      // Memory: oral-historian status copy (not "parts of the PRD").
+      if (memory) {
+        const reason = String(verdict.reason || "")
+          .replace(/every open part has been covered/i, "the story dimensions are covered")
+          .replace(/parts? still open/i, "parts of the story still open");
+        setStatus(memoryStatusLine(state.asked.length, (state.open || []).map((d) => d.label).filter(Boolean), reason));
+      } else {
+        setStatus(statusLine(state, verdict));
+      }
       if (verdict.ask && verdict.key && !inFlight.current) {
         ask(state, verdict.key, recentText(log));
       }
@@ -314,7 +338,7 @@ export default function Agent({
     tick();
     const iv = window.setInterval(tick, 5000);
     return () => window.clearInterval(iv);
-  }, [isHost, on, log, asked, open, current, ask, spec, captionsOn]);
+  }, [isHost, on, log, asked, open, current, ask, spec, captionsOn, memory]);
 
   // A question the room talked straight past is not a question that needs
   // repeating on the screen for ever.
@@ -375,20 +399,30 @@ export default function Agent({
             const next = !on;
             setOn(next);
             if (next && !captionsOn) enableCaptions();
-            setNote(next ? openingLine(project, rubric.length, { spec, turnedCaptionsOn: !captionsOn }) : "");
+            setNote(next
+              ? (memory
+                  ? memoryOpeningLine(project, rubric.length, { turnedCaptionsOn: !captionsOn })
+                  : openingLine(project, rubric.length, { spec, turnedCaptionsOn: !captionsOn }))
+              : "");
             if (next && !startedAt.current) startedAt.current = Date.now();
           }}
           aria-pressed={on}
           title={
-            project
-              ? `Ask follow-up questions so ${project}'s ${meta.artifact} comes out complete`
-              : "This meeting has no project, so the agent asks the standard PRD questions"
+            memory
+              ? (project
+                  ? `Ask oral-historian follow-ups so ${project}'s Memory package comes out rich`
+                  : "Ask oral-historian questions — chronology, people, turning points, sensory detail, lessons, quotes")
+              : (project
+                  ? `Ask follow-up questions so ${project}'s ${meta.artifact} comes out complete`
+                  : "This meeting has no project, so the agent asks the standard PRD questions")
           }
         >
-          {on ? `Agent · ${asked.length}/${spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS}` : "PRD agent"}
+          {on
+            ? `Agent · ${asked.length}/${spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS}`
+            : (memory ? "Memory agent" : "PRD agent")}
         </button>
       ) : current ? (
-        <span className="qmr-ghost qa-btn qa-readonly" title="The host's PRD agent is asking the room">
+        <span className="qmr-ghost qa-btn qa-readonly" title={memory ? "The host's Memory agent is asking the room" : "The host's PRD agent is asking the room"}>
           Agent asking…
         </span>
       ) : null}
@@ -397,8 +431,8 @@ export default function Agent({
           not only the host who toggled the agent on. Guests answer without
           auth; only generation (/api/agent/question) stays host-signed-in. */}
       {gaps.visible ? (
-        <div className="qa-gaps" role="status" aria-label="Spec gaps still open">
-          <span className="qa-gaps-kicker">Still open</span>
+        <div className="qa-gaps" role="status" aria-label={memory ? "Story threads still open" : "Spec gaps still open"}>
+          <span className="qa-gaps-kicker">{memory ? "Still to draw out" : "Still open"}</span>
           <span className="qa-gapchips">
             {gaps.chips.map((c) => (
               <span
@@ -428,13 +462,17 @@ export default function Agent({
             ))}
           </div>
           {current.why ? <p className="qa-why">{current.why}</p> : null}
-          <p className="qa-fine">Answer out loud and it goes in the notes — the buttons are for when you would rather not say it.</p>
+          <p className="qa-fine">
+            {memory
+              ? "Answer out loud and it goes in the story — the buttons are for when you would rather not say it."
+              : "Answer out loud and it goes in the notes — the buttons are for when you would rather not say it."}
+          </p>
         </div>
       ) : null}
 
       {isHost && on && !current ? (
         <div className="qa-status" role="status">
-          <b>PRD agent{project ? ` · ${project}` : ""}</b>
+          <b>{memory ? "Memory agent" : "PRD agent"}{project ? ` · ${project}` : ""}</b>
           <span>{busy ? "Thinking of a question…" : status}</span>
           {/* FIELD 2026-08-25: "I clicked on PRD Agent and I'm not clear what
               it is doing." Most of that was the auth bug — it switched itself

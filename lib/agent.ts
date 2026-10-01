@@ -168,7 +168,7 @@ export function shouldAsk(s: AgentState): AgentVerdict {
   }
   if (s.pending) return { ask: false, reason: "Waiting for an answer to the last question." };
   if (!s.open || !s.open.length) {
-    return { ask: false, reason: "Nothing left to ask — every part of the PRD has been covered." };
+    return { ask: false, reason: "Nothing left to ask — every open part has been covered." };
   }
   if ((s.asked || []).length >= maxQ) {
     return { ask: false, reason: `That's ${maxQ} questions — the rest can wait for the notes.` };
@@ -557,7 +557,7 @@ export function statusLine(s: AgentState, verdict: AgentVerdict): string {
     if (!done) return `Listening — still open: ${openList}.`;
     return `${done} asked · still open: ${openList}.`;
   }
-  if (!done) return `Listening — ${left} part${left === 1 ? "" : "s"} of the PRD still open.`;
+  if (!done) return `Listening — ${left} part${left === 1 ? "" : "s"} still open.`;
   return `${done} asked · ${left} still open.`;
 }
 
