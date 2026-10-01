@@ -11,6 +11,7 @@ import Recordings from "./Recordings";
 import Search from "./Search";
 import Intelligence from "./Intelligence";
 import Prd, { PRD_CSS } from "./Prd";
+import Memory from "./Memory";
 import { nextUp, inWords, stillOpen } from "@/lib/intelligence";
 import { newRoomId } from "@/lib/ids";
 
@@ -181,15 +182,20 @@ export default function HostConsole() {
     try {
       const q = new URLSearchParams(window.location.search);
       if (q.get("handoff") === "1") {
+        const memoryHandoff = q.get("mode") === "memory" || window.location.hash === "#memory";
         setHandoffNote(
-          "Session ended. Copy, download, or share the project PRD below — or email the spec from the room if guests requested it."
+          memoryHandoff
+            ? "Session ended. Build, copy, download, or share the Memory package below — a story / manuscript outline from this room."
+            : "Session ended. Copy, download, or share the project PRD below — or email the spec from the room if guests requested it."
         );
-        // Drop the query so a refresh does not keep nagging, keep #prd.
+        // Drop the query so a refresh does not keep nagging; keep #prd or #memory.
         const url = new URL(window.location.href);
         url.searchParams.delete("handoff");
-        window.history.replaceState({}, "", url.pathname + url.search + "#prd");
+        url.searchParams.delete("mode");
+        const hash = memoryHandoff ? "#memory" : "#prd";
+        window.history.replaceState({}, "", url.pathname + url.search + hash);
         setTimeout(() => {
-          document.getElementById("prd")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          document.getElementById(memoryHandoff ? "memory" : "prd")?.scrollIntoView({ behavior: "smooth", block: "start" });
         }, 120);
       }
     } catch { /* private mode / odd URL */ }
@@ -798,7 +804,7 @@ export default function HostConsole() {
                 the same rubric Quantlys Conclave scores a PRD on. See Prd.tsx
                 for why there is no one-click "send to Conclave" button. */}
             <div id="prd">
-              {handoffNote ? (
+              {handoffNote && !handoffNote.toLowerCase().includes("memory package") ? (
                 <div className="qh-panel qh-handoff" role="status">
                   <p className="qh-eyebrow">POST-MEETING HANDOFF</p>
                   <p className="qh-dim" style={{ margin: 0 }}>{handoffNote}</p>
@@ -807,6 +813,17 @@ export default function HostConsole() {
                 </div>
               ) : null}
               <Prd projects={projectNames} />
+            </div>
+            <div id="memory">
+              {handoffNote && handoffNote.toLowerCase().includes("memory package") ? (
+                <div className="qh-panel qh-handoff" role="status">
+                  <p className="qh-eyebrow">POST-SESSION HANDOFF</p>
+                  <p className="qh-dim" style={{ margin: 0 }}>{handoffNote}</p>
+                  <button className="qh-ghost qh-btn" style={{ marginTop: 10 }}
+                    onClick={() => setHandoffNote("")}>Dismiss</button>
+                </div>
+              ) : null}
+              <Memory projects={projectNames} />
             </div>
 
             {/* ── YOUR MEETINGS ──────────────────────────────────────── */}

@@ -15,6 +15,7 @@ import {
   EMPTY as EMPTY_NOTES, notesPrompt, parseNotes, notesHtml, notesText, notesSubject,
 } from "@/lib/notes";
 import { chooseModel } from "@/lib/model";
+import { acceptSessionMode } from "@/lib/memory";
 import { sendSpecIfDue, appUrl } from "@/lib/spec-email-send";
 import { durationSecondsFromSummary } from "@/lib/recording-flush";
 
@@ -431,6 +432,8 @@ export async function POST(req: Request) {
     duration_s,
     fromCaptions: !ccLines.length ? false : notes.transcript === (ccText.trim() || ccLines.map((l) => l.transcript).join("\n")),
     createdAt: new Date().toISOString(),
+    // Meeting vs Memory — regenerate Memory packages prefer sessions tagged memory.
+    sessionMode: acceptSessionMode(body?.sessionMode),
   };
   try {
     await sb.storage

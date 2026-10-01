@@ -25,6 +25,10 @@
 import { createClient } from "@supabase/supabase-js";
 import { chooseModel } from "@/lib/model";
 import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath, contextBlock, answeredKeys } from "@/lib/prd";
+import {
+  acceptSessionMode, memoryRubric, memorySuggestionsFor, memoryAgentQuestionPrompt,
+  MEMORY_META, type SessionMode,
+} from "@/lib/memory";
 import { readContext } from "../../project/route";
 import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, dropCoveredByRecent, detectIntents, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
 
@@ -65,6 +69,8 @@ export async function POST(req: Request) {
   const project = String(body?.project || "").trim();
   const recent = String(body?.recent || "").trim();
   const spec = Boolean(body?.spec);
+  const sessionMode: SessionMode = acceptSessionMode(body?.sessionMode);
+  const memory = sessionMode === "memory";
   const maxQ = spec ? SPEC_MAX_QUESTIONS : MAX_QUESTIONS;
   const maxPer = spec ? SPEC_MAX_PER_DIMENSION : MAX_PER_DIMENSION;
   const asked: string[] = Array.isArray(body?.asked) ? body.asked.map(String).slice(0, maxQ) : [];
@@ -102,7 +108,7 @@ export async function POST(req: Request) {
     } catch { /* a project with no brief is the normal first state */ }
   }
 
-  if (!open.length && user && process.env.SUPABASE_SERVICE_ROLE_KEY && project) {
+  if (!memory && !open.length && user && process.env.SUPABASE_SERVICE_ROLE_KEY && project) {
     try {
       const { data } = await admin().storage.from("recordings").download(prdPath(user.id, project));
       if (data) {
@@ -116,8 +122,11 @@ export async function POST(req: Request) {
   }
 
   if (!mode) mode = detectModeFor({ brief, project, transcript: recent });
-  const dims = rubricFor(mode);
-  const meta = metaFor(mode);
+  // Memory mode replaces the PRD rubric with oral-historian dimensions.
+  const dims = memory ? memoryRubric() : rubricFor(mode);
+  const meta = memory
+    ? { artifact: MEMORY_META.artifact, gate: MEMORY_META.gate, crew: MEMORY_META.crew }
+    : metaFor(mode);
   if (!open.length) {
     open = dims.map((d) => ({ key: d.key, label: d.label, status: "missing" }));
   }
@@ -136,7 +145,7 @@ export async function POST(req: Request) {
     return Response.json({ ask: false, reason: "The open parts have all been raised already." });
   }
   const dim = dims.find((d) => d.key === key) || dims[0];
-  const fallback = suggestionsFor(dim.key);
+  const fallback = memory ? memorySuggestionsFor(dim.key) : suggestionsFor(dim.key);
 
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -146,7 +155,9 @@ export async function POST(req: Request) {
       ask: true, key: dim.key, label: dim.label,
       question: fallback.q || `Can you say more about the ${dim.label.toLowerCase()}?`,
       options: fallback.options, why: fallback.why,
-      model_note: "No model key is set, so the agent is asking the standard question for this part of the PRD rather than one written for your conversation.",
+      model_note: memory
+        ? "No model key is set, so the agent is asking the standard oral-historian question for this part of the Memory package."
+        : "No model key is set, so the agent is asking the standard question for this part of the PRD rather than one written for your conversation.",
     });
   }
 
@@ -159,20 +170,27 @@ export async function POST(req: Request) {
     wanted: process.env.AGENT_MODEL || (openrouter ? AGENT_MODEL : ""),
   });
 
-  const prompt = agentQuestionPrompt({
-    projectName: project,
-    artifact: meta.artifact,
-    key: dim.key, label: dim.label, desc: dim.desc,
-    // The last few minutes, not the whole meeting: the question has to land
-    // in the conversation that is happening now. Intent tags bias the model
-    // to write a follow-up to what was JUST said, not a checklist row.
-    recent: recent.slice(-6000),
-    alreadyAsked: asked,
-    brief,
-    context: ctxBlock,
-    spec,
-    intents,
-  });
+  const prompt = memory
+    ? memoryAgentQuestionPrompt({
+        projectName: project,
+        key: dim.key, label: dim.label, desc: dim.desc,
+        recent: recent.slice(-6000),
+        alreadyAsked: asked,
+      })
+    : agentQuestionPrompt({
+        projectName: project,
+        artifact: meta.artifact,
+        key: dim.key, label: dim.label, desc: dim.desc,
+        // The last few minutes, not the whole meeting: the question has to land
+        // in the conversation that is happening now. Intent tags bias the model
+        // to write a follow-up to what was JUST said, not a checklist row.
+        recent: recent.slice(-6000),
+        alreadyAsked: asked,
+        brief,
+        context: ctxBlock,
+        spec,
+        intents,
+      });
 
   try {
     const r = await fetch(endpoint, {
