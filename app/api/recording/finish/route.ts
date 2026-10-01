@@ -364,6 +364,7 @@ export async function POST(req: Request) {
   }
 
   const summaryPath = videoPath.replace(/\.[a-z0-9]+$/i, "") + SUMMARY_SUFFIX;
+  const sessionMode = acceptSessionMode(body?.sessionMode);
 
   // 2026-08-24 — the project tag rides WITH the summary now.
   //
@@ -395,7 +396,7 @@ export async function POST(req: Request) {
     videoPath,
     audioPath: audioPath || null,
     // The host page shows this field, so it carries the whole set of notes.
-    summary: notesText(notes),
+    summary: notesText(notes, { sessionMode }),
     // …and the STRUCTURE travels beside it, so the notes page can render
     // sections rather than re-parsing a wall of text back into headings.
     notes,
@@ -433,7 +434,7 @@ export async function POST(req: Request) {
     fromCaptions: !ccLines.length ? false : notes.transcript === (ccText.trim() || ccLines.map((l) => l.transcript).join("\n")),
     createdAt: new Date().toISOString(),
     // Meeting vs Memory — regenerate Memory packages prefer sessions tagged memory.
-    sessionMode: acceptSessionMode(body?.sessionMode),
+    sessionMode,
   };
   try {
     await sb.storage
@@ -508,6 +509,7 @@ export async function POST(req: Request) {
         when: new Date().toLocaleDateString("en-US", {
           weekday: "short", day: "numeric", month: "short", year: "numeric",
         }),
+        sessionMode,
       })
     );
     emailed = ok ? user.email || "" : false;

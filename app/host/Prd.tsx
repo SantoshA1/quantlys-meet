@@ -22,6 +22,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
+import {
+  isMemoryProjectTag,
+  hostSurfaceTitle, hostBuildCta, hostBriefLabel, hostBriefHint,
+  hostBriefPlaceholder, hostEmptyProjectsHint, hostMemoryRedirectNote,
+} from "@/lib/session-ui";
 
 type Dim = { key: string; label: string; status: string; evidence: string; question: string; options: string[]; why: string };
 type Handoff = { n: number; what: string; detail: string };
@@ -248,11 +253,31 @@ export default function Prd({ projects }: { projects: string[] }) {
   }
 
   const pct = data ? Math.round(data.score * 100) : 0;
+  // Project tag `memory` (case-insensitive) means the Memory surface — writers
+  // and podcasters must not land on PRD rubric copy for that tag.
+  const memoryTag = isMemoryProjectTag(project);
+  const surfaceMode = memoryTag ? "memory" as const : "meeting" as const;
+
+  function onBuildClick() {
+    if (memoryTag) {
+      setNote(hostMemoryRedirectNote(project));
+      try {
+        const url = new URL(window.location.href);
+        url.hash = "memory";
+        window.history.replaceState({}, "", url.pathname + url.search + "#memory");
+      } catch { /* ignore */ }
+      setTimeout(() => {
+        document.getElementById("memory")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 40);
+      return;
+    }
+    build();
+  }
 
   return (
     <section className="qh-panel qp">
       <div className="qp-head">
-        <h2 className="qh-h2">PRD from your meetings</h2>
+        <h2 className="qh-h2">{hostSurfaceTitle(surfaceMode)}</h2>
         <div className="qp-pick">
           <select className="qh-input qh-mid" value={project} onChange={(e) => setProject(e.target.value)}
                   disabled={!projects.length}>
@@ -260,16 +285,22 @@ export default function Prd({ projects }: { projects: string[] }) {
               ? projects.map((p) => <option key={p} value={p}>{p}</option>)
               : <option value="">No projects yet</option>}
           </select>
-          <button className="qh-btn" onClick={build} disabled={!project || busy}>
-            {busy ? "Reading…" : data ? "Rebuild" : "Build the PRD"}
+          <button className="qh-btn" onClick={onBuildClick} disabled={!project || busy}>
+            {hostBuildCta(surfaceMode, { busy, hasData: Boolean(data) && !memoryTag })}
           </button>
         </div>
       </div>
 
+      {memoryTag ? (
+        <p className="qh-fine" role="status">
+          {hostMemoryRedirectNote(project)} Open the <a href="#memory">Memory package</a> panel
+          to build chapters, quotes, and open threads.
+        </p>
+      ) : null}
+
       {!projects.length ? (
         <p className="qh-fine">
-          Put a project name in the Project box when you start a meeting. Every recorded meeting
-          on the same project is read together, and the PRD builds from all of them.
+          {hostEmptyProjectsHint(surfaceMode)}
         </p>
       ) : null}
 
@@ -283,7 +314,7 @@ export default function Prd({ projects }: { projects: string[] }) {
           {briefSaved && !editBrief ? (
             <>
               <div className="qp-briefhead">
-                <span className="qp-blabel">What we&apos;re building</span>
+                <span className="qp-blabel">{hostBriefLabel(surfaceMode)}</span>
                 <button className="qp-inline" onClick={() => setEditBrief(true)}>Edit</button>
               </div>
               <p className="qp-brieftext">{briefSaved}</p>
@@ -291,19 +322,18 @@ export default function Prd({ projects }: { projects: string[] }) {
           ) : (
             <>
               <div className="qp-briefhead">
-                <span className="qp-blabel">What we&apos;re building</span>
+                <span className="qp-blabel">{hostBriefLabel(surfaceMode)}</span>
                 {briefSaved ? <button className="qp-inline" onClick={() => { setBrief(briefSaved); setEditBrief(false); }}>Cancel</button> : null}
               </div>
               <p className="qh-fine">
-                TWO OR THREE SENTENCES, WRITTEN ONCE. IT DECIDES WHICH RUBRIC THIS PROJECT IS SCORED ON AND GIVES
-                THE IN-MEETING AGENT SOMETHING TO ASK ABOUT FROM THE VERY FIRST MEETING.
+                {hostBriefHint(surfaceMode)}
               </p>
               <textarea
                 className="qp-briefbox"
                 rows={3}
                 value={brief}
                 onChange={(e) => setBrief(e.target.value)}
-                placeholder="A tool for the finance team that turns a photo of a receipt into a filed expense, so nobody keeps paper. Web first."
+                placeholder={hostBriefPlaceholder(surfaceMode)}
               />
               <div className="qp-briefrow">
                 <button className="qh-btn" onClick={saveBrief} disabled={briefBusy || brief.trim() === briefSaved.trim()}>

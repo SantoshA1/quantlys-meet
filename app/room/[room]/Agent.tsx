@@ -42,6 +42,9 @@ import {
   memoryRubric, memoryOpeningLine, memoryStatusLine, MEMORY_META,
   type SessionMode,
 } from "@/lib/memory";
+import {
+  gapStripKicker, gapStripAria, gapStripCollapsedLabel,
+} from "@/lib/session-ui";
 
 /** Its own topic. Captions are a firehose and the agent speaks eight times an
  *  hour; sharing a channel would mean parsing every caption to find them. */
@@ -76,6 +79,7 @@ export default function Agent({
   room, project, log, myName, spec = false, isHost = false,
   captionsOn, enableCaptions, captionEpoch, captionNote,
   sessionMode = "meeting",
+  gapsTop = 64,
 }: {
   room: string;
   /** the project this meeting belongs to, from /api/room/info */
@@ -93,6 +97,8 @@ export default function Agent({
   captionNote?: string;
   /** Meeting (PRD) vs Memory (oral historian). Default Meeting. */
   sessionMode?: SessionMode;
+  /** Pixels from viewport top to sit BELOW the chrome bar — never over Leave / Settings. */
+  gapsTop?: number;
 }) {
   const [on, setOn] = useState(!!spec);
   const [asked, setAsked] = useState<AgentAsk[]>([]);
@@ -106,6 +112,8 @@ export default function Agent({
   // for everyone.
   const [roomOn, setRoomOn] = useState(false);
   const [remoteHighlight, setRemoteHighlight] = useState("");
+  // Gap strip starts collapsed so chips never cover chrome; expand below the bar.
+  const [gapsExpanded, setGapsExpanded] = useState(false);
 
   const startedAt = useRef(0);
   const lastAskAt = useRef(0);
@@ -390,6 +398,11 @@ export default function Agent({
 
   useGapBroadcast(shout, isHost, on, open, current?.key || "", Boolean(current));
 
+  // An ask on screen should reveal the dim it closes — still below chrome.
+  useEffect(() => {
+    if (current?.key) setGapsExpanded(true);
+  }, [current?.key]);
+
   return (
     <>
       {isHost ? (
@@ -431,20 +444,48 @@ export default function Agent({
           not only the host who toggled the agent on. Guests answer without
           auth; only generation (/api/agent/question) stays host-signed-in. */}
       {gaps.visible ? (
-        <div className="qa-gaps" role="status" aria-label={memory ? "Story threads still open" : "Spec gaps still open"}>
-          <span className="qa-gaps-kicker">{memory ? "Still to draw out" : "Still open"}</span>
-          <span className="qa-gapchips">
-            {gaps.chips.map((c) => (
-              <span
-                key={c.key}
-                className={`qa-gap${c.highlight ? " is-on" : ""}`}
-                title={c.highlight ? `This question closes ${c.label}` : c.label}
-              >
-                {c.label}
+        <div
+          className={`qa-gaps${gapsExpanded ? " is-open" : " is-collapsed"}`}
+          role="status"
+          aria-label={gapStripAria(sessionMode)}
+          style={{ top: Math.max(48, gapsTop) }}
+        >
+          {gapsExpanded ? (
+            <>
+              <span className="qa-gaps-kicker">{gapStripKicker(sessionMode)}</span>
+              <span className="qa-gapchips">
+                {gaps.chips.map((c) => (
+                  <span
+                    key={c.key}
+                    className={`qa-gap${c.highlight ? " is-on" : ""}`}
+                    title={c.highlight ? `This question closes ${c.label}` : c.label}
+                  >
+                    {c.label}
+                  </span>
+                ))}
+                {gaps.more > 0 ? <span className="qa-gap qa-gapmore">+{gaps.more}</span> : null}
               </span>
-            ))}
-            {gaps.more > 0 ? <span className="qa-gap qa-gapmore">+{gaps.more}</span> : null}
-          </span>
+              <button
+                type="button"
+                className="qa-gaps-toggle"
+                aria-expanded="true"
+                onClick={() => setGapsExpanded(false)}
+                title="Collapse so chrome stays clear"
+              >
+                Hide
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="qa-gaps-toggle qa-gaps-pill"
+              aria-expanded="false"
+              onClick={() => setGapsExpanded(true)}
+              title={gapStripAria(sessionMode)}
+            >
+              {gapStripCollapsedLabel(sessionMode, gaps.chips.length + gaps.more)}
+            </button>
+          )}
         </div>
       ) : null}
 
@@ -580,20 +621,28 @@ export const AGENT_CSS = `
 .qa-note { color:#f0d9a6 !important; }
 .qa-open { color:#6c7688 !important; font-size:10.5px !important; letter-spacing:.06em;
   text-transform:uppercase; line-height:1.5 !important; }
-.qa-gaps { position:fixed; top:60px; left:50%; transform:translateX(-50%); z-index:68;
-  display:flex; align-items:center; gap:8px; max-width:min(760px, calc(100vw - 24px));
-  padding:6px 10px 6px 12px; background:#0d1b1a; border:1px solid #14706a; border-radius:999px;
-  box-shadow:0 10px 28px rgba(0,0,0,.45); pointer-events:none; }
+/* Dock BELOW the measured chrome bar (gapsTop). Never overlay Leave / Settings /
+   Meeting|Memory / Agent / Copy invite — those live in .qmr-actions above. */
+.qa-gaps { position:fixed; left:12px; right:auto; transform:none; z-index:25;
+  display:flex; align-items:center; gap:8px; max-width:min(520px, calc(100vw - 24px));
+  padding:5px 8px 5px 10px; background:#0d1b1a; border:1px solid #14706a; border-radius:999px;
+  box-shadow:0 10px 28px rgba(0,0,0,.45); pointer-events:auto; }
+.qa-gaps.is-collapsed { padding:0; background:transparent; border:0; box-shadow:none; }
 .qa-gaps-kicker { flex:0 0 auto; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
   color:#7fe0d6; font-weight:600; }
-.qa-gapchips { display:flex; gap:5px; min-width:0; overflow:hidden; }
-.qa-gap { flex:0 1 auto; max-width:148px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+.qa-gapchips { display:flex; gap:5px; min-width:0; overflow:hidden; flex-wrap:wrap; max-height:52px; }
+.qa-gap { flex:0 1 auto; max-width:132px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-size:11.5px; color:#cfe9e6; background:#123130; border:1px solid #1d4f4c;
   border-radius:999px; padding:3px 9px; line-height:1.3; }
 .qa-gap.is-on { color:#06110f; background:#7fe0d6; border-color:#7fe0d6; font-weight:600; }
 .qa-gapmore { flex:0 0 auto; color:#8b93a5; background:transparent; border-color:#2b3240; }
+.qa-gaps-toggle { flex:0 0 auto; font:inherit; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+  cursor:pointer; color:#7fe0d6; background:#123130; border:1px solid #1d4f4c; border-radius:999px;
+  padding:5px 11px; line-height:1.2; }
+.qa-gaps-toggle:hover { border-color:#2a6f6a; color:#cfe9e6; }
+.qa-gaps-pill { background:#0d1b1a; border-color:#14706a; box-shadow:0 8px 20px rgba(0,0,0,.4); }
 @media (max-width: 720px) {
-  .qa-gaps { top:52px; max-width:calc(100vw - 16px); padding:5px 8px; }
+  .qa-gaps { left:8px; max-width:calc(100vw - 16px); }
   .qa-gaps-kicker { display:none; }
 }
 `;

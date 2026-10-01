@@ -7,6 +7,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { hms } from "@/lib/intelligence";
 import { durationSecondsFromSummary } from "@/lib/recording-flush";
+import {
+  resolveSessionMode,
+  recordingsActionsTab, recordingsActionsHead, recordingsActionsEmpty,
+  recordingsActionsFoot, recordingsAskHead, recordingsAskOpeners,
+  recordingsSummaryDecisionsHead, recordingsSummaryFollowupsHead,
+  recordingsSummaryTopicsHead,
+} from "@/lib/session-ui";
 
 let _db: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -329,6 +336,8 @@ function NotesPanel({
   const transcript: string = data.transcript || "";
   const steps: Array<{ ok: boolean; label: string; detail: string }> = data.steps || [];
   const failed = steps.filter((x) => !x.ok);
+  // sessionMode travels on the summary JSON from recording/finish (#72).
+  const mode = resolveSessionMode(data.sessionMode || n.sessionMode);
 
   // Nothing was produced. Say WHY — the finish route recorded the reason for
   // every step and it travels with the recording, so it is still here weeks
@@ -337,19 +346,14 @@ function NotesPanel({
 
   const TABS: Array<[string, string]> = [
     ["summary", "Summary"],
-    ["actions", actions.length ? `Action items · ${actions.length}` : "Action items"],
+    ["actions", recordingsActionsTab(mode, actions.length)],
     ["ask", "Ask"],
     ["transcript", "Transcript"],
   ];
 
   // Openers, so the box is not a blank stare. They are the questions people
   // actually have three weeks later, not a demo of what the model can do.
-  const OPENERS = [
-    "What did we decide?",
-    "Did anyone commit to a date?",
-    "What was left unresolved?",
-    "What are the risks we named?",
-  ];
+  const OPENERS = recordingsAskOpeners(mode);
 
   return (
     <div className="qm-notes">
@@ -389,7 +393,7 @@ function NotesPanel({
           {overview ? <p className="qm-nover"><Rich text={overview} /></p> : null}
           {topics.length ? (
             <>
-              <div className="qm-nhead">What was discussed</div>
+              <div className="qm-nhead">{recordingsSummaryTopicsHead(mode)}</div>
               {topics.map((t, i) => (
                 <div className="qm-ntopic" key={i}>
                   <div className="qm-ntopich">
@@ -402,13 +406,13 @@ function NotesPanel({
           ) : null}
           {decisions.length ? (
             <>
-              <div className="qm-nhead">Decisions and direction</div>
+              <div className="qm-nhead">{recordingsSummaryDecisionsHead(mode)}</div>
               <Bullets items={decisions} />
             </>
           ) : null}
           {followups.length ? (
             <>
-              <div className="qm-nhead">Follow-up / next steps</div>
+              <div className="qm-nhead">{recordingsSummaryFollowupsHead(mode)}</div>
               <Bullets items={followups} />
             </>
           ) : null}
@@ -418,21 +422,20 @@ function NotesPanel({
       {tab === "actions" ? (
         actions.length ? (
           <>
-            <div className="qm-nhead">Action items</div>
+            <div className="qm-nhead">{recordingsActionsHead(mode)}</div>
             <Bullets items={actions} />
             <p className="qm-nfine">
-              These are also on your host page under “Still open”, where you can
-              tick them off. Anything you don&apos;t tick comes back on Monday.
+              {recordingsActionsFoot(mode)}
             </p>
           </>
         ) : (
-          <p className="qm-nmuted">Nothing was committed to out loud in this one.</p>
+          <p className="qm-nmuted">{recordingsActionsEmpty(mode)}</p>
         )
       ) : null}
 
       {tab === "ask" ? (
         <>
-          <div className="qm-nhead">Ask this meeting</div>
+          <div className="qm-nhead">{recordingsAskHead(mode)}</div>
           <p className="qm-nfine" style={{ margin: "0 0 12px" }}>
             Answered from the transcript only, with the moment it came from — so
             you can check it rather than take its word for it.

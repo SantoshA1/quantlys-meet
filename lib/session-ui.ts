@@ -1,0 +1,211 @@
+// Mode-aware UI copy for Meeting (PRD) vs Memory (oral historian).
+// ZERO-IMPORT beyond SessionMode so helpers stay offline-testable.
+
+import {
+  type SessionMode,
+  acceptSessionMode,
+  DEFAULT_SESSION_MODE,
+} from "./memory";
+
+export type { SessionMode };
+
+/** True when a project name/tag itself is the Memory surface (e.g. tag `memory`). */
+export function isMemoryProjectTag(raw: unknown): boolean {
+  return acceptSessionMode(raw) === "memory";
+}
+
+export function resolveSessionMode(
+  raw: unknown,
+  fallback: SessionMode = DEFAULT_SESSION_MODE,
+): SessionMode {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (!v) return fallback;
+  return acceptSessionMode(v);
+}
+
+// ── Live room: gap strip ──────────────────────────────────────────────────
+
+export function gapStripKicker(mode: SessionMode): string {
+  return mode === "memory" ? "Still to draw out" : "Still open";
+}
+
+export function gapStripAria(mode: SessionMode): string {
+  return mode === "memory" ? "Story threads still open" : "Spec gaps still open";
+}
+
+export function gapStripCollapsedLabel(mode: SessionMode, count: number): string {
+  const n = Math.max(0, Math.floor(count || 0));
+  if (mode === "memory") {
+    return n === 1 ? "1 thread still open" : `${n} threads still open`;
+  }
+  return n === 1 ? "1 gap still open" : `${n} gaps still open`;
+}
+
+// ── Live Notes rail ───────────────────────────────────────────────────────
+
+export function liveNotesSubtitle(mode: SessionMode): string {
+  return mode === "memory" ? "CAPTURING THE STORY" : "NOBODY TAKES MINUTES";
+}
+
+export function liveNotesEmptyHint(mode: SessionMode): string {
+  return mode === "memory"
+    ? "Turn captions on and the story starts writing itself down here — quotes, turning points, and open threads get caught as they are said."
+    : "Turn captions on and the meeting starts writing itself down here — decisions and commitments get caught as they are said.";
+}
+
+export function liveNotesKindLabel(
+  mode: SessionMode,
+  kind: "decision" | "action" | "flag",
+  who = "",
+): string {
+  const name = String(who || "").trim().toUpperCase();
+  if (kind === "flag") {
+    return name ? `FLAGGED BY ${name}` : "FLAGGED";
+  }
+  if (mode === "memory") {
+    if (kind === "decision") return "TURNING POINT";
+    return name ? `MOMENT → ${name}` : "MOMENT";
+  }
+  if (kind === "decision") return "DECISION CAUGHT";
+  return name ? `ACTION → ${name}` : "ACTION";
+}
+
+export function liveNotesCountsLine(
+  mode: SessionMode,
+  decisions: number,
+  actions: number,
+): { prefix: string; leftLabel: string; rightLabel: string } {
+  if (mode === "memory") {
+    return {
+      prefix: "CAUGHT SO FAR",
+      leftLabel: decisions === 1 ? "TURNING POINT" : "TURNING POINTS",
+      rightLabel: actions === 1 ? "MOMENT" : "MOMENTS",
+    };
+  }
+  return {
+    prefix: "CAUGHT SO FAR",
+    leftLabel: decisions === 1 ? "DECISION" : "DECISIONS",
+    rightLabel: actions === 1 ? "ACTION" : "ACTIONS",
+  };
+}
+
+export function liveNotesFlagButton(mode: SessionMode, flashed: boolean): string {
+  if (flashed) return "FLAGGED ✓";
+  return mode === "memory" ? "FLAG THIS LINE" : "FLAG THIS MOMENT";
+}
+
+export function liveNotesFooter(mode: SessionMode): string {
+  return mode === "memory"
+    ? "Everyone here sees the recording badge for as long as it lasts. The story package and summary email go out the moment you stop."
+    : "Everyone here sees the recording badge for as long as it lasts. Notes and the summary email go out the moment you stop.";
+}
+
+export function roomPeopleLabel(mode: SessionMode, count: number): string {
+  const n = Math.max(0, Math.floor(count || 0));
+  if (mode === "memory") {
+    return n === 1 ? "1 IN THE ROOM" : `${n} IN THE ROOM`;
+  }
+  return n === 1 ? "1 IN THE MEETING" : `${n} IN THE MEETING`;
+}
+
+// ── Host recordings / notes ───────────────────────────────────────────────
+
+export function recordingsActionsTab(mode: SessionMode, count: number): string {
+  const n = Math.max(0, Math.floor(count || 0));
+  if (mode === "memory") {
+    return n ? `Open threads · ${n}` : "Open threads";
+  }
+  return n ? `Action items · ${n}` : "Action items";
+}
+
+export function recordingsActionsHead(mode: SessionMode): string {
+  return mode === "memory" ? "Open threads & moments" : "Action items";
+}
+
+export function recordingsActionsEmpty(mode: SessionMode): string {
+  return mode === "memory"
+    ? "No open threads were drawn out loud in this one."
+    : "Nothing was committed to out loud in this one.";
+}
+
+export function recordingsActionsFoot(mode: SessionMode): string {
+  return mode === "memory"
+    ? "These also feed the Memory package — rebuild it from the Memory panel when you want chapters and quotes shaped."
+    : "These are also on your host page under “Still open”, where you can tick them off. Anything you don't tick comes back on Monday.";
+}
+
+export function recordingsAskHead(mode: SessionMode): string {
+  return mode === "memory" ? "Ask this session" : "Ask this meeting";
+}
+
+export function recordingsAskOpeners(mode: SessionMode): string[] {
+  if (mode === "memory") {
+    return [
+      "What turning points came up?",
+      "Which lines are worth quoting?",
+      "Who else belongs in this story?",
+      "What still wants telling?",
+    ];
+  }
+  return [
+    "What did we decide?",
+    "Did anyone commit to a date?",
+    "What was left unresolved?",
+    "What are the risks we named?",
+  ];
+}
+
+export function recordingsSummaryDecisionsHead(mode: SessionMode): string {
+  return mode === "memory" ? "Turning points & direction" : "Decisions and direction";
+}
+
+export function recordingsSummaryFollowupsHead(mode: SessionMode): string {
+  return mode === "memory" ? "Open threads / next chapters" : "Follow-up / next steps";
+}
+
+export function recordingsSummaryTopicsHead(mode: SessionMode): string {
+  return mode === "memory" ? "What was told" : "What was discussed";
+}
+
+// ── Host PRD / Memory surface (dropdown + CTA) ────────────────────────────
+
+export function hostSurfaceTitle(mode: SessionMode): string {
+  return mode === "memory" ? "Memory from your sessions" : "PRD from your meetings";
+}
+
+export function hostBuildCta(mode: SessionMode, opts?: { busy?: boolean; hasData?: boolean }): string {
+  if (opts?.busy) {
+    return mode === "memory" ? "Building…" : "Reading…";
+  }
+  if (mode === "memory") {
+    return opts?.hasData ? "Rebuild Memory" : "Build Memory";
+  }
+  return opts?.hasData ? "Rebuild" : "Build the PRD";
+}
+
+export function hostBriefLabel(mode: SessionMode): string {
+  return mode === "memory" ? "What this story is about" : "What we're building";
+}
+
+export function hostBriefHint(mode: SessionMode): string {
+  return mode === "memory"
+    ? "TWO OR THREE SENTENCES, WRITTEN ONCE. IT FRAMES THE ORAL-HISTORIAN AGENT — CHAPTERS, PEOPLE, TURNING POINTS — FROM THE FIRST MEMORY SESSION."
+    : "TWO OR THREE SENTENCES, WRITTEN ONCE. IT DECIDES WHICH RUBRIC THIS PROJECT IS SCORED ON AND GIVES THE IN-MEETING AGENT SOMETHING TO ASK ABOUT FROM THE VERY FIRST MEETING.";
+}
+
+export function hostBriefPlaceholder(mode: SessionMode): string {
+  return mode === "memory"
+    ? "A life-journey book for my kids — the kitchen years, the move, and the hard-won lessons I want them to keep."
+    : "A tool for the finance team that turns a photo of a receipt into a filed expense, so nobody keeps paper. Web first.";
+}
+
+export function hostEmptyProjectsHint(mode: SessionMode): string {
+  return mode === "memory"
+    ? "Put a project name in the Project box when you start a Memory session. Every recorded Memory session on the same project is read together into the story package."
+    : "Put a project name in the Project box when you start a meeting. Every recorded meeting on the same project is read together, and the PRD builds from all of them.";
+}
+
+export function hostMemoryRedirectNote(project: string): string {
+  const name = String(project || "this project").trim() || "this project";
+  return `${name} is tagged Memory. Use Build Memory below (or the Memory package panel) — story chapters, quotes, and open threads, not a PRD rubric.`;
+}
