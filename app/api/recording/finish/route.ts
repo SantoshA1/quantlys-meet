@@ -177,6 +177,12 @@ export async function POST(req: Request) {
     body = {};
   }
   const room = String(body.room || "").trim();
+  const sessionMode = acceptSessionMode(body?.sessionMode);
+  const memory = sessionMode === "memory";
+  const notesStep = memory ? "Write the story notes" : "Write the summary and action items";
+  const itemsStep = memory ? "Capture open threads" : "Track the action items";
+  const actionNoun = memory ? "open thread" : "action item";
+  const decisionNoun = memory ? "turning point" : "decision";
   const videoPath = String(body.videoPath || "").trim();
   const audioPath = body.audioPath ? String(body.audioPath) : "";
   const duration_s = durationSecondsFromSummary(body);
@@ -291,10 +297,10 @@ export async function POST(req: Request) {
       const changed = JSON.stringify([notes.overview, notes.topics, notes.actions, notes.decisions]) !== before;
       if (heard) {
         const why = changed ? null : await checkNotes();
-        say("notes", "Write the summary and action items", true,
+        say("notes", notesStep, true,
             changed
-              ? `A model wrote these notes — ${notes.topics.length} topic(s), ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`
-              : `${why?.detail || "Written by reading the transcript directly."} Found ${notes.actions.length} action item(s), ${notes.decisions.length} decision(s).`);
+              ? `A model wrote these notes — ${notes.topics.length} topic(s), ${notes.actions.length} ${actionNoun}(s), ${notes.decisions.length} ${decisionNoun}(s).`
+              : `${why?.detail || "Written by reading the transcript directly."} Found ${notes.actions.length} ${actionNoun}(s), ${notes.decisions.length} ${decisionNoun}(s).`);
       }
     }
   } catch (e: any) {
@@ -350,21 +356,20 @@ export async function POST(req: Request) {
     const before = JSON.stringify([notes.overview, notes.topics, notes.actions]);
     notes = await refine(notes.transcript, notes, String(body.title || ""), people);
     const changed = JSON.stringify([notes.overview, notes.topics, notes.actions]) !== before;
-    say("notes", "Write the summary and action items", true,
+    say("notes", notesStep, true,
         changed
           ? `Written from the live captions — ${notes.topics.length} topic(s), ${notes.actions.length} action item(s).`
           : "Written from the live captions by reading them directly.");
   }
 
   if (!steps.some((s) => s.key === "notes")) {
-    say("notes", "Write the summary and action items", false,
+    say("notes", notesStep, false,
         heard
           ? "No notes were produced."
-          : "There was no transcript to write notes from, and captions weren't on during the meeting — turn them on next time and the notes can be written from those even when transcription fails.");
+          : `There was no transcript to write notes from, and captions weren't on during the ${memory ? "session" : "meeting"} — turn them on next time and the notes can be written from those even when transcription fails.`);
   }
 
   const summaryPath = videoPath.replace(/\.[a-z0-9]+$/i, "") + SUMMARY_SUFFIX;
-  const sessionMode = acceptSessionMode(body?.sessionMode);
 
   // 2026-08-24 — the project tag rides WITH the summary now.
   //
@@ -448,10 +453,16 @@ export async function POST(req: Request) {
   }
 
   // ---- The commitments become ROWS -----------------------------------------
-  // This is the line between "a pile of notes" and "a thing that tracks work".
+  // Memory keeps open threads in the story package; only Meeting commitments
+  // become rows in the cross-session action queue.
   // A sentence inside a summary file cannot be ticked off, cannot be counted,
   // and cannot come back next Monday still open. A row can.
-  try {
+  if (memory) {
+    say("items", itemsStep, true,
+        notes.actions.length
+          ? `Kept ${notes.actions.length} ${actionNoun}${notes.actions.length === 1 ? "" : "s"} in the Memory package; nothing was added to the action queue.`
+          : "No open threads were added to the action queue.");
+  } else try {
     const meeting = meetingRow;   // looked up above, where the summary needed it
     // Prefer the model's cleaned-up actions when it produced them (they read
     // as tasks, not as speech) but keep the raw marks for the timestamps.
@@ -480,16 +491,16 @@ export async function POST(req: Request) {
       const { error } = await sb
         .from("action_items")
         .upsert(rows, { onConflict: "user_id,room_name,fingerprint", ignoreDuplicates: true });
-      say("items", "Track the action items", !error,
+      say("items", itemsStep, !error,
           error
             ? `Couldn't save the action items: ${error.message}. Has the action_items table been created?`
             : `Saved ${rows.length} action item(s) — they'll appear in your weekly digest until you tick them off.`);
     } else if (heard) {
-      say("items", "Track the action items", true,
+      say("items", itemsStep, true,
           "Nobody committed to anything in this one — nothing to track.");
     }
   } catch (e: any) {
-    say("items", "Track the action items", false,
+    say("items", itemsStep, false,
         `Couldn't save the action items: ${e?.message || e}`);
   }
 
@@ -514,19 +525,19 @@ export async function POST(req: Request) {
     );
     emailed = ok ? user.email || "" : false;
     if (ok) {
-      say("email", "Email you the notes and a link", true, `Sent to ${user.email}.`);
+      say("email", memory ? "Email you the story notes and a link" : "Email you the notes and a link", true, `Sent to ${user.email}.`);
     } else {
       // "It didn't send" is not an answer. Find out which kind of not-sending
       // this was, and say that instead.
       const why = await checkEmail();
-      say("email", "Email you the notes and a link", false,
+      say("email", memory ? "Email you the story notes and a link" : "Email you the notes and a link", false,
           why.ok
             ? "Resend accepted the key but refused this message. The most common cause is a From address on a domain Resend hasn't verified."
             : why.detail);
     }
   } catch (e: any) {
     emailed = false;
-    say("email", "Email you the notes and a link", false,
+    say("email", memory ? "Email you the story notes and a link" : "Email you the notes and a link", false,
         `The email step stopped with an error: ${e?.message || e}. Your notes are still on the host page.`);
   }
 
@@ -545,7 +556,7 @@ export async function POST(req: Request) {
   // If End already ran while this summary was still writing, the spec mail
   // waited. This is that second chance. Delete never calls this.
   try {
-    if (meetingRow?.id && meetingRow?.ended_at) {
+    if (!memory && meetingRow?.id && meetingRow?.ended_at) {
       await sendSpecIfDue(sb, meetingRow.id, appUrl(req));
     }
   } catch (e: any) {
