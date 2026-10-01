@@ -92,6 +92,9 @@ export default function Prd({ projects }: { projects: string[] }) {
   const loadSaved = useCallback(async (p: string) => {
     if (!p) return;
     setData(null); setNote(""); setShareUrl("");
+    // A project tagged `memory` belongs to the Memory panel below. Do not
+    // fetch a stale PRD for it, or a writer can see the wrong artifact again.
+    if (isMemoryProjectTag(p)) return;
     try {
       const t = await token();
       if (!t) return;
@@ -104,6 +107,8 @@ export default function Prd({ projects }: { projects: string[] }) {
   const loadContext = useCallback(async (p: string) => {
     if (!p) return;
     setBrief(""); setBriefSaved(""); setDecisions([]); setEditBrief(false); setCustom({});
+    // Memory framing is owned by Memory.tsx, not the PRD context endpoint.
+    if (isMemoryProjectTag(p)) return;
     try {
       const t = await token();
       if (!t) return;
@@ -309,7 +314,7 @@ export default function Prd({ projects }: { projects: string[] }) {
       {/* THE PROJECT'S OWN WORDS. Without this the app knows a project NAME
           and nothing else, so the first meeting's questions are the generic
           ones for each dimension — a checklist, not an assistant. */}
-      {project ? (
+      {project && !memoryTag ? (
         <div className="qp-brief">
           {briefSaved && !editBrief ? (
             <>
@@ -346,7 +351,7 @@ export default function Prd({ projects }: { projects: string[] }) {
         </div>
       ) : null}
 
-      {data ? (
+      {data && !memoryTag ? (
         <>
           <div className="qp-score">
             <div className="qp-meter" aria-hidden>

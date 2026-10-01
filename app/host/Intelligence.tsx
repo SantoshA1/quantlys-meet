@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { bars, balance, markers, hms, type Utt, type Marker } from "@/lib/intelligence";
+import { resolveSessionMode } from "@/lib/session-ui";
 
 let _db: SupabaseClient | null = null;
 function db(): SupabaseClient {
@@ -44,6 +45,7 @@ type Summary = {
   people?: string[];
   transcript?: string;
   summary?: string;
+  sessionMode?: string;
   createdAt?: string;
   videoPath?: string;
 };
@@ -127,6 +129,7 @@ export default function Intelligence({
     );
   }
 
+  const memory = resolveSessionMode(sum.sessionMode) === "memory";
   const utts: Utt[] = Array.isArray(sum.utterances) ? sum.utterances : [];
   const strip = bars(utts, 28);
   const bal = balance(utts);
@@ -140,7 +143,9 @@ export default function Intelligence({
     const stemTime = Date.parse(when.replace(" · ", "T") + ":00Z");
     if (!Number.isFinite(stemTime)) return "";
     const mins = Math.round((Date.parse(sum.createdAt) - (stemTime + endSec * 1000)) / 60000);
-    return mins >= 0 && mins < 120 ? `READY ${mins} MIN AFTER THE MEETING ENDED` : "";
+    return mins >= 0 && mins < 120
+      ? `READY ${mins} MIN AFTER THE ${memory ? "SESSION" : "MEETING"} ENDED`
+      : "";
   })();
 
   // WHO OWES WHAT: the open rows for THIS meeting are tickable; anything the
@@ -149,6 +154,9 @@ export default function Intelligence({
   const roomOpen = openItems.filter((it) => it.room_name === sum.room);
   const openTexts = new Set(roomOpen.map((r) => r.text));
   const extraActions = (sum.actions || []).filter((a) => !openTexts.has(a)).slice(0, 5);
+  // Memory sessions are not an action-item queue. Keep their open threads
+  // readable, but never turn them into meeting commitments with checkboxes.
+  const memoryThreads = memory ? (sum.actions || []).slice(0, 5) : [];
 
   async function shareNotes() {
     try {
@@ -161,7 +169,7 @@ export default function Intelligence({
   return (
     <section className="qh-panel">
       <div className="qh-panelhead">
-        <span className="qh-eyebrow">MEETING INTELLIGENCE</span>
+        <span className="qh-eyebrow">{memory ? "MEMORY INTELLIGENCE" : "MEETING INTELLIGENCE"}</span>
         {readyAfter ? <span className="qh-ready"><span className="q-dot q-beat" /> {readyAfter}</span> : null}
         <span className="qh-spacer" />
         {sum.transcript ? (
@@ -170,13 +178,13 @@ export default function Intelligence({
           </button>
         ) : null}
         {(sum.summary || sum.summaryText) ? (
-          <button className="qh-ghost" onClick={shareNotes}>{shared ? "COPIED" : "SHARE NOTES"}</button>
+          <button className="qh-ghost" onClick={shareNotes}>{shared ? "COPIED" : memory ? "SHARE STORY" : "SHARE NOTES"}</button>
         ) : null}
       </div>
 
       <div className="qh-introw">
         <div>
-          <h2 className="qh-mtitle">{sum.title || "Your last meeting"}</h2>
+          <h2 className="qh-mtitle">{sum.title || (memory ? "Your last session" : "Your last meeting")}</h2>
           <p className="qh-msub">
             {when.toUpperCase()}
             {endSec ? <> <span className="qh-sep">│</span> {hms(endSec)} RUNTIME</> : null}
@@ -184,8 +192,8 @@ export default function Intelligence({
           </p>
         </div>
         <div className="qh-stats">
-          <div className="qh-stat"><i>DECISIONS</i><b>{(sum.decisions || []).length}</b></div>
-          <div className="qh-stat"><i>ACTIONS</i><b>{(sum.actions || []).length}</b></div>
+          <div className="qh-stat"><i>{memory ? "TURNING POINTS" : "DECISIONS"}</i><b>{(sum.decisions || []).length}</b></div>
+          <div className="qh-stat"><i>{memory ? "MOMENTS" : "ACTIONS"}</i><b>{(sum.actions || []).length}</b></div>
           {bal !== null ? (
             <div className="qh-stat" title="How evenly the room talked: (1 − loudest share) ÷ (1 − 1/speakers). 1 is perfectly shared, 0 is a monologue.">
               <i>TALK BALANCE</i><b>{bal.toFixed(2)}</b>
@@ -215,31 +223,31 @@ export default function Intelligence({
 
       <div className="qh-cols">
         <div>
-          <p className="qh-label">WHAT HAPPENED</p>
+          <p className="qh-label">{memory ? "THE STORY SO FAR" : "WHAT HAPPENED"}</p>
           {sum.summaryText ? (
             <p className="qh-body">{sum.summaryText}</p>
           ) : (
-            <p className="qh-dim">The notes for this meeting carry no overview.</p>
+            <p className="qh-dim">The notes for this {memory ? "session" : "meeting"} carry no overview.</p>
           )}
           {(sum.decisions || []).slice(0, 4).map((d, i) => {
             const at = marks.find((m) => m.kind === "decision" && d.toUpperCase().includes(m.label.split(" ")[0] || "§"));
             return (
               <div className="qh-decision" key={i}>
                 {at ? <span className="qh-at">{hms(at.at)}</span> : null}
-                <span>{d.replace(/^[^—]*—\s*/, "")} <em>— decided</em></span>
+                <span>{d.replace(/^[^—]*—\s*/, "")} <em>— {memory ? "turning point" : "decided"}</em></span>
               </div>
             );
           })}
         </div>
         <div>
           <p className="qh-label">
-            WHO OWES WHAT{" "}
+            {memory ? "OPEN THREADS" : "WHO OWES WHAT"}{" "}
             {(sum.actions || []).length ? <em className="qh-count">{(sum.actions || []).length} EXTRACTED</em> : null}
           </p>
-          {roomOpen.length === 0 && extraActions.length === 0 ? (
-            <p className="qh-dim">No commitments were caught in this meeting.</p>
+          {((!memory && roomOpen.length === 0 && extraActions.length === 0) || (memory && memoryThreads.length === 0)) ? (
+            <p className="qh-dim">{memory ? "No open threads were drawn out in this session." : "No commitments were caught in this meeting."}</p>
           ) : null}
-          {roomOpen.map((it) => (
+          {!memory && roomOpen.map((it) => (
             <label className="qh-owe" key={it.id}>
               <input type="checkbox" onChange={() => onTick(it.id)} aria-label={`Mark done: ${it.text}`} />
               <span>
@@ -251,7 +259,12 @@ export default function Intelligence({
               </span>
             </label>
           ))}
-          {extraActions.map((a, i) => (
+          {memory ? memoryThreads.map((a, i) => (
+            <div className="qh-owe is-plain" key={`m${i}`}>
+              <span className="qh-tickmark">•</span>
+              <span><b>{a.replace(/^[^—]*—\s*/, "")}</b></span>
+            </div>
+          )) : extraActions.map((a, i) => (
             <div className="qh-owe is-plain" key={`x${i}`}>
               <span className="qh-tickmark">✓</span>
               <span><b>{a.replace(/^[^—]*—\s*/, "")}</b><em>{(a.match(/^([^—]*)—/) || [])[1]?.trim().toUpperCase() || ""}</em></span>
