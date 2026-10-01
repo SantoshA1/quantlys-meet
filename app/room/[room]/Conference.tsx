@@ -1489,7 +1489,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
               className="qmr-ghost"
               onClick={startRecording}
               disabled={status?.kind === "busy"}
-              title="Records the meeting — no window picker"
+              title={sessionMode === "memory" ? "Records this session — no window picker" : "Records the meeting — no window picker"}
             >
               {status?.kind === "busy" ? "Saving…" : "Record"}
             </button>
@@ -1499,12 +1499,12 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
           <button
             className={`qmr-ghost${panel ? " qmr-on" : ""}`}
             onClick={() => setPanel((v) => !v)}
-            title="Mute or remove someone, or lock the meeting"
+            title={sessionMode === "memory" ? "Mute or remove someone, or lock the session" : "Mute or remove someone, or lock the meeting"}
           >
             Manage people
           </button>
         ) : null}
-        {isHost ? <SpecEmailChip room={room} onOpen={() => setPanel(true)} /> : null}
+        {isHost && sessionMode !== "memory" ? <SpecEmailChip room={room} onOpen={() => setPanel(true)} /> : null}
         <button
           className={`qmr-ghost${cc.on ? " qmr-on" : ""}`}
           onClick={cc.toggle}
@@ -1574,7 +1574,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
       {isHost && panel ? (
         <div className="qmr-panel">
           <div className="qmr-panel-head">
-            <strong>People in this meeting</strong>
+            <strong>People in this {sessionMode === "memory" ? "session" : "meeting"}</strong>
             <button
               className={`qmr-lock${locked ? " qmr-on" : ""}`}
               disabled={acting === "lock"}
@@ -1588,10 +1588,12 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
               title={
                 locked
                   ? "The link is closed — nobody new can join"
-                  : "Close the link so nobody new can join"
+                  : sessionMode === "memory"
+                    ? "Close the link so nobody new can join this session"
+                    : "Close the link so nobody new can join"
               }
             >
-              {locked ? "Locked — unlock" : "Lock the meeting"}
+              {locked ? "Locked — unlock" : sessionMode === "memory" ? "Lock the session" : "Lock the meeting"}
             </button>
           </div>
 
@@ -1706,7 +1708,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
                       setStatus(
                         out?.error
                           ? { kind: "err", text: out.error }
-                          : { kind: "ok", text: `Removed ${p.name || "them"} from the meeting.` }
+                          : { kind: "ok", text: `Removed ${p.name || "them"} from the ${sessionMode === "memory" ? "session" : "meeting"}.` }
                       );
                       setActing("");
                     }}
@@ -1720,10 +1722,10 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
           <p className="qmr-fine">
             Muting stops them being heard now; it does not stop them unmuting
             again. Removing ends their connection — the same link would let
-            them back in unless you also lock the meeting.
+            them back in unless you also lock the {sessionMode === "memory" ? "session" : "meeting"}.
           </p>
 
-          <SpecEmailHost room={room} accountEmail={accountEmail} />
+          {sessionMode !== "memory" ? <SpecEmailHost room={room} accountEmail={accountEmail} /> : null}
 
           {/* FIELD: End is session-over; Delete on the host console is the
               permanent action; recording is flushed first so it is not discarded. */}
@@ -1732,7 +1734,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
               <>
                 <span className="qmr-fine" style={{ margin: 0 }}>
                   Everyone is dropped from this session. The recording is saved first.
-                  The meeting stays — same link, they can come back.
+                  The {sessionMode === "memory" ? "session" : "meeting"} stays — same link, they can come back.
                 </span>
                 <button
                   className="qmr-endbtn"
@@ -1787,7 +1789,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false }
       ) : null}
 
       <CaptionBar cc={cc} open={ccOpen} onOpen={() => setCcOpen((o) => !o)} />
-      {!isHost ? (
+      {!isHost && sessionMode !== "memory" ? (
         <SpecEmailGuest
           room={room}
           name={meName}
