@@ -16,14 +16,14 @@
 // is a paste, and the app says so rather than pretending.
 
 import { createClient } from "@supabase/supabase-js";
-import { chooseModel } from "@/lib/model";
+import { chooseModel, modelLikelyVision } from "@/lib/model";
 import {
   detectModeFor, rubricFor, metaFor, prdPrompt, prdSystemPrompt, extractJson,
   normalizeReport, fallbackReport, stitchTranscripts, handoffPlan, prdMarkdown,
   prdFilename, prdPath, answeredKeys, type MeetingSource,
 } from "@/lib/prd";
 import { readContext } from "../project/route";
-import { describeWorkflow, toMermaid, type Workflow } from "@/lib/workflow";
+import { describeWorkflow, toMermaid, whiteboardNotes, type Workflow } from "@/lib/workflow";
 import {
   myRooms, roomsForProject, resolveProject, roomFromPath, mayReadRecording, type MeetingRow,
 } from "@/lib/scope";
@@ -140,7 +140,12 @@ export async function POST(req: Request) {
   }
 
   // ── read them ───────────────────────────────────────────────────────────
-  const all: Array<MeetingSource & { path: string; project: string; tagFrom?: string; workflow?: Workflow | null }> = [];
+  const all: Array<MeetingSource & {
+    path: string; project: string; tagFrom?: string;
+    workflow?: Workflow | null;
+    strokes?: any[] | null;
+    boardSnapshotPath?: string | null;
+  }> = [];
   for (const p of paths) {
     try {
       const { data } = await sb.storage.from("recordings").download(p);
@@ -160,6 +165,8 @@ export async function POST(req: Request) {
         at: String(j?.at || j?.finishedAt || "").trim() || p.split("/").pop()?.slice(0, 10) || "",
         transcript: String(j?.transcript || "").trim(),
         workflow: (j?.workflow && typeof j.workflow === "object") ? (j.workflow as Workflow) : null,
+        strokes: Array.isArray(j?.strokes) ? j.strokes : null,
+        boardSnapshotPath: typeof j?.boardSnapshotPath === "string" ? j.boardSnapshotPath : null,
       });
     } catch { /* one unreadable summary must not cost the whole project */ }
   }
@@ -219,6 +226,14 @@ export async function POST(req: Request) {
   // same as the transcripts — a team that redraws the diagram has changed
   // its mind about the diagram.
   const drawn = [...newest].reverse().find((m: any) => m?.workflow?.found)?.workflow as Workflow | undefined;
+  // Prefer a meeting that has a board snapshot or raw strokes even when the
+  // strict 2-box+arrow grammar did not fire — multimodal / notes still apply.
+  const boardSrc = [...newest].reverse().find((m: any) =>
+    m?.boardSnapshotPath || (Array.isArray(m?.strokes) && m.strokes.length) || m?.workflow?.found
+  ) as any;
+  const boardStrokeNotes = Array.isArray(boardSrc?.strokes) && boardSrc.strokes.length
+    ? whiteboardNotes(boardSrc.strokes)
+    : "";
   // What the team wrote down about this project — the brief, and any question
   // they answered in the console between meetings. Both are deliberate
   // statements, so both outrank anything inferred from a transcript, and the
@@ -242,7 +257,57 @@ export async function POST(req: Request) {
   const chosen = await chooseModel({ openrouter, key, wanted: process.env.NOTES_MODEL });
 
   let report;
+  let visionUsed = false;
+  let visionNote = "";
   try {
+    // Optional board snapshot for multimodal PRD. Preferred models (Claude /
+    // GPT-4o / Gemini) accept image_url parts; when the chosen model does not,
+    // we still send richer stroke notes as text.
+    let boardImageDataUrl: string | null = null;
+    const snapPath = typeof boardSrc?.boardSnapshotPath === "string" ? boardSrc.boardSnapshotPath : "";
+    if (snapPath && modelLikelyVision(chosen.id)) {
+      try {
+        const { data: img } = await sb.storage.from("recordings").download(snapPath);
+        if (img) {
+          const buf = Buffer.from(await img.arrayBuffer());
+          if (buf.length > 64 && buf.length < 4_500_000) {
+            boardImageDataUrl = `data:image/jpeg;base64,${buf.toString("base64")}`;
+          }
+        }
+      } catch { /* vision is optional */ }
+    }
+
+    const boardTextParts: string[] = [];
+    if (drawn) boardTextParts.push(describeWorkflow(drawn));
+    if (boardStrokeNotes) {
+      boardTextParts.push("---\n\n## Whiteboard notes\n\n" + boardStrokeNotes);
+    }
+    if (boardImageDataUrl) {
+      boardTextParts.push(
+        "A JPEG snapshot of the whiteboard is attached. Read what was drawn " +
+        "(shapes, labels, sticky notes, freehand). Prefer the image over " +
+        "guessing; do not invent steps that are not visible."
+      );
+    }
+    const userText = boardTextParts.length
+      ? `${prdPrompt(stitched.text, dims, meta, ctx)}\n\n---\n\n${boardTextParts.join("\n\n")}`
+      : prdPrompt(stitched.text, dims, meta, ctx);
+
+    const userContent: any = boardImageDataUrl
+      ? [
+          { type: "text", text: userText },
+          { type: "image_url", image_url: { url: boardImageDataUrl } },
+        ]
+      : userText;
+    visionUsed = Boolean(boardImageDataUrl);
+    visionNote = boardImageDataUrl
+      ? "Whiteboard snapshot sent to a vision-capable model."
+      : (snapPath && !modelLikelyVision(chosen.id)
+          ? `Board snapshot saved but model ${chosen.id} is not treated as vision-capable — used stroke/workflow text only.`
+          : (boardStrokeNotes && !drawn
+              ? "No formal workflow; PRD used whiteboard stroke notes."
+              : ""));
+
     const r = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -252,12 +317,7 @@ export async function POST(req: Request) {
         max_tokens: 8000,         // a real PRD plus eight assessments
         messages: [
           { role: "system", content: prdSystemPrompt(meta.artifact, meta.gate) },
-          {
-            role: "user",
-            content: drawn
-              ? `${prdPrompt(stitched.text, dims, meta, ctx)}\n\n---\n\n${describeWorkflow(drawn)}`
-              : prdPrompt(stitched.text, dims, meta, ctx),
-          },
+          { role: "user", content: userContent },
         ],
       }),
     });
@@ -291,13 +351,20 @@ export async function POST(req: Request) {
     // The diagram travels WITH the document. A PRD that describes a flow in
     // prose while the picture of it sits in a recording nobody opens is a PRD
     // that lost the clearest thing the meeting produced.
-    markdown: drawn
-      ? `${prdMarkdown(report, project, newest)}\n\n---\n\n## The workflow the team drew\n\n\`\`\`mermaid\n${toMermaid(drawn, project)}\n\`\`\`\n`
-      : prdMarkdown(report, project, newest),
+    markdown: (() => {
+      let md = prdMarkdown(report, project, newest);
+      if (drawn) {
+        md += `\n\n---\n\n## The workflow the team drew\n\n\`\`\`mermaid\n${toMermaid(drawn, project)}\n\`\`\`\n`;
+      } else if (boardStrokeNotes) {
+        md += `\n\n---\n\n## Whiteboard notes\n\n${boardStrokeNotes}\n`;
+      }
+      return md;
+    })(),
     workflow: drawn || null,
+    board_vision: visionUsed,
     filename: prdFilename(project, report.artifact),
     handoff: handoffPlan(report, project),
-    model_note: chosen.exact ? "" : chosen.why,
+    model_note: [chosen.exact ? "" : chosen.why, visionNote].filter(Boolean).join(" "),
     at: new Date().toISOString(),
   };
 

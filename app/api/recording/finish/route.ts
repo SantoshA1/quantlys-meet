@@ -414,6 +414,17 @@ export async function POST(req: Request) {
     // usually the clearest statement of the user journey anybody makes, and
     // it never reaches the transcript because nobody reads a picture aloud.
     workflow: (body.workflow && typeof body.workflow === "object") ? body.workflow : null,
+    // Raw strokes stay with the summary — converting to a workflow must not
+    // drop what was drawn. Sidecar `${stem}.board.json` may also exist.
+    strokes: Array.isArray(body.strokes) ? body.strokes.slice(0, 400) : null,
+    // JPEG snapshot of the board in the recordings bucket (same stem as the
+    // video, suffix `.board.jpg`). Used for multimodal PRD when a vision
+    // model is available.
+    boardSnapshotPath: typeof body.boardSnapshotPath === "string"
+      && body.boardSnapshotPath.startsWith(`${user.id}/`)
+      && body.boardSnapshotPath.endsWith(".board.jpg")
+        ? body.boardSnapshotPath
+        : null,
     people: Array.isArray(body.people) ? body.people.map(String).slice(0, 40) : [],
     // On-screen elapsed seconds from the recorder. Meeting history reads this
     // so length is not always blank. Null if the client omitted it.
