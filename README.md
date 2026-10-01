@@ -49,3 +49,14 @@ When a meeting was drawn on, stopping the recording also uploads (same stem as t
 - `*.board.json` — raw stroke JSON (kept even after workflow conversion)
 
 The meeting summary (`.summary.json`) also stores `strokes`, `workflow`, and `boardSnapshotPath`.
+
+## Memory chapters & clips (writers / podcasters)
+
+Memory mode projects treat each Memory-tagged recording as a **chapter/episode**. On `/host` → Memory:
+
+1. Reorder chapters (Move up / Move down) — saved beside the Memory package.
+2. Build the **whole show/book** or **one chapter**.
+3. **Download clips** / **Per-chapter audio** — full episode audio (original m4a/webm) plus WAV cuts for package chapter `at` cues and notable quotes when transcript timestamps exist.
+
+V1 limits: without `mm:ss` chapter cues or timed utterances, quote/chapter cuts are listed but not downloadable; use full episode audio instead. Public share remains `/memory/{id}`.
+
