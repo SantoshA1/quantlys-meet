@@ -1,5 +1,6 @@
 # Quantlys Meeting
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/SantoshA1/quantlys-meet)
 
 Browser video meetings that write a markdown PRD from the recorded session. Guests join from a link; only the host signs in. **Plug your own keys** (LiveKit, Deepgram, Supabase, object storage, OpenAI/OpenRouter, Resend) and run a self-hosted / white-label stack.
@@ -103,7 +104,7 @@ Any host that can run `next build && next start` works; Vercel is the path this 
 
 ## License
 
-**Gap:** this repository does not yet include a `LICENSE` file. Before making the GitHub repo public, add an OSI license (common choices for this stack: **MIT** or **Apache-2.0**). This note is not legal advice — pick and commit the license text yourself.
+[MIT](LICENSE) — Copyright (c) 2026 Santosh Adari.
 
 MODNet webcam weights under `public/models/` are Apache-2.0 (upstream); see that folder’s README.
 

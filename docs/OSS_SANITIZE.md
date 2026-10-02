@@ -13,7 +13,7 @@ Use this the day you flip GitHub visibility. Check every box.
 ## Repo hygiene
 
 - [ ] `.gitignore` covers `.env*`, `node_modules/`, `.vercel`, `*.pem`, `public/ort/`, extra ONNX weights
-- [ ] `LICENSE` file added (**MIT** or **Apache-2.0** recommended — pick one; not legal advice)
+- [x] `LICENSE` file added (MIT — Copyright (c) 2026 Santosh Adari)
 - [ ] README Deploy button URL matches the public repo path
 - [ ] Remove or keep intentionally: `public/googled*.html`, IndexNow/`f080*.txt` (domain verification for hosted product — fine if you still operate that domain)
 - [ ] `package.json` `"private": true` is OK (blocks npm publish); GitHub visibility is separate
@@ -29,14 +29,13 @@ Use this the day you flip GitHub visibility. Check every box.
 - [ ] `.env.example` lists every key builders need (no real values)
 - [ ] README + `docs/SELF_HOST.md` match current routes (no stale `/api/livekit/webhook` unless you add that route)
 - [ ] `CONTRIBUTING.md` present
-- [ ] Optional README badges: license, deploy, Node version
+- [ ] Optional README badges: license shield, deploy, Node version
 - [ ] Optional: GitHub Discussions / Issues templates
 
 ## Go-public sequence
 
-1. Merge OSS docs PR to `main`
-2. Add `LICENSE`
-3. Final secret scan on `main`
-4. Settings → Change repository visibility → **Public**
-5. Tag a release (e.g. `v1.0.0-oss`) with the GH release blurb in `docs/ANNOUNCE_DRAFT.md`
-6. Post X thread from that draft (do not reuse production secrets in screenshots)
+1. Merge OSS docs PR to `main` (LICENSE included)
+2. Final secret scan on `main`
+3. Settings → Change repository visibility → **Public**
+4. Tag a release (e.g. `v1.0.0-oss`) with the GH release blurb in `docs/ANNOUNCE_DRAFT.md`
+5. Post X thread from that draft (do not reuse production secrets in screenshots)
