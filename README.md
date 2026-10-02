@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/SantoshA1/quantlys-meet)
 
-Browser video meetings that write a markdown PRD from the recorded session. Guests join from a link; only the host signs in. **Plug your own keys** (LiveKit, Deepgram, Supabase, object storage, OpenAI/OpenRouter, Resend) and run a self-hosted / white-label stack.
+Browser video meetings that write a markdown **PRD** from the recorded session — plus **Memory mode** for podcasts (chapters/clips), books, and oral history / legacy stories. Guests join from a link; only the host signs in. **Plug your own keys** (LiveKit, Deepgram, Supabase, object storage, OpenAI/OpenRouter, Resend) and run a self-hosted / white-label stack.
 
-Live product: [quantlys-meeting.com](https://quantlys-meeting.com)
+Live product: [quantlys-meeting.com](https://quantlys-meeting.com) · Announce drafts (human paste only): [`docs/ANNOUNCE_DRAFT.md`](docs/ANNOUNCE_DRAFT.md)
 
 ## About Quantlys
 
