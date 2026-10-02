@@ -5,7 +5,22 @@
 
 Browser video meetings that write a markdown PRD from the recorded session. Guests join from a link; only the host signs in. **Plug your own keys** (LiveKit, Deepgram, Supabase, object storage, OpenAI/OpenRouter, Resend) and run a self-hosted / white-label stack.
 
-Built with [Quantlys](https://www.quantlys.ai). Quantlys Meeting dogfoods Quantlys — this repo is the meeting product, not the full Quantlys platform.
+Live product: [quantlys-meeting.com](https://quantlys-meeting.com)
+
+## About Quantlys
+
+**[Quantlys](https://www.quantlys.ai)** is an AI vertical platform. **Quantlys Meeting** is a dogfood product I built on that stack — a real meeting app we (Quantlys) use to exercise the platform (including Conclave-compatible PRD rubrics), then open-sourced so other companies can plug in their own keys and run their own video stack.
+
+This repository is the meeting product only. Quantlys Conclave and the rest of the platform stay closed; see [What is NOT included](#what-is-not-included).
+
+## Author
+
+I’m **Santosh Adari** — I built Quantlys Meeting as Quantlys dogfood / a side-project-shaped OSS release.
+
+- GitHub: [SantoshA1](https://github.com/SantoshA1)
+- LinkedIn: [santoshadari](https://www.linkedin.com/in/santoshadari/)
+- X: [@SantoshAdari1](https://x.com/SantoshAdari1)
+- Quantlys: [quantlys.ai](https://www.quantlys.ai)
 
 ## What you get
 

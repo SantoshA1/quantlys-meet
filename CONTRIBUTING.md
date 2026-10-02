@@ -2,6 +2,16 @@
 
 Thanks for helping improve Quantlys Meeting.
 
+## Maintainer
+
+**Santosh Adari** — Quantlys Meeting is my dogfood / OSS release for the Quantlys platform.
+
+- GitHub: [SantoshA1](https://github.com/SantoshA1)
+- LinkedIn: [santoshadari](https://www.linkedin.com/in/santoshadari/)
+- X: [@SantoshAdari1](https://x.com/SantoshAdari1)
+- Quantlys: [quantlys.ai](https://www.quantlys.ai)
+- Live product: [quantlys-meeting.com](https://quantlys-meeting.com)
+
 ## Ground rules
 
 - **No secrets** in PRs — use `.env.example` for new variables, never real keys.
