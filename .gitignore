@@ -54,3 +54,10 @@ _to_delete/
 # MODNet spike weights + optional vendored ORT wasm
 public/models/*.onnx
 public/ort/
+
+# OSS harden — keep operator secrets and local tooling out of commits
+.env.production
+.env.development
+credentials.json
+**/service-account*.json
+.secrets/

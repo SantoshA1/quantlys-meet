@@ -1,20 +1,18 @@
-# Phase 0 — run it yourself
+# Self-hosted LiveKit SFU (Phase 0)
 
-Everything below runs on one machine with no account anywhere. That is the
-point: if a customer can do this, "your own meetings server" is a true
-sentence, and the Conclave Meeting Pack has something real to sell.
+Run meetings against a `livekit-server` binary on your machine — no LiveKit Cloud account. The Next.js app needs **no code changes**; only environment variables.
 
-## What was proved, 2026-08-18
+Full white-label / data-plane notes: [`docs/SELF_HOST.md`](../docs/SELF_HOST.md).
+
+## What was proved (2026-08-18)
 
 | | |
 |---|---|
 | livekit-server | 1.9.12, one binary, `livekit.yaml`, keys generated locally |
-| App changes required | **none** — four environment variables |
-| Two browsers joined | yes, real Chromium, real WebRTC, real ICE |
-| Audio crossed the SFU | 298 packets, `totalAudioEnergy` **1.81**, played-out peak **1.10** |
-| Video crossed the SFU | 1280×720, **198** frames decoded, 860 KB |
+| App changes required | **none** — environment variables only |
+| Two browsers joined | yes — real Chromium, WebRTC, ICE |
+| Audio / video across SFU | yes (measured packet/frame counts in the original spike) |
 | Forged token | refused — `invalid token` |
-| Result | **24 / 24** |
 
 ## Reproduce
 
@@ -23,34 +21,28 @@ sentence, and the Conclave Meeting Pack has something real to sell.
 curl -sSL -o lk.tar.gz \
   https://github.com/livekit/livekit/releases/download/v1.9.12/livekit_1.9.12_linux_amd64.tar.gz
 tar xzf lk.tar.gz
-./livekit-server --config livekit.yaml          # keys are in the file; change them
+# Edit livekit.yaml — set your own API key + 44-char secret
+./livekit-server --config livekit.yaml
 
-# 2. the app, unchanged, pointed at it
-cd ../mp4test
-set -a && . ../phase0/.env.selfhost && set +a
-npx next dev -p 3100
+# 2. the app, pointed at it
+cd ..   # repo root
+cp selfhost/env.selfhost.example .env.local
+# Align LIVEKIT_* with livekit.yaml; add Supabase/Deepgram/model/S3 for full features
+npm install
+npm run dev
 
-# 3. the proof
-cd ../phase0
-npm i playwright
+# 3. optional proof (Playwright)
+cd selfhost
+npm i playwright   # if not already available
 node selfhost.test.mjs
 ```
 
-## What the single binary does NOT do — measured, not assumed
+Also see `railcheck.mjs` and `client.html` for low-level join checks.
 
-**Recording.** `StartRoomCompositeEgress` hangs for **22.7 seconds** and then
-returns `503 no response from servers`. Recording is a separate
-`livekit-egress` service; it needs Redis and somewhere to put the file. The
-app now says this in the pre-flight instead of letting a host discover it by
-pressing Record and waiting.
+## Limits of the single binary
 
-**Storage, mail, transcription, notes.** Waiting room, lock, meeting history
-and notes all need a database (Supabase or any Postgres); captions need
-Deepgram or the browser; notes need a model provider; invites need Resend.
-None of these are LiveKit's problem — they are the six ports the Meeting Pack
-is meant to define, and Phase 0 is what turned that from a guess into a list.
+**Recording.** `StartRoomCompositeEgress` without `livekit-egress` can hang ~20s then return `503 no response from servers`. Egress is a separate service (Redis + storage). The app surfaces this in pre-flight (`lib/hosting.ts`) instead of letting a host discover it by pressing Record.
 
-**Privacy is not automatic.** Self-hosting the SFU stops the *media* leaving.
-It does not stop the *words*: without a Deepgram key, live captions fall back
-to the browser's speech API, which in Chrome uploads audio to Google. The
-app now discloses this by name — see `dataLeaving()` in `lib/hosting.ts`.
+**Storage, mail, transcription, notes.** Waiting room, lock, history, and notes need a database (Supabase); captions need Deepgram or the browser; notes need a model provider; invites need Resend.
+
+**Privacy is not automatic.** Self-hosting the SFU stops *media* leaving via LiveKit Cloud. It does not stop *words*: without Deepgram, live captions may fall back to the browser speech API (Chrome can upload audio to Google). The app discloses destinations in `dataLeaving()`.

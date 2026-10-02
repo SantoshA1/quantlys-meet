@@ -125,12 +125,13 @@ export default function MeetingThatWritesPrdPage() {
         <h2>Honesty about where this is</h2>
         <p>
           Early product. Hosted at{" "}
-          <Link href="/">quantlys-meeting.com</Link>. Source is private until
-          there is a date and a license on the site — not a slogan. No
-          invented customer counts. See a labeled specimen (not a customer
-          recording) at <Link href="/example-prd">Example PRD</Link>, how notes
-          differ at <Link href="/notes-vs-prd">Notes vs a PRD</Link>, and how
-          to get a PRD from the room at{" "}
+          <Link href="/">quantlys-meeting.com</Link>. Source is open at{" "}
+          <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a> —
+          plug your keys and self-host. No invented customer counts. See a
+          labeled specimen (not a customer recording) at{" "}
+          <Link href="/example-prd">Example PRD</Link>, how notes differ at{" "}
+          <Link href="/notes-vs-prd">Notes vs a PRD</Link>, and how to get a
+          PRD from the room at{" "}
           <Link href="/prd-from-meeting">PRD from a meeting</Link>.
         </p>
 
