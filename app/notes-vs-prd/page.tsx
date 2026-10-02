@@ -156,7 +156,10 @@ export default function NotesVsPrdPage() {
           <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
           <Link href="/prd-from-meeting">PRD from meeting</Link>
           <Link href="/recap-vs-prd">Recap vs PRD</Link>
+          <Link href="/open-source-video-meeting">Open source</Link>
+          <Link href="/memory-mode">Memory</Link>
           <Link href="/privacy">Privacy</Link>
+          <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a>
         </span>
       </footer>
     </div>

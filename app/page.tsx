@@ -3,7 +3,7 @@ import HomeLanding from "./HomeLanding";
 
 const title = "Quantlys Meeting | Leave the call with a spec, not notes";
 const description =
-  "Video in a browser tab. Guests need a link, not an account. The session writes a PRD: user stories, acceptance criteria, decisions, and open questions.";
+  "Open-source browser video meetings. Guests need a link. Sessions write a markdown PRD — plus Memory mode for podcasts, books, and oral history. MIT, BYO keys.";
 
 export const metadata: Metadata = {
   title,
@@ -61,9 +61,11 @@ const jsonLd = {
       name: "Quantlys Meeting",
       url: "https://quantlys-meeting.com/",
       description:
-        "Quantlys Meeting is a browser video room whose recorded session writes a markdown PRD. It is not Quantalys, the fund-data company.",
+        "Open-source browser video room whose recorded session writes a markdown PRD, plus Memory mode for podcasts and oral history. Not Quantalys, the fund-data company.",
       applicationCategory: "CommunicationApplication",
       operatingSystem: "Web",
+      license: "https://github.com/SantoshA1/quantlys-meet/blob/main/LICENSE",
+      codeRepository: "https://github.com/SantoshA1/quantlys-meet",
       brand: { "@id": "https://www.quantlys.ai/#org" },
       offers: {
         "@type": "Offer",
@@ -97,6 +99,22 @@ const jsonLd = {
           acceptedAnswer: {
             "@type": "Answer",
             text: "Yes. Recorded sessions on a project roll into one markdown PRD: problem, user stories, acceptance criteria, decisions, and open questions. It is not a transcript or AI notes page.",
+          },
+        },
+        {
+          "@type": "Question",
+          name: "Is Quantlys Meeting open source?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "Yes. MIT-licensed at github.com/SantoshA1/quantlys-meet. Bring your own LiveKit, Deepgram, Supabase, OpenAI or OpenRouter, and S3 keys.",
+          },
+        },
+        {
+          "@type": "Question",
+          name: "What is Memory mode?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "A host-console surface for podcasts (chapters and clips), books, and oral history — separate from the product-review PRD path.",
           },
         },
       ],

@@ -1,12 +1,14 @@
 import type { MetadataRoute } from "next";
 
-const lastModified = new Date("2026-09-30");
+const lastModified = new Date("2026-10-02");
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [
     { url: "https://quantlys-meeting.com/", lastModified, changeFrequency: "weekly", priority: 1 },
     { url: "https://quantlys-meeting.com/meeting-that-writes-prd", lastModified, changeFrequency: "weekly", priority: 0.9 },
     { url: "https://quantlys-meeting.com/prd-from-meeting", lastModified, changeFrequency: "weekly", priority: 0.9 },
+    { url: "https://quantlys-meeting.com/open-source-video-meeting", lastModified, changeFrequency: "weekly", priority: 0.9 },
+    { url: "https://quantlys-meeting.com/memory-mode", lastModified, changeFrequency: "weekly", priority: 0.9 },
     { url: "https://quantlys-meeting.com/notes-vs-prd", lastModified, changeFrequency: "weekly", priority: 0.85 },
     { url: "https://quantlys-meeting.com/recap-vs-prd", lastModified, changeFrequency: "weekly", priority: 0.8 },
     { url: "https://quantlys-meeting.com/example-prd", lastModified, changeFrequency: "weekly", priority: 0.7 },
