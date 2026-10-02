@@ -156,7 +156,10 @@ export default function PrivacyPage() {
         <span>
           <Link href="/">Home</Link>
           <Link href="/host">Host</Link>
+          <Link href="/open-source-video-meeting">Open source</Link>
+          <Link href="/memory-mode">Memory</Link>
           <Link href="/privacy">Privacy</Link>
+          <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a>
         </span>
       </footer>
     </div>

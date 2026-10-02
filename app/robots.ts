@@ -6,8 +6,8 @@ import type { MetadataRoute } from "next";
  * Important: Google treats Disallow as a *prefix* match. A rule like
  * `Disallow: /meeting` also blocks `/meeting-that-writes-prd`, and
  * `Disallow: /prd` also blocks `/prd-from-meeting`. App consoles use
- * trailing-slash prefixes (`/meeting/`, `/prd/`) so SEO marketing
- * pages stay crawlable.
+ * trailing-slash prefixes (`/meeting/`, `/prd/`, `/memory/`) so SEO
+ * marketing pages stay crawlable.
  */
 export default function robots(): MetadataRoute.Robots {
   return {
@@ -20,6 +20,9 @@ export default function robots(): MetadataRoute.Robots {
         "/notes-vs-prd",
         "/example-prd",
         "/recap-vs-prd",
+        "/open-source-video-meeting",
+        "/memory-mode",
+        "/privacy",
       ],
       disallow: [
         "/host",
@@ -30,6 +33,7 @@ export default function robots(): MetadataRoute.Robots {
         "/auth",
         "/standup",
         "/prd/",
+        "/memory/",
       ],
     },
     sitemap: "https://quantlys-meeting.com/sitemap.xml",

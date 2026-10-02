@@ -74,8 +74,9 @@ export default function HomeLanding() {
       <nav className="qml-nav">
         <a href="#how">How it works</a>
         <a href="#prd">The spec</a>
+        <a href="#memory">Memory</a>
         <a href="#join">Join</a>
-        <a href="#own">Your cloud</a>
+        <a href="#own">Open source</a>
         <span className="qml-nav-spacer" />
         <Link className="qml-btn qml-btn-primary qml-nav-host" href="/host">
           Host a meeting
@@ -247,8 +248,26 @@ export default function HomeLanding() {
         </div>
       </section>
 
+      <section className="qml-block" id="memory">
+        <p className="qml-kicker">Second surface</p>
+        <h2>Memory mode for podcasts, books, and oral history.</h2>
+        <p className="qml-narrow">
+          Not every session is a product review. From the host console, launch
+          Memory — record with captions, group episodes, build chapters and
+          audio clips, or outline a story / manuscript from conversations.
+        </p>
+        <div className="qml-cta">
+          <Link className="qml-btn qml-btn-primary" href="/memory-mode">
+            How Memory mode works
+          </Link>
+          <Link className="qml-btn qml-btn-ghost" href="/host">
+            Open host console
+          </Link>
+        </div>
+      </section>
+
       <section className="qml-block" id="own">
-        <p className="qml-kicker">Second act</p>
+        <p className="qml-kicker">Open source · MIT</p>
         <h2>Use it on our cloud until you don’t trust us.</h2>
         <p className="qml-narrow">
           The long game is not another SaaS notetaker. It is a meeting you can
@@ -259,8 +278,16 @@ export default function HomeLanding() {
           <span>Hosted today. Yours when you want it.</span>
           Captions, recording, and the spec run on our cloud at
           quantlys-meeting.com. The same app runs with your LiveKit, Deepgram,
-          Supabase, and model keys. Source:{" "}
-          <a href="https://github.com/SantoshA1/quantlys-meet">github.com/SantoshA1/quantlys-meet</a>.
+          Supabase, OpenAI/OpenRouter, and S3 keys. Source:{" "}
+          <a href="https://github.com/SantoshA1/quantlys-meet">github.com/SantoshA1/quantlys-meet</a>
+          {" · "}
+          <a href="https://github.com/SantoshA1/quantlys-meet/releases/tag/v1.0.0-oss">
+            v1.0.0-oss
+          </a>
+          {" · "}
+          <Link href="/open-source-video-meeting">open-source video meeting</Link>
+          {" · dogfood for "}
+          <a href="https://www.quantlys.ai">quantlys.ai</a>.
         </p>
       </section>
 
@@ -344,6 +371,21 @@ export default function HomeLanding() {
           No. Quantlys Meeting is a spec-session video product at
           quantlys-meeting.com. Quantalys is an unrelated fund-data company.
         </p>
+        <h3>Is it open source?</h3>
+        <p>
+          Yes — MIT at{" "}
+          <a href="https://github.com/SantoshA1/quantlys-meet">
+            github.com/SantoshA1/quantlys-meet
+          </a>
+          . Bring your own LiveKit, Deepgram, Supabase, and model keys. Details:{" "}
+          <Link href="/open-source-video-meeting">open-source video meeting</Link>.
+        </p>
+        <h3>What is Memory mode?</h3>
+        <p>
+          A second host-console surface for podcasts (chapters/clips), books,
+          and oral history — not a product-review PRD.{" "}
+          <Link href="/memory-mode">Memory mode</Link>.
+        </p>
       </section>
 
       <footer className="qml-foot">
@@ -353,14 +395,19 @@ export default function HomeLanding() {
         </span>
         <span>
           <Link href="/host">Host</Link>
-          <a href="#own">Stack</a>
+          <a href="#own">Open source</a>
+          <Link href="/open-source-video-meeting">Self-host</Link>
+          <Link href="/memory-mode">Memory</Link>
           <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
           <Link href="/prd-from-meeting">PRD from meeting</Link>
           <Link href="/notes-vs-prd">Notes vs PRD</Link>
           <Link href="/recap-vs-prd">Recap vs a PRD</Link>
           <Link href="/example-prd">Example PRD</Link>
           <Link href="/privacy">Privacy</Link>
-          <a href="https://github.com/SantoshA1/quantlys-meet">Source on GitHub</a>
+          <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a>
+          <a href="https://github.com/SantoshA1/quantlys-meet/releases/tag/v1.0.0-oss">
+            v1.0.0-oss
+          </a>
         </span>
       </footer>
     </div>
