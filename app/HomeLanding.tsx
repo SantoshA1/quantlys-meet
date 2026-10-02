@@ -252,16 +252,15 @@ export default function HomeLanding() {
         <h2>Use it on our cloud until you don’t trust us.</h2>
         <p className="qml-narrow">
           The long game is not another SaaS notetaker. It is a meeting you can
-          run on your servers, with your models, with your data. Source is
-          private today. When we open it, this page will carry the date and the
-          license — not a slogan.
+          run on your servers, with your models, with your data. Source is open
+          on GitHub — clone it, plug your own keys, run your own stack.
         </p>
         <p className="qml-honest">
-          <span>Hosted today. Yours later.</span>
-          Captions, recording, and the spec all run on our cloud right now.
-          The path is to run the same meeting on your servers, with your
-          models, with your data. Source is private until we put a date and a
-          license on this page.
+          <span>Hosted today. Yours when you want it.</span>
+          Captions, recording, and the spec run on our cloud at
+          quantlys-meeting.com. The same app runs with your LiveKit, Deepgram,
+          Supabase, and model keys. Source:{" "}
+          <a href="https://github.com/SantoshA1/quantlys-meet">github.com/SantoshA1/quantlys-meet</a>.
         </p>
       </section>
 
@@ -361,7 +360,7 @@ export default function HomeLanding() {
           <Link href="/recap-vs-prd">Recap vs a PRD</Link>
           <Link href="/example-prd">Example PRD</Link>
           <Link href="/privacy">Privacy</Link>
-          <span>Source: private until dated</span>
+          <a href="https://github.com/SantoshA1/quantlys-meet">Source on GitHub</a>
         </span>
       </footer>
     </div>
