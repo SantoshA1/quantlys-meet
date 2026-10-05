@@ -60,3 +60,9 @@ Self-hosting the SFU keeps **media** off LiveKit Cloud. It does **not** automati
 ## Not in this repo
 
 Quantlys **Conclave** and other Quantlys platform services stay closed. PRDs from this app are markdown you can paste into Linear, GitHub, or Conclave by hand — there is no Conclave import API.
+
+## Recording size (1080p takes)
+
+The room records one continuous 1920×1080 / 30fps file in the host's browser (MP4 in Chrome/Edge/Safari — H.264 where the browser has an encoder, otherwise VP9-in-MP4 — and WebM in Firefox) at ~6 Mbps — roughly **2.7 GB per hour**. Takes larger than 6 MB upload to Supabase Storage with the resumable (TUS) protocol in 6 MB transport chunks; the stored object is still a single file.
+
+Raise **Supabase → Storage → Settings → Upload file size limit** (and any per-bucket limit on `recordings`) above your longest expected take. The Free plan caps files at 50 MB (≈1 minute of 1080p); when storage refuses a take, the room keeps it in the tab and shows **Download take** so nothing is lost.

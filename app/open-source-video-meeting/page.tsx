@@ -171,8 +171,10 @@ export default function OpenSourceVideoMeetingPage() {
           questions. See{" "}
           <Link href="/meeting-that-writes-prd">Meeting that writes a PRD</Link>{" "}
           and <Link href="/prd-from-meeting">PRD from a meeting</Link>. Memory
-          mode (podcasts with chapters/clips, books, oral history) is
-          documented at <Link href="/memory-mode">Memory mode</Link>.
+          mode (podcasts with chapters/clips, books, oral history — continuous
+          1080p MP4/WebM video, .vtt/.srt captions, m4a/WAV audio, and{" "}
+          <code>.md</code>) is documented at{" "}
+          <Link href="/memory-mode">Memory mode</Link>.
         </p>
 
         <h2>Who built this</h2>

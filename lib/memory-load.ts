@@ -82,6 +82,7 @@ export async function loadProjectEpisodes(
         sessionMode: acceptSessionMode(j?.sessionMode),
         audioPath: typeof j?.audioPath === "string" && j.audioPath ? String(j.audioPath) : null,
         videoPath: typeof j?.videoPath === "string" && j.videoPath ? String(j.videoPath) : `${stem}.webm`,
+        videoHeight: Number(j?.video?.height) > 0 ? Number(j.video.height) : null,
         durationSec: durationSecondsFromSummary(j),
       });
     } catch { /* one bad sidecar must not cost the project */ }

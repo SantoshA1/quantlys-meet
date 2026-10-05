@@ -17,6 +17,7 @@ import {
 import { chooseModel } from "@/lib/model";
 import { acceptSessionMode } from "@/lib/memory";
 import { sendSpecIfDue, appUrl } from "@/lib/spec-email-send";
+import { acceptVideoMeta } from "@/lib/recording-quality";
 import { durationSecondsFromSummary } from "@/lib/recording-flush";
 
 export const dynamic = "force-dynamic";
@@ -436,6 +437,10 @@ export async function POST(req: Request) {
     // On-screen elapsed seconds from the recorder. Meeting history reads this
     // so length is not always blank. Null if the client omitted it.
     duration_s,
+    // Width/height/fps/container of the continuous take, as the recorder
+    // made it. Null for older clients — the UI then shows no quality label
+    // rather than guessing one.
+    video: acceptVideoMeta(body.video),
     fromCaptions: !ccLines.length ? false : notes.transcript === (ccText.trim() || ccLines.map((l) => l.transcript).join("\n")),
     createdAt: new Date().toISOString(),
     // Meeting vs Memory — regenerate Memory packages prefer sessions tagged memory.

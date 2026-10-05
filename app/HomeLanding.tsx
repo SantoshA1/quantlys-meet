@@ -203,7 +203,8 @@ export default function HomeLanding() {
             <p>
               Put a project name on the meeting. Every recorded session on that
               project is read together. Host console: Build the PRD. Download
-              .md. Paste it where you ship.
+              .md. Paste it where you ship. The recording itself downloads as
+              one continuous 1080p MP4/WebM with captions.
             </p>
           </article>
         </div>
@@ -253,8 +254,10 @@ export default function HomeLanding() {
         <h2>Memory mode for podcasts, books, and oral history.</h2>
         <p className="qml-narrow">
           Not every session is a product review. From the host console, launch
-          Memory — record with captions, group episodes, build chapters and
-          audio clips, or outline a story / manuscript from conversations.
+          Memory — record with captions, group episodes, and take each one
+          home as a continuous 1080p video (MP4 or WebM), captions (.vtt /
+          .srt), audio clips, and a story / manuscript <code>.md</code>. Not a
+          transcript-only handoff.
         </p>
         <div className="qml-cta">
           <Link className="qml-btn qml-btn-primary" href="/memory-mode">
@@ -383,7 +386,9 @@ export default function HomeLanding() {
         <h3>What is Memory mode?</h3>
         <p>
           A second host-console surface for podcasts (chapters/clips), books,
-          and oral history — not a product-review PRD.{" "}
+          and oral history — not a product-review PRD. Each episode downloads
+          as one continuous 1080p video (MP4 or WebM), captions (.vtt / .srt),
+          audio (m4a + WAV cuts), and a markdown package.{" "}
           <Link href="/memory-mode">Memory mode</Link>.
         </p>
       </section>

@@ -37,6 +37,10 @@ import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
 import { shouldFlushOnPageHide } from "@/lib/recording-flush";
 import {
+  RECORDING_PRESET, RESUMABLE_THRESHOLD_BYTES, resumableEndpoint, resumableUpload,
+  uploadRefusalText,
+} from "@/lib/recording-quality";
+import {
   acceptSessionMode, sessionModeGuestCue,
   type SessionMode,
 } from "@/lib/memory";
@@ -69,7 +73,15 @@ function db(): SupabaseClient | null {
 // Android without installing anything; WebM/VP9 plays in Chrome and looks
 // broken everywhere else. Prefer MP4 and only fall back when the browser
 // genuinely cannot make one.
+//
+// 1080p needs H.264 level 4.0+. avc1.42E01E is Baseline level 3.0 (max
+// 720×576), so the level-4.0 High/Main strings go first; isTypeSupported
+// skips any a browser can't do. Verified 2026-10-05: headless Linux Chrome
+// supports none of the avc1 strings and records generic "video/mp4" as VP9
+// in MP4 — still 1920×1080, still one file.
 const VIDEO_FORMATS: Array<[string, string]> = [
+  ["video/mp4;codecs=avc1.640028,mp4a.40.2", "mp4"],
+  ["video/mp4;codecs=avc1.4D0028,mp4a.40.2", "mp4"],
   ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "mp4"],
   ["video/mp4", "mp4"],
   ["video/webm;codecs=vp9,opus", "webm"],
@@ -473,7 +485,11 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
             // VP9 and AV1 look better and are exactly how one person in a
             // meeting ends up as a black rectangle to everyone else.
             videoCodec: "vp8",
-            videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
+            // 360 / 720 under a 1080 top layer. Dynacast only sends the top
+            // layer while somebody subscribes to it — in practice the
+            // recorder's full-res stage (see startRecording), so the 1080p
+            // take is real camera pixels, not a 720p tile scaled up.
+            videoSimulcastLayers: [VideoPresets.h360, VideoPresets.h720],
             stopMicTrackOnMute: false,
           },
           audioCaptureDefaults: {
@@ -484,7 +500,9 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
           },
           videoCaptureDefaults: {
             deviceId: choice.camId || undefined,
-            resolution: VideoPresets.h720.resolution,
+            // Ideal, not exact: a 720p webcam still opens, it just tops out
+            // at 720. The recording metadata says what the canvas was.
+            resolution: VideoPresets.h1080.resolution,
           },
           // Sharing this meeting tab plays the share back into itself.
           // Exclude the current tab from the picker where supported.
@@ -742,6 +760,21 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   const ticker = useRef<any>(null);
   const stopping = useRef(0);
   const saveWaiters = useRef<Array<() => void>>([]);
+  // Full-resolution twins of every remote video, attached off-screen at the
+  // take's size while recording. adaptiveStream sizes a subscription to its
+  // LARGEST attached element, so this is what makes the SFU send the top
+  // layer to the recorder instead of the thumbnail-sized one the grid needs.
+  const recStage = useRef<HTMLDivElement | null>(null);
+  const recTwins = useRef<Map<string, { el: HTMLVideoElement; track: any }>>(new Map());
+  const recStageAt = useRef(0);
+  const recVideoMeta = useRef<Record<string, unknown> | null>(null);
+  // The take itself, kept in this tab after Stop so it can be downloaded at
+  // full resolution even if cloud storage refuses a file that size.
+  const [localTake, setLocalTake] = useState<{ url: string; name: string; label: string } | null>(null);
+  const localTakeUrl = useRef("");
+  useEffect(() => () => {
+    if (localTakeUrl.current) URL.revokeObjectURL(localTakeUrl.current);
+  }, []);
 
   useEffect(() => {
     db()
@@ -1050,9 +1083,71 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     return dest.stream;
   }
 
+  function syncRecStage() {
+    if (typeof document === "undefined") return;
+    if (!recStage.current) {
+      const d = document.createElement("div");
+      d.className = "qmr-recstage";
+      d.setAttribute("aria-hidden", "true");
+      // In the viewport (so it counts as attached and visible) but 2px and
+      // transparent. Children keep their full CSS size for adaptiveStream.
+      d.style.cssText =
+        "position:fixed;left:0;top:0;width:2px;height:2px;overflow:hidden;opacity:0;pointer-events:none;z-index:-1;";
+      document.body.appendChild(d);
+      recStage.current = d;
+    }
+    const want = new Map<string, any>();
+    try {
+      ctx.remoteParticipants.forEach((p: any) => {
+        p.videoTrackPublications.forEach((pub: any) => {
+          const tr = pub?.track;
+          const id = tr?.mediaStreamTrack?.id;
+          if (tr && id && pub.isSubscribed) want.set(id, tr);
+        });
+      });
+    } catch { /* a participant mid-leave must not stop the take */ }
+    want.forEach((tr, id) => {
+      if (recTwins.current.has(id)) return;
+      try {
+        const el = tr.attach() as HTMLVideoElement;
+        el.muted = true;
+        el.playsInline = true;
+        el.style.width = `${RECORDING_PRESET.width}px`;
+        el.style.height = `${RECORDING_PRESET.height}px`;
+        recStage.current!.appendChild(el);
+        el.play?.().catch(() => {});
+        recTwins.current.set(id, { el, track: tr });
+      } catch { /* fall back to the on-screen tile for this one */ }
+    });
+    recTwins.current.forEach((v, id) => {
+      if (want.has(id)) return;
+      try { v.track.detach(v.el); } catch { /* already gone */ }
+      v.el.remove();
+      recTwins.current.delete(id);
+    });
+  }
+
+  function clearRecStage() {
+    recTwins.current.forEach((v) => {
+      try { v.track.detach(v.el); } catch { /* already gone */ }
+      v.el.remove();
+    });
+    recTwins.current.clear();
+    recStage.current?.remove();
+    recStage.current = null;
+  }
+
+  // Unmount mid-take: the twins hold decoders open, let them go.
+  useEffect(() => () => clearRecStage(), []);
+
   function startRecording() {
     if (!signedIn || recording) return;
     setStatus(null);
+    if (localTakeUrl.current) {
+      URL.revokeObjectURL(localTakeUrl.current);
+      localTakeUrl.current = "";
+    }
+    setLocalTake(null);
 
     const vf = pick(VIDEO_FORMATS);
     const af = pick(AUDIO_FORMATS);
@@ -1062,17 +1157,40 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     }
     vExt.current = vf[1];
 
+    // One continuous 1920×1080 take. Not a 720p canvas, not segments.
     const canvas = document.createElement("canvas");
-    canvas.width = 1280;
-    canvas.height = 720;
+    canvas.width = RECORDING_PRESET.width;
+    canvas.height = RECORDING_PRESET.height;
     const g = canvas.getContext("2d");
     if (!g) {
       setStatus({ kind: "err", text: "This browser can't record. Try Chrome." });
       return;
     }
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    syncRecStage();
+    recStageAt.current = Date.now();
+
+    const trackIdOf = (v: HTMLVideoElement) => {
+      const s = v.srcObject;
+      return s instanceof MediaStream ? s.getVideoTracks()[0]?.id : undefined;
+    };
 
     const draw = () => {
-      const vids = liveVideos();
+      // New joiners / a screen share that starts mid-take get a twin too.
+      if (Date.now() - recStageAt.current > 1000) {
+        recStageAt.current = Date.now();
+        syncRecStage();
+      }
+      // Same tiles, same order as the room — each swapped for its
+      // full-resolution twin when that twin has frames.
+      const vids = liveVideos()
+        .filter((v) => !v.closest(".qmr-recstage"))
+        .map((v) => {
+          const id = trackIdOf(v);
+          const twin = id ? recTwins.current.get(id)?.el : undefined;
+          return twin && twin.videoWidth > 0 && !twin.paused ? twin : v;
+        });
       const boardSurf = getBoardSurface();
       const boardStrokes = getBoardStrokes();
       const liveBoard = document.querySelector(".qmb-canvas") as HTMLCanvasElement | null;
@@ -1115,7 +1233,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
 
     const audio = buildAudio();
     const videoStream = new MediaStream([
-      ...canvas.captureStream(24).getVideoTracks(),
+      ...canvas.captureStream(RECORDING_PRESET.fps).getVideoTracks(),
       ...audio.getAudioTracks(),
     ]);
 
@@ -1123,7 +1241,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     try {
       vr = new MediaRecorder(videoStream, {
         mimeType: vf[0],
-        videoBitsPerSecond: 2_500_000,
+        videoBitsPerSecond: RECORDING_PRESET.videoBitsPerSecond,
       });
     } catch (e: any) {
       setStatus({ kind: "err", text: `Could not start recording: ${e?.message || e}` });
@@ -1133,6 +1251,10 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     vChunks.current = [];
     aChunks.current = [];
     stopping.current = af ? 2 : 1;
+    recVideoMeta.current = {
+      width: canvas.width, height: canvas.height, fps: RECORDING_PRESET.fps,
+      bitrate: RECORDING_PRESET.videoBitsPerSecond, container: vf[1], mime: vf[0],
+    };
 
     vr.ondataavailable = (e) => e.data && e.data.size && vChunks.current.push(e.data);
     vr.onerror = (e: any) =>
@@ -1140,6 +1262,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     vr.onstop = () => {
       if (raf.current) cancelAnimationFrame(raf.current);
       videoStream.getTracks().forEach((t) => t.stop());
+      clearRecStage();
       if (--stopping.current <= 0) void save();
     };
     vr.start(2000);
@@ -1274,14 +1397,42 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     const base = `${signedIn}/${room}/${stamp}`;
     const videoPath = `${base}.${vExt.current}`;
 
-    const up = await client
-      .storage.from("recordings")
-      .upload(videoPath, video, { contentType: video.type, upsert: false });
-    if (up.error) {
-      setStatus({ kind: "err", text: `Could not save the recording: ${up.error.message}` });
-      return;
-    }
+    // The continuous take stays downloadable from this tab regardless of
+    // what cloud storage does next.
+    const meta = recVideoMeta.current;
+    const takeLabel = `${meta?.height ? `${meta.height}p ` : ""}${vExt.current.toUpperCase()} · ${mb} MB`;
+    try {
+      const url = URL.createObjectURL(video);
+      localTakeUrl.current = url;
+      setLocalTake({ url, name: `${room}-${stamp}.${vExt.current}`, label: takeLabel });
+    } catch { /* cloud copy below is still the record */ }
 
+    let upErr = "";
+    if (video.size > RESUMABLE_THRESHOLD_BYTES && process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      // A 1080p take is gigabytes an hour. One POST is what a storage
+      // upload cap refuses; TUS sends 6 MB pieces of the SAME file and
+      // resumes after a dropped connection. The object stays one file.
+      const { data: sessNow } = await client.auth.getSession();
+      const res = await resumableUpload({
+        endpoint: resumableEndpoint(process.env.NEXT_PUBLIC_SUPABASE_URL),
+        token: sessNow.session?.access_token ?? "",
+        apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+        bucket: "recordings",
+        objectName: videoPath,
+        blob: video,
+        contentType: video.type,
+        onProgress: (sent, total) => setStatus({
+          kind: "busy",
+          text: `Uploading ${takeLabel} — ${Math.floor((sent / Math.max(1, total)) * 100)}%`,
+        }),
+      });
+      if (!res.ok) upErr = res.error;
+    } else {
+      const up = await client
+        .storage.from("recordings")
+        .upload(videoPath, video, { contentType: video.type, upsert: false });
+      if (up.error) upErr = uploadRefusalText((up.error as any)?.statusCode ? Number((up.error as any).statusCode) : undefined, up.error.message);
+    }
     let audioPath: string | null = null;
     if (audio && audio.size > 1024) {
       audioPath = `${base}.${aExt.current === "m4a" ? "m4a" : "audio.webm"}`;
@@ -1289,6 +1440,16 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
         .storage.from("recordings")
         .upload(audioPath, audio, { contentType: audio.type, upsert: false });
       if (ua.error) audioPath = null; // the video is saved; the extra is optional
+    }
+    if (upErr) {
+      // The cloud refused the video, but the take is in this tab (Download
+      // take) and the small audio twin usually still lands — so the notes,
+      // PRD and Memory package are still written from it rather than lost.
+      if (!audioPath) {
+        setStatus({ kind: "err", text: upErr });
+        return;
+      }
+      setStatus({ kind: "busy", text: `${upErr} Writing notes from the audio…` });
     }
 
     setStatus({ kind: "busy", text: `Saved ${mb} MB. Writing the summary…` });
@@ -1362,9 +1523,18 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
           boardSnapshotPath,
           // Keep mode in summary JSON so Memory regenerate prefers these sessions.
           sessionMode: sessionModeRef.current,
+          // What the take actually is — the host page labels it from this.
+          video: recVideoMeta.current,
         }),
       });
       const out = await r.json();
+      if (upErr) {
+        setStatus({
+          kind: "err",
+          text: `${upErr} ${r.ok ? "Notes were written from the audio." : `(${out.error || "No summary this time."})`}`,
+        });
+        return;
+      }
       if (!r.ok) {
         setStatus({
           kind: "ok",
@@ -1388,7 +1558,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
           : `Saved ${mb} MB — summary written. Find it under Recordings.`,
       });
     } catch {
-      setStatus({ kind: "ok", text: `Saved ${mb} MB — find it under Recordings on your host page.` });
+      setStatus(upErr
+        ? { kind: "err", text: upErr }
+        : { kind: "ok", text: `Saved ${mb} MB — find it under Recordings on your host page.` });
     }
     } finally {
       const waiters = saveWaiters.current.splice(0, saveWaiters.current.length);
@@ -1801,6 +1973,11 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
       {status ? (
         <span className={`qmr-status qmr-${status.kind}`}>
           {status.text}
+          {localTake && status.kind !== "busy" ? (
+            <a className="qmr-take" href={localTake.url} download={localTake.name}>
+              Download take ({localTake.label})
+            </a>
+          ) : null}
           <button className="qmr-x" onClick={() => setStatus(null)} aria-label="Dismiss">
             ×
           </button>
@@ -2687,6 +2864,8 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
   border: 1px solid #262b36; background: #10131a;
   box-shadow: 0 12px 30px rgba(0,0,0,.5); }
 .qmr-ok  { color: #8fd8cf; border-color: #1f4f49; }
+.qmr-take { flex: 0 0 auto; color: #c8f5f0; border: 1px solid #1f4f49; border-radius: 8px;
+  padding: 4px 8px; text-decoration: none; white-space: nowrap; font-size: 12.5px; }
 .qmr-err { color: #ffb4b4; border-color: #5c2b35; }
 .qmr-busy{ color: #ffd9a0; border-color: #5a4520; }
 .qmr-x { background: none; border: 0; color: inherit; font-size: 16px;
