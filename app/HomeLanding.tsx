@@ -397,6 +397,9 @@ export default function HomeLanding() {
         <span>
           © Quantlys · Agility Business Services ·{" "}
           <a href="https://www.quantlys.ai">quantlys.ai</a>
+          {" · "}
+          Built by{" "}
+          <a href="https://santoshadari.com/">Santosh Adari</a>
         </span>
         <span>
           <Link href="/host">Host</Link>

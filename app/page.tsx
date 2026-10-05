@@ -47,6 +47,12 @@ const jsonLd = {
         "https://x.com/SantoshAdari1",
         "https://www.linkedin.com/in/santoshadari/",
       ],
+      founder: {
+        "@type": "Person",
+        "@id": "https://santoshadari.com/#person",
+        name: "Santosh Adari",
+        url: "https://santoshadari.com/",
+      },
     },
     {
       "@type": "WebSite",
