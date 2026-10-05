@@ -1,16 +1,14 @@
 // Recording quality + upload path for the continuous take.
 //
-// FIELD 2026-10-05 (Santosh): "a continuous 1080p+ take users can download —
-// not downscaled, not chopped into pieces." Before this the recorder drew a
-// 1280×720 canvas at 24fps / 2.5Mbps, cameras captured at 720p, remote tiles
-// arrived at whatever size adaptiveStream picked for the on-screen tile, and
-// the file went up in ONE storage POST — which is what a project upload cap
-// (Supabase default 50 MB) refuses at about a minute of 1080p.
+// FIELD 2026-10-05 (Santosh): keep continuous full-video handoffs (MP4/WebM +
+// captions + audio + .md), but record at **720p** to save storage cost —
+// not 1080p. Pre-#81 was 1280×720 @ 24fps / 2.5 Mbps; that is the preset
+// again. Cameras capture at 720p; remote guests are still drawn from
+// off-screen twins so adaptiveStream can pull the top (720p) layer rather
+// than a tiny on-screen tile.
 //
-// Now: one 1920×1080 / 30fps MediaRecorder file (MP4 where the browser can
-// make one, WebM otherwise), uploaded with the TUS resumable protocol in
-// 6 MB transport chunks. The STORED OBJECT is still one continuous file —
-// chunking here is only how the bytes travel, never how the take is kept.
+// Upload stays resumable (TUS, 6 MB transport chunks). The STORED OBJECT is
+// still one continuous file — chunking is only how the bytes travel.
 //
 // ZERO-IMPORT so the judgements stay offline-testable.
 
@@ -22,14 +20,14 @@ export type RecordingPreset = {
   label: string;
 };
 
-/** The take. 1080p30 at 6 Mbps — clean for a composite of talking heads,
- *  screen share and the whiteboard; ~2.7 GB per hour. */
+/** The take. 720p24 at 2.5 Mbps — matches pre-#81 storage savings;
+ *  ~1.1 GB per hour (~19 MB/min). */
 export const RECORDING_PRESET: RecordingPreset = {
-  width: 1920,
-  height: 1080,
-  fps: 30,
-  videoBitsPerSecond: 6_000_000,
-  label: "1080p",
+  width: 1280,
+  height: 720,
+  fps: 24,
+  videoBitsPerSecond: 2_500_000,
+  label: "720p",
 };
 
 /** Human label for stored video metadata: 2160 → "4K", 1080 → "1080p". */

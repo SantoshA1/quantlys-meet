@@ -34,7 +34,7 @@ type Rec = {
   when: string;
   size: number;
   duration?: number | null;
-  /** "1080p" when the recorder reported the take's size. */
+  /** "720p" (or whatever height the recorder reported). */
   quality?: string;
   audioPath?: string;
   summaryPath?: string;

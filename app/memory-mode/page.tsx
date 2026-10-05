@@ -3,7 +3,7 @@ import Link from "next/link";
 
 const title = "Memory mode for podcasts and oral history | Quantlys Meeting";
 const description =
-  "Record podcasts, books, and oral history in the browser. Memory hands back the full episode as one continuous 1080p video (MP4 or WebM), captions (.vtt / .srt), audio clips, and a markdown story or manuscript outline.";
+  "Record podcasts, books, and oral history in the browser. Memory hands back the full episode as one continuous HD 720p video (MP4 or WebM), captions (.vtt / .srt), audio clips, and a markdown story or manuscript outline.";
 
 export const metadata: Metadata = {
   title,
@@ -80,7 +80,7 @@ export default function MemoryModePage() {
           Same browser video stack as Quantlys Meeting — different intent than
           a sync product review. Launch Memory from the host console, record
           with captions, then take home the full episode as one continuous
-          1080p video, captions, audio clips, and a story or manuscript{" "}
+          HD 720p video, captions, audio clips, and a story or manuscript{" "}
           <code>.md</code>.
         </p>
         <div className="qml-cta">
@@ -101,7 +101,7 @@ export default function MemoryModePage() {
         <p>
           Treat a series of Memory sessions as episodes. Reorder them, generate
           chapter headings from the transcript, and export audio clips for
-          show notes or social cuts. Each episode is also one continuous 1080p
+          show notes or social cuts. Each episode is also one continuous HD 720p
           video (MP4 or WebM) with <code>.vtt</code> / <code>.srt</code>{" "}
           captions. Timed chapter/quote cuts download as <strong>WAV</strong>{" "}
           when mm:ss cues or timed captions exist. Captions stay on so the
@@ -131,12 +131,12 @@ export default function MemoryModePage() {
         </p>
         <ul>
           <li>
-            <strong>Full video</strong> — one continuous take at 1920×1080,
-            30fps: <strong>MP4</strong> in Chrome, Edge, and Safari,{" "}
+            <strong>Full video</strong> — one continuous take at 1280×720,
+            24fps (HD 720p): <strong>MP4</strong> in Chrome, Edge, and Safari,{" "}
             <strong>WebM</strong> in Firefox.
-            Not stitched segments, not a 720p squash — remote guests are
-            recorded from their full-resolution camera feed (up to what their
-            camera and connection deliver).
+            Not stitched segments, not transcript-only — remote guests are
+            recorded from their camera feed (up to 720p, what their camera and
+            connection deliver).
           </li>
           <li>
             <strong>Captions</strong> — <code>.vtt</code> or <code>.srt</code>{" "}
