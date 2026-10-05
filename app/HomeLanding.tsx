@@ -204,7 +204,7 @@ export default function HomeLanding() {
               Put a project name on the meeting. Every recorded session on that
               project is read together. Host console: Build the PRD. Download
               .md. Paste it where you ship. The recording itself downloads as
-              one continuous 1080p MP4/WebM with captions.
+              one continuous HD 720p MP4/WebM with captions.
             </p>
           </article>
         </div>
@@ -255,7 +255,7 @@ export default function HomeLanding() {
         <p className="qml-narrow">
           Not every session is a product review. From the host console, launch
           Memory — record with captions, group episodes, and take each one
-          home as a continuous 1080p video (MP4 or WebM), captions (.vtt /
+          home as a continuous HD 720p video (MP4 or WebM), captions (.vtt /
           .srt), audio clips, and a story / manuscript <code>.md</code>. Not a
           transcript-only handoff.
         </p>
@@ -387,7 +387,7 @@ export default function HomeLanding() {
         <p>
           A second host-console surface for podcasts (chapters/clips), books,
           and oral history — not a product-review PRD. Each episode downloads
-          as one continuous 1080p video (MP4 or WebM), captions (.vtt / .srt),
+          as one continuous HD 720p video (MP4 or WebM), captions (.vtt / .srt),
           audio (m4a + WAV cuts), and a markdown package.{" "}
           <Link href="/memory-mode">Memory mode</Link>.
         </p>

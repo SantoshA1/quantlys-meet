@@ -26,7 +26,7 @@ export type MemoryEpisode = {
   sessionMode: "memory" | "meeting";
   audioPath?: string | null;
   videoPath?: string | null;
-  /** Height of the continuous take (1080 = 1080p) when the recorder reported it. */
+  /** Height of the continuous take (720 = 720p) when the recorder reported it. */
   videoHeight?: number | null;
   durationSec?: number | null;
   /** 0-based position after applying saved order. */
@@ -625,7 +625,7 @@ export function slicePcm(
 }
 
 export const MEMORY_CLIP_FORMAT_NOTE =
-  "Chapter/quote cuts download as WAV (browser decode of stored m4a or audio.webm). Full episode audio downloads in its original container (m4a or audio.webm). The full episode video is one continuous MP4 or WebM take (1080p on current recorders) — Full video. Captions download as .vtt / .srt. No MOV re-encode.";
+  "Chapter/quote cuts download as WAV (browser decode of stored m4a or audio.webm). Full episode audio downloads in its original container (m4a or audio.webm). The full episode video is one continuous MP4 or WebM take (HD 720p on current recorders) — Full video. Captions download as .vtt / .srt. No MOV re-encode.";
 
 /** Candidate storage paths for an episode's continuous video, best first.
  *  Older summaries lacked videoPath; the recorder writes `${stem}.mp4` or

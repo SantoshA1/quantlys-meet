@@ -74,11 +74,12 @@ function db(): SupabaseClient | null {
 // broken everywhere else. Prefer MP4 and only fall back when the browser
 // genuinely cannot make one.
 //
-// 1080p needs H.264 level 4.0+. avc1.42E01E is Baseline level 3.0 (max
-// 720×576), so the level-4.0 High/Main strings go first; isTypeSupported
-// skips any a browser can't do. Verified 2026-10-05: headless Linux Chrome
-// supports none of the avc1 strings and records generic "video/mp4" as VP9
-// in MP4 — still 1920×1080, still one file.
+// Prefer High/Main L4.0 (avc1.640028 / avc1.4D0028) first — they still work
+// cleanly at 720p and stay valid if a take ever goes higher. Baseline L3.0
+// (avc1.42E01E) follows for older encoders. isTypeSupported skips any a
+// browser can't do. Verified 2026-10-05: headless Linux Chrome supports none
+// of the avc1 strings and records generic "video/mp4" as VP9 in MP4 — still
+// one continuous 720p file.
 const VIDEO_FORMATS: Array<[string, string]> = [
   ["video/mp4;codecs=avc1.640028,mp4a.40.2", "mp4"],
   ["video/mp4;codecs=avc1.4D0028,mp4a.40.2", "mp4"],
@@ -485,11 +486,11 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
             // VP9 and AV1 look better and are exactly how one person in a
             // meeting ends up as a black rectangle to everyone else.
             videoCodec: "vp8",
-            // 360 / 720 under a 1080 top layer. Dynacast only sends the top
-            // layer while somebody subscribes to it — in practice the
-            // recorder's full-res stage (see startRecording), so the 1080p
-            // take is real camera pixels, not a 720p tile scaled up.
-            videoSimulcastLayers: [VideoPresets.h360, VideoPresets.h720],
+            // 180 / 360 under a 720 top layer (capture resolution). Dynacast
+            // only sends the top layer while somebody subscribes — in
+            // practice the recorder's off-screen twins (see startRecording),
+            // so the 720p take is real camera pixels, not a tiny tile scaled up.
+            videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
             stopMicTrackOnMute: false,
           },
           audioCaptureDefaults: {
@@ -500,9 +501,9 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
           },
           videoCaptureDefaults: {
             deviceId: choice.camId || undefined,
-            // Ideal, not exact: a 720p webcam still opens, it just tops out
-            // at 720. The recording metadata says what the canvas was.
-            resolution: VideoPresets.h1080.resolution,
+            // Ideal, not exact: a lower-res webcam still opens. Recording
+            // stays at HD 720p for storage cost — metadata says the canvas.
+            resolution: VideoPresets.h720.resolution,
           },
           // Sharing this meeting tab plays the share back into itself.
           // Exclude the current tab from the picker where supported.
@@ -1157,7 +1158,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     }
     vExt.current = vf[1];
 
-    // One continuous 1920×1080 take. Not a 720p canvas, not segments.
+    // One continuous 1280×720 take (HD 720p). Not 1080p, not segments.
     const canvas = document.createElement("canvas");
     canvas.width = RECORDING_PRESET.width;
     canvas.height = RECORDING_PRESET.height;
@@ -1409,7 +1410,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
 
     let upErr = "";
     if (video.size > RESUMABLE_THRESHOLD_BYTES && process.env.NEXT_PUBLIC_SUPABASE_URL) {
-      // A 1080p take is gigabytes an hour. One POST is what a storage
+      // A long take is still hundreds of MB an hour. One POST is what a storage
       // upload cap refuses; TUS sends 6 MB pieces of the SAME file and
       // resumes after a dropped connection. The object stays one file.
       const { data: sessNow } = await client.auth.getSession();

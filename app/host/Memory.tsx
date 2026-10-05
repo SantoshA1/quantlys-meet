@@ -2,7 +2,7 @@
 
 // Host Memory panel — build / share a Memory package (story / manuscript outline),
 // list episodes as chapters, reorder them, and download what each episode
-// actually has: the continuous full video (MP4/WebM, 1080p on current
+// actually has: the continuous full video (MP4/WebM, HD 720p on current
 // recorders), audio clips (WAV cuts + original m4a/webm), captions (.vtt/.srt).
 
 import { useCallback, useEffect, useState } from "react";
@@ -360,7 +360,7 @@ export default function Memory({ projects }: { projects: string[] }) {
   const [mediaBusy, setMediaBusy] = useState("");
 
   // The continuous take — a signed link straight to the stored file, so a
-  // multi-GB 1080p episode downloads at full resolution without passing
+  // long HD 720p episode downloads at full resolution without passing
   // through this tab's memory.
   async function downloadEpisodeVideo(ep: Episode) {
     if (!project || mediaBusy) return;
@@ -421,7 +421,7 @@ export default function Memory({ projects }: { projects: string[] }) {
       <p className="qh-dim" style={{ marginTop: 0 }}>
         Same recordings and captions as Meeting mode. Group Memory sessions as
         chapters/episodes and take each one home: <strong>Full video</strong> (one
-        continuous <strong>MP4</strong> or <strong>WebM</strong> take — 1920×1080 on
+        continuous <strong>MP4</strong> or <strong>WebM</strong> take — HD 720p on
         current recorders), <strong>captions</strong> as .vtt / .srt, audio clips
         (<strong>WAV</strong> cuts when mm:ss cues exist; full episode audio as{" "}
         <strong>m4a</strong> / <strong>audio.webm</strong>), and the story /
