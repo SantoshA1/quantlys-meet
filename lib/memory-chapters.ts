@@ -26,6 +26,8 @@ export type MemoryEpisode = {
   sessionMode: "memory" | "meeting";
   audioPath?: string | null;
   videoPath?: string | null;
+  /** Height of the continuous take (1080 = 1080p) when the recorder reported it. */
+  videoHeight?: number | null;
   durationSec?: number | null;
   /** 0-based position after applying saved order. */
   order: number;
@@ -144,6 +146,7 @@ export function episodesFromSummaries(
     sessionMode?: string;
     audioPath?: string | null;
     videoPath?: string | null;
+    videoHeight?: number | null;
     durationSec?: number | null;
   }>,
   savedOrder: string[] = []
@@ -159,6 +162,8 @@ export function episodesFromSummaries(
       sessionMode: clean(r.sessionMode).toLowerCase() === "memory" ? "memory" : "meeting",
       audioPath: r.audioPath ? clean(r.audioPath) : null,
       videoPath: r.videoPath ? clean(r.videoPath) : null,
+      videoHeight:
+        typeof r.videoHeight === "number" && r.videoHeight > 0 ? Math.floor(r.videoHeight) : null,
       durationSec:
         typeof r.durationSec === "number" && Number.isFinite(r.durationSec)
           ? Math.max(0, Math.floor(r.durationSec))
@@ -620,4 +625,16 @@ export function slicePcm(
 }
 
 export const MEMORY_CLIP_FORMAT_NOTE =
-  "Clips download as WAV (browser decode of the stored m4a/webm audio). Full episode audio stays in its original format via Audio only.";
+  "Chapter/quote cuts download as WAV (browser decode of stored m4a or audio.webm). Full episode audio downloads in its original container (m4a or audio.webm). The full episode video is one continuous MP4 or WebM take (1080p on current recorders) — Full video. Captions download as .vtt / .srt. No MOV re-encode.";
+
+/** Candidate storage paths for an episode's continuous video, best first.
+ *  Older summaries lacked videoPath; the recorder writes `${stem}.mp4` or
+ *  `${stem}.webm`, never anything else. */
+export function episodeVideoCandidates(ep: { path: string; videoPath?: string | null }): string[] {
+  const stem = clean(ep.path).replace(/\.summary\.json$/i, "");
+  const out: string[] = [];
+  const push = (s: string) => { if (s && !out.includes(s)) out.push(s); };
+  if (ep.videoPath && /\.(mp4|webm)$/i.test(ep.videoPath) && !/\.audio\.webm$/i.test(ep.videoPath)) push(clean(ep.videoPath));
+  if (stem) { push(`${stem}.mp4`); push(`${stem}.webm`); }
+  return out;
+}

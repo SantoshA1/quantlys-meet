@@ -3,7 +3,7 @@ import Link from "next/link";
 
 const title = "Memory mode for podcasts and oral history | Quantlys Meeting";
 const description =
-  "Record podcasts, books, and oral history in the browser. Memory mode builds chapters, clips, and a manuscript outline from conversations — same Quantlys Meeting stack.";
+  "Record podcasts, books, and oral history in the browser. Memory hands back the full episode as one continuous 1080p video (MP4 or WebM), captions (.vtt / .srt), audio clips, and a markdown story or manuscript outline.";
 
 export const metadata: Metadata = {
   title,
@@ -79,8 +79,9 @@ export default function MemoryModePage() {
         <p className="qml-lede">
           Same browser video stack as Quantlys Meeting — different intent than
           a sync product review. Launch Memory from the host console, record
-          with captions, then build chapters, audio clips, and a story or
-          manuscript outline from the sessions you keep.
+          with captions, then take home the full episode as one continuous
+          1080p video, captions, audio clips, and a story or manuscript{" "}
+          <code>.md</code>.
         </p>
         <div className="qml-cta">
           <Link className="qml-btn qml-btn-primary" href="/host">
@@ -100,8 +101,11 @@ export default function MemoryModePage() {
         <p>
           Treat a series of Memory sessions as episodes. Reorder them, generate
           chapter headings from the transcript, and export audio clips for
-          show notes or social cuts. Captions stay on so the words you said —
-          not a blank page later — drive the outline.
+          show notes or social cuts. Each episode is also one continuous 1080p
+          video (MP4 or WebM) with <code>.vtt</code> / <code>.srt</code>{" "}
+          captions. Timed chapter/quote cuts download as <strong>WAV</strong>{" "}
+          when mm:ss cues or timed captions exist. Captions stay on so the
+          words you said drive the outline.
         </p>
 
         <h2>Oral history and legacy stories</h2>
@@ -120,6 +124,44 @@ export default function MemoryModePage() {
           a working draft from talk, not a finished novel. You still edit.
         </p>
 
+        <h2>What you take home</h2>
+        <p>
+          A transcript alone is not an episode. Every Memory chapter in the
+          host console downloads as:
+        </p>
+        <ul>
+          <li>
+            <strong>Full video</strong> — one continuous take at 1920×1080,
+            30fps: <strong>MP4</strong> in Chrome, Edge, and Safari,{" "}
+            <strong>WebM</strong> in Firefox.
+            Not stitched segments, not a 720p squash — remote guests are
+            recorded from their full-resolution camera feed (up to what their
+            camera and connection deliver).
+          </li>
+          <li>
+            <strong>Captions</strong> — <code>.vtt</code> or <code>.srt</code>{" "}
+            from the timed transcript, ready for YouTube, Descript, or Premiere.
+          </li>
+          <li>
+            <strong>Audio</strong> — the full episode as <strong>m4a</strong>{" "}
+            (or <strong>audio.webm</strong>), plus <strong>WAV</strong>{" "}
+            chapter / quote cuts when mm:ss cues exist.
+          </li>
+          <li>
+            <strong>Markdown package</strong> — story or manuscript{" "}
+            <code>.md</code> (summary, chapters, quotes, open threads), or a
+            shareable link.
+          </li>
+        </ul>
+        <p>
+          Recording, captions, and the package run on our cloud at
+          quantlys-meeting.com, or on your keys when you self-host. Big takes
+          upload resumably. If storage ever refuses a file that size, the
+          full-resolution take still downloads straight from your browser tab
+          before you leave. No MOV: we only list files the recorder actually
+          writes. Dogfood from Quantlys.
+        </p>
+
         <h2>How it fits next to Meeting → PRD</h2>
         <p>
           Spec meetings write a markdown PRD for product work (
@@ -135,7 +177,7 @@ export default function MemoryModePage() {
         <h2>What you need</h2>
         <ul>
           <li>Host account (email code) — guests need a link only</li>
-          <li>Recording + captions on for usable chapters</li>
+          <li>Recording + captions on for usable chapters and clip cuts</li>
           <li>A project name so sessions group together</li>
           <li>
             Optional: self-host with your own keys —{" "}

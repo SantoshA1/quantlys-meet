@@ -114,7 +114,8 @@ Any host that can run `next build && next start` works; Vercel is the path this 
 - In-app specimen: `/example-prd` (labeled not a customer recording).
 - In-repo mirror: [`examples/sample-prd.md`](examples/sample-prd.md).
 - Whiteboard recording sidecars: `*.board.jpg` / `*.board.json` beside the video.
-- Memory chapters & clips: `/host` → Memory (writers / podcasters).
+- Memory chapters & clips: `/host` → Memory (writers / podcasters). Per chapter: **Full video** (one continuous 1920×1080/30fps take — MP4 in Chrome/Edge/Safari, WebM in Firefox), captions `.vtt`/`.srt`, audio (`m4a`/`audio.webm` + WAV chapter/quote cuts), and the `.md` package.
+- Recording: 1080p canvas composite recorded in the host's browser, remote cameras pulled at full resolution while recording, uploaded to Supabase Storage with resumable (TUS) uploads. **Set your Supabase project's upload size limit** (Storage → Settings) above your longest take (~2.7 GB/hour at 1080p); the Free plan caps files at 50 MB, and the room then offers the take as a local download instead.
 - MODNet matte spike: [`public/models/README.md`](public/models/README.md) and `npm run modnet:download`.
 
 ## License

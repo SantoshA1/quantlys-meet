@@ -458,12 +458,12 @@ export function sessionModeGuestCue(mode: SessionMode): string {
 /** End-session handoff copy. */
 export function memoryHandoffCopy(opts: { hasPackage: boolean; shareUrl?: string }): string {
   if (!opts.hasPackage) {
-    return "Session ended. Build the Memory package below — a story / manuscript outline from this room — then copy, download, or share the link.";
+    return "Session ended. Build the Memory package below — story / manuscript .md from this room. Each chapter also downloads as full video (one continuous 1080p MP4/WebM take), captions (.vtt/.srt), and audio clips.";
   }
   if (opts.shareUrl) {
-    return "Session ended. Your Memory package is ready — copy the shareable link, download the .md, or open it from the Memory panel.";
+    return "Session ended. Your Memory package is ready — copy the shareable link or download the .md. Full video (continuous 1080p MP4/WebM), captions (.vtt/.srt) and audio clips are per chapter in the Memory panel.";
   }
-  return "Session ended. Your Memory package is ready — copy it, download the .md, or turn on a shareable link below.";
+  return "Session ended. Your Memory package is ready — copy or download the .md, or turn on a shareable link. Full video (continuous 1080p MP4/WebM), captions (.vtt/.srt) and audio clips are per chapter in the Memory panel.";
 }
 
 /** Agent opening line in Memory mode. */

@@ -1,7 +1,9 @@
 "use client";
 
 // Host Memory panel — build / share a Memory package (story / manuscript outline),
-// list episodes as chapters, reorder them, and download audio clips.
+// list episodes as chapters, reorder them, and download what each episode
+// actually has: the continuous full video (MP4/WebM, 1080p on current
+// recorders), audio clips (WAV cuts + original m4a/webm), captions (.vtt/.srt).
 
 import { useCallback, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
@@ -28,7 +30,8 @@ type Mem = {
 
 type Episode = {
   id: string; path: string; room: string; title: string; at: string;
-  sessionMode: string; audioPath?: string | null; durationSec?: number | null; order: number;
+  sessionMode: string; audioPath?: string | null; videoPath?: string | null;
+  videoHeight?: number | null; durationSec?: number | null; order: number;
 };
 
 type ClipRow = {
@@ -354,6 +357,61 @@ export default function Memory({ projects }: { projects: string[] }) {
     await loadAndDownloadClips({ episodeId: ep.id });
   }
 
+  const [mediaBusy, setMediaBusy] = useState("");
+
+  // The continuous take — a signed link straight to the stored file, so a
+  // multi-GB 1080p episode downloads at full resolution without passing
+  // through this tab's memory.
+  async function downloadEpisodeVideo(ep: Episode) {
+    if (!project || mediaBusy) return;
+    setMediaBusy(`video:${ep.id}`); setClipNote("");
+    try {
+      const t = await token();
+      const r = await fetch("/api/memory/media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project, episodeId: ep.id, kind: "video" }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.url) { setClipNote(j?.error || "Could not open the full video."); return; }
+      const a = document.createElement("a");
+      a.href = String(j.url);
+      a.download = String(j.filename || "");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setClipNote(`Downloading full video${j.quality ? ` · ${j.quality}` : ""} · ${String(j.container || "").toUpperCase()} (one continuous file).`);
+    } catch (e: any) {
+      setClipNote(e?.message || "Could not open the full video.");
+    } finally {
+      setMediaBusy("");
+    }
+  }
+
+  async function downloadEpisodeCaptions(ep: Episode, format: "vtt" | "srt") {
+    if (!project || mediaBusy) return;
+    setMediaBusy(`cc:${ep.id}`); setClipNote("");
+    try {
+      const t = await token();
+      const r = await fetch("/api/memory/media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ project, episodeId: ep.id, kind: "captions", format }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        setClipNote(j?.error || "No captions for that episode.");
+        return;
+      }
+      const blob = await r.blob();
+      triggerDownload(blob, `${slugClipLabel(ep.title || ep.room || "episode")}.${format}`);
+    } catch (e: any) {
+      setClipNote(e?.message || "Could not download captions.");
+    } finally {
+      setMediaBusy("");
+    }
+  }
+
   return (
     <section className="qh-panel" id="memory-panel">
       <div className="qh-panelhead">
@@ -362,8 +420,12 @@ export default function Memory({ projects }: { projects: string[] }) {
       </div>
       <p className="qh-dim" style={{ marginTop: 0 }}>
         Same recordings and captions as Meeting mode. Group Memory sessions as
-        chapters/episodes, build the whole show or one chapter, and download
-        audio clips when timestamps exist.
+        chapters/episodes and take each one home: <strong>Full video</strong> (one
+        continuous <strong>MP4</strong> or <strong>WebM</strong> take — 1920×1080 on
+        current recorders), <strong>captions</strong> as .vtt / .srt, audio clips
+        (<strong>WAV</strong> cuts when mm:ss cues exist; full episode audio as{" "}
+        <strong>m4a</strong> / <strong>audio.webm</strong>), and the story /
+        manuscript <strong>.md</strong>. No MOV — we only offer files the recorder wrote.
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
@@ -413,7 +475,7 @@ export default function Memory({ projects }: { projects: string[] }) {
           className="qh-ghost qh-btn"
           onClick={() => loadAndDownloadClips()}
           disabled={clipBusy || !project}
-          title="Full episode audio plus chapter/quote cuts when timestamps exist"
+          title="Full episode: m4a or audio.webm · timed cuts: WAV when timestamps exist"
         >
           {clipBusy ? "Preparing clips…" : "Download clips"}
         </button>
@@ -442,6 +504,7 @@ export default function Memory({ projects }: { projects: string[] }) {
                     {" · "}{ep.at ? ep.at.slice(0, 16).replace("T", " ") : ep.room}
                     {ep.sessionMode === "memory" ? " · Memory" : " · Meeting"}
                     {ep.durationSec ? ` · ${formatClock(ep.durationSec)}` : ""}
+                    {ep.videoHeight ? ` · ${ep.videoHeight}p` : ""}
                   </span>
                 </span>
                 <span className="qm-chapter-actions">
@@ -453,11 +516,35 @@ export default function Memory({ projects }: { projects: string[] }) {
                   </button>
                   <button
                     className="qh-ghost qh-btn"
+                    disabled={!!mediaBusy}
+                    onClick={() => downloadEpisodeVideo(ep)}
+                    title="The continuous take — MP4 or WebM as recorded, full resolution"
+                  >
+                    {mediaBusy === `video:${ep.id}` ? "Opening…" : "Full video"}
+                  </button>
+                  <button
+                    className="qh-ghost qh-btn"
                     disabled={clipBusy || !ep.audioPath}
                     onClick={() => downloadEpisodeAudio(ep)}
                     title={ep.audioPath ? "Per-chapter audio + timed cuts when available" : "No audio sidecar"}
                   >
                     Per-chapter audio
+                  </button>
+                  <button
+                    className="qh-ghost qh-btn"
+                    disabled={!!mediaBusy}
+                    onClick={() => downloadEpisodeCaptions(ep, "vtt")}
+                    title="WebVTT from the timed transcript"
+                  >
+                    Captions .vtt
+                  </button>
+                  <button
+                    className="qh-ghost qh-btn"
+                    disabled={!!mediaBusy}
+                    onClick={() => downloadEpisodeCaptions(ep, "srt")}
+                    title="SubRip from the timed transcript"
+                  >
+                    .srt
                   </button>
                 </span>
               </li>
@@ -513,10 +600,22 @@ export default function Memory({ projects }: { projects: string[] }) {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "10px 0" }}>
             <button className="qh-ghost qh-btn" onClick={copy}>{copied ? "Copied" : "Copy markdown"}</button>
             <button className="qh-ghost qh-btn" onClick={download}>Download .md</button>
+            <button
+              className="qh-ghost qh-btn"
+              onClick={() => loadAndDownloadClips()}
+              disabled={clipBusy || !project}
+              title="Full episode: m4a or audio.webm · timed cuts: WAV when timestamps exist"
+            >
+              {clipBusy ? "Preparing clips…" : "Download clips"}
+            </button>
             <button className="qh-ghost qh-btn" onClick={() => setShowDoc((v) => !v)}>
               {showDoc ? "Hide package" : "Show package"}
             </button>
           </div>
+          <p className="qh-dim" style={{ margin: "0 0 10px" }}>
+            Text handoff is the .md. Media is per chapter above: <strong>Full video</strong>{" "}
+            (continuous MP4/WebM), <strong>Captions</strong> (.vtt/.srt), and audio clips.
+          </p>
 
           <div className="qp-share" style={{ marginBottom: 12 }}>
             {shareUrl ? (

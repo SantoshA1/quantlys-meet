@@ -7,6 +7,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { hms } from "@/lib/intelligence";
 import { durationSecondsFromSummary } from "@/lib/recording-flush";
+import { videoQualityLabel } from "@/lib/recording-quality";
+import { captionsFile, type CaptionFormat } from "@/lib/caption-export";
 import {
   resolveSessionMode,
   recordingsActionsTab, recordingsActionsHead, recordingsActionsEmpty,
@@ -32,6 +34,8 @@ type Rec = {
   when: string;
   size: number;
   duration?: number | null;
+  /** "1080p" when the recorder reported the take's size. */
+  quality?: string;
   audioPath?: string;
   summaryPath?: string;
 };
@@ -112,8 +116,10 @@ export default function Recordings({ userId }: { userId: string }) {
       const { data, error } = await db().storage.from("recordings").download(r.summaryPath);
       if (error || !data) return r;
       try {
-        const secs = durationSecondsFromSummary(JSON.parse(await data.text()));
-        return secs == null ? r : { ...r, duration: secs };
+        const j = JSON.parse(await data.text());
+        const secs = durationSecondsFromSummary(j);
+        const quality = videoQualityLabel(j?.video?.height);
+        return { ...r, ...(secs == null ? {} : { duration: secs }), ...(quality ? { quality } : {}) };
       } catch {
         return r;
       }
@@ -163,6 +169,35 @@ export default function Recordings({ userId }: { userId: string }) {
     if (u) window.location.href = u;
   }
 
+  // Captions from the same timed lines "ask this meeting" cites.
+  async function captions(rec: Rec, format: CaptionFormat) {
+    if (!rec.summaryPath) return;
+    const { data, error } = await db().storage.from("recordings").download(rec.summaryPath);
+    if (error || !data) {
+      setNote(`Could not read the transcript: ${error?.message}`);
+      return;
+    }
+    try {
+      const j = JSON.parse(await data.text());
+      const lines = Array.isArray(j?.utterances) ? j.utterances : [];
+      const text = captionsFile(lines, format);
+      if (!lines.length || !text.replace(/^WEBVTT\s*/, "").trim()) {
+        setNote("No timed caption lines in this recording — turn captions on next time.");
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([text], { type: format === "srt" ? "application/x-subrip" : "text/vtt" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${rec.room}-${rec.when.replace(/[: ]/g, "-")}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch {
+      setNote("That transcript file could not be read.");
+    }
+  }
+
   async function showSummary(rec: Rec) {
     if (!rec.summaryPath) return;
     if (open[rec.path]) {
@@ -210,14 +245,27 @@ export default function Recordings({ userId }: { userId: string }) {
                 {r.room}
                 {r.size ? ` · ${pretty(r.size)}` : ""}
                 {r.duration ? ` · ${hms(r.duration)}` : ""}
-                {r.path.endsWith(".webm") ? " · WebM (opens in Chrome)" : ""}
+                {r.quality ? ` · ${r.quality}` : ""}
+                {r.path.endsWith(".webm") ? " · WebM (opens in Chrome)" : " · MP4"}
               </span>
             </span>
             <span className="qm-row">
               <button className="qm-ghost" onClick={() => play(r.path)}>Play</button>
-              <button className="qm-ghost" onClick={() => get(r.path)}>Download</button>
+              <button className="qm-ghost" onClick={() => get(r.path)} title="The continuous take, full resolution">
+                Download video
+              </button>
               {r.audioPath ? (
                 <button className="qm-ghost" onClick={() => get(r.audioPath!)}>Audio only</button>
+              ) : null}
+              {r.summaryPath ? (
+                <>
+                  <button className="qm-ghost" onClick={() => captions(r, "vtt")} title="WebVTT captions from the timed transcript">
+                    Captions .vtt
+                  </button>
+                  <button className="qm-ghost" onClick={() => captions(r, "srt")} title="SubRip captions from the timed transcript">
+                    .srt
+                  </button>
+                </>
               ) : null}
               {r.summaryPath ? (
                 <button className="qm-ghost" onClick={() => showSummary(r)}>
