@@ -85,7 +85,7 @@ export default function HomeLanding() {
 
       <section className="qml-hero">
         <p className="qml-kicker">Nobody takes minutes</p>
-        <h1>Leave the call with a spec, not notes.</h1>
+        <h1>The video meeting that leaves a spec, not notes.</h1>
         <p className="qml-lede">
           Quantlys Meeting is video in a browser tab. Guests need a link, not an
           account. Turn captions on, and the working session writes a PRD —
@@ -404,8 +404,13 @@ export default function HomeLanding() {
         <span>
           <Link href="/host">Host</Link>
           <a href="#own">Open source</a>
-          <Link href="/open-source-video-meeting">Self-host</Link>
+          <Link href="/open-source-video-meeting">Open-source video meeting</Link>
+          <Link href="/open-source-zoom-alternative">Open-source Zoom alternative</Link>
+          <Link href="/self-hosted-video-conferencing">Self-hosted video conferencing</Link>
+          <Link href="/browser-video-meeting-no-download">No-download meetings</Link>
           <Link href="/memory-mode">Memory</Link>
+          <Link href="/podcast-recording-in-browser">Podcast recording</Link>
+          <Link href="/ai-meeting-assistant-prd">AI meeting assistant → PRD</Link>
           <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
           <Link href="/prd-from-meeting">PRD from meeting</Link>
           <Link href="/notes-vs-prd">Notes vs PRD</Link>

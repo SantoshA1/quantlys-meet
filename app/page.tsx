@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import HomeLanding from "./HomeLanding";
 
-const title = "Quantlys Meeting | Leave the call with a spec, not notes";
+const title = "Video Meeting App That Writes Your PRD | Quantlys Meeting";
 const description =
-  "Open-source browser video meetings. Guests need a link. Sessions write a markdown PRD — plus Memory mode for podcasts, books, and oral history. MIT, BYO keys.";
+  "Open-source video conferencing in your browser. Guests join from a link, no download. Recorded sessions write a markdown PRD, not a transcript. MIT.";
 
 export const metadata: Metadata = {
   title,
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "Quantlys Meeting — leave the call with a spec, not notes",
+        alt: "Quantlys Meeting — the video meeting app that writes your PRD",
       },
     ],
   },
@@ -69,7 +69,17 @@ const jsonLd = {
       description:
         "Open-source browser video room whose recorded session writes a markdown PRD, plus Memory mode for podcasts and oral history. Not Quantalys, the fund-data company.",
       applicationCategory: "CommunicationApplication",
+      applicationSubCategory: "Video conferencing",
       operatingSystem: "Web",
+      browserRequirements: "Requires a WebRTC-capable browser (Chrome, Edge, Firefox, Safari).",
+      featureList: [
+        "Browser video meetings — guests join from a link, no download or account",
+        "Waiting room, room lock, screen share, whiteboard, live captions",
+        "HD 720p recording (MP4 or WebM)",
+        "Recorded sessions write a markdown PRD",
+        "Memory mode for podcasts, books, and oral history",
+        "MIT-licensed, self-hostable",
+      ],
       license: "https://github.com/SantoshA1/quantlys-meet/blob/main/LICENSE",
       codeRepository: "https://github.com/SantoshA1/quantlys-meet",
       brand: { "@id": "https://www.quantlys.ai/#org" },

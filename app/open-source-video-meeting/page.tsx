@@ -177,6 +177,16 @@ export default function OpenSourceVideoMeetingPage() {
           <Link href="/memory-mode">Memory mode</Link>.
         </p>
 
+        <h2>Go deeper</h2>
+        <p>
+          Comparing options? See{" "}
+          <Link href="/open-source-zoom-alternative">open-source Zoom alternative</Link>{" "}
+          (vs Zoom, Jitsi Meet, BigBlueButton). Running it yourself? See{" "}
+          <Link href="/self-hosted-video-conferencing">self-hosted video conferencing</Link>.
+          Guests:{" "}
+          <Link href="/browser-video-meeting-no-download">browser video meeting, no download</Link>.
+        </p>
+
         <h2>Who built this</h2>
         <p>
           Santosh Adari built Quantlys Meeting as dogfood for{" "}

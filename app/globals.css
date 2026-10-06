@@ -523,3 +523,9 @@ body { background:transparent; color:inherit;
 .qml-legal p, .qml-legal li { color: var(--muted); line-height: 1.6; font-size: 15px; margin: 0 0 12px; }
 .qml-legal ul { margin: 0 0 12px; padding-left: 18px; }
 .qml-legal a { color: var(--accent2); }
+
+/* Honest comparison tables on the intent pages. */
+.qml-legal table { width: 100%; border-collapse: collapse; margin: 4px 0 18px; font-size: 14px; }
+.qml-legal th, .qml-legal td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); color: var(--muted); line-height: 1.45; }
+.qml-legal th { color: inherit; font-weight: 600; }
+.qml-legal .qml-tablewrap { overflow-x: auto; }
