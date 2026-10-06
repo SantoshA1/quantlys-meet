@@ -22,6 +22,11 @@ export default function robots(): MetadataRoute.Robots {
         "/recap-vs-prd",
         "/open-source-video-meeting",
         "/memory-mode",
+        "/browser-video-meeting-no-download",
+        "/open-source-zoom-alternative",
+        "/self-hosted-video-conferencing",
+        "/podcast-recording-in-browser",
+        "/ai-meeting-assistant-prd",
         "/privacy",
       ],
       disallow: [

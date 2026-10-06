@@ -174,6 +174,12 @@ export default function MemoryModePage() {
           <a href="https://www.quantlys.ai">quantlys.ai</a> by Santosh Adari.
         </p>
 
+        <p>
+          Recording a remote show? The step-by-step is on{" "}
+          <Link href="/podcast-recording-in-browser">podcast recording in the browser</Link>,
+          including when a local multi-track recorder is the better tool.
+        </p>
+
         <h2>What you need</h2>
         <ul>
           <li>Host account (email code) — guests need a link only</li>
