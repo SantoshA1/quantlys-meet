@@ -13,12 +13,15 @@ export const INTENT_LINKS: { href: string; label: string }[] = [
   { href: "/browser-video-meeting-no-download", label: "No-download meetings" },
   { href: "/open-source-zoom-alternative", label: "Open-source Zoom alternative" },
   { href: "/self-hosted-video-conferencing", label: "Self-hosted video conferencing" },
-  { href: "/open-source-video-meeting", label: "Open-source video meeting" },
+  { href: "/open-source-video-meeting", label: "Open-source video conferencing" },
   { href: "/podcast-recording-in-browser", label: "Podcast recording in browser" },
   { href: "/memory-mode", label: "Memory mode" },
   { href: "/ai-meeting-assistant-prd", label: "AI meeting assistant → PRD" },
   { href: "/meeting-that-writes-prd", label: "Meeting → PRD" },
+  { href: "/prd-from-meeting", label: "PRD from meeting" },
   { href: "/notes-vs-prd", label: "Notes vs PRD" },
+  { href: "/recap-vs-prd", label: "Recap vs PRD" },
+  { href: "/example-prd", label: "Example PRD" },
   { href: "/privacy", label: "Privacy" },
 ];
 
