@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * Ping IndexNow (Bing / Yandex / compatible engines) for Quantlys Meeting URLs.
+ * Ping IndexNow (Bing / Yandex / Seznam / compatible engines) for Quantlys Meeting URLs.
  * Key file: public/<key>.txt  (must be served at https://quantlys-meeting.com/<key>.txt)
  *
  * Usage: node scripts/indexnow-ping.mjs
  * Optional: INDEXNOW_URLS="https://..." comma-separated override
+ *
+ * Keep defaultUrls in sync with app/sitemap.ts. Google does not use IndexNow;
+ * resubmit changed URLs in Google Search Console URL Inspection.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,12 +28,18 @@ if (!keyFile) {
 const key = keyFile.replace(/\.txt$/i, "");
 const keyLocation = `https://${host}/${keyFile}`;
 
+// Must match app/sitemap.ts (plus sitemap.xml itself for engines that accept it).
 const defaultUrls = [
   `https://${host}/`,
-  `https://${host}/open-source-video-meeting`,
-  `https://${host}/memory-mode`,
+  `https://${host}/browser-video-meeting-no-download`,
+  `https://${host}/open-source-zoom-alternative`,
+  `https://${host}/self-hosted-video-conferencing`,
+  `https://${host}/podcast-recording-in-browser`,
+  `https://${host}/ai-meeting-assistant-prd`,
   `https://${host}/meeting-that-writes-prd`,
   `https://${host}/prd-from-meeting`,
+  `https://${host}/open-source-video-meeting`,
+  `https://${host}/memory-mode`,
   `https://${host}/notes-vs-prd`,
   `https://${host}/recap-vs-prd`,
   `https://${host}/example-prd`,
@@ -52,6 +61,7 @@ const body = {
 const endpoints = [
   "https://api.indexnow.org/indexnow",
   "https://www.bing.com/indexnow",
+  "https://yandex.com/indexnow",
 ];
 
 console.log(`IndexNow key=${key} urls=${urls.length}`);
@@ -69,12 +79,12 @@ for (const endpoint of endpoints) {
   }
 }
 
-// Also ping Google sitemap (informational — GSC URL Inspection is still needed)
+// Google's sitemap ping endpoint is retired (often 404). Kept as informational only.
 try {
   const ping = await fetch(
     `https://www.google.com/ping?sitemap=${encodeURIComponent(`https://${host}/sitemap.xml`)}`
   );
-  console.log(`Google sitemap ping → ${ping.status}`);
+  console.log(`Google sitemap ping → ${ping.status} (retired endpoint; use GSC URL Inspection)`);
 } catch (err) {
   console.error("Google sitemap ping error", err?.message || err);
 }

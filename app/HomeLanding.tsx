@@ -404,7 +404,7 @@ export default function HomeLanding() {
         <span>
           <Link href="/host">Host</Link>
           <a href="#own">Open source</a>
-          <Link href="/open-source-video-meeting">Open-source video meeting</Link>
+          <Link href="/open-source-video-meeting">Open-source video conferencing</Link>
           <Link href="/open-source-zoom-alternative">Open-source Zoom alternative</Link>
           <Link href="/self-hosted-video-conferencing">Self-hosted video conferencing</Link>
           <Link href="/browser-video-meeting-no-download">No-download meetings</Link>

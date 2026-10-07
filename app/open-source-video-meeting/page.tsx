@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-const title = "Open-source video meeting | Quantlys Meeting";
+const title = "Open-Source Video Conferencing Software | Quantlys Meeting";
 const description =
-  "MIT open-source browser video meetings you can self-host. BYO LiveKit, Deepgram, Supabase, OpenAI. A Zoom alternative that writes a PRD — plus Memory mode.";
+  "MIT open-source video conferencing software for the browser. Self-host with LiveKit, Deepgram, Supabase, OpenAI. Writes a PRD — plus Memory mode.";
 
 export const metadata: Metadata = {
   title,
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "Quantlys Meeting — open-source browser video meetings",
+        alt: "Quantlys Meeting — open-source video conferencing software",
       },
     ],
   },
@@ -87,12 +87,12 @@ export default function OpenSourceVideoMeetingPage() {
 
       <section className="qml-hero">
         <p className="qml-kicker">MIT · plug your own keys</p>
-        <h1>Open-source video meeting</h1>
+        <h1>Open-source video conferencing software</h1>
         <p className="qml-lede">
-          Quantlys Meeting is a browser video room you can clone and run with
-          your own infrastructure. Guests join from a link. Recorded sessions
-          can write a markdown PRD. Memory mode covers podcasts, books, and
-          oral history. Not a locked SaaS notetaker — source is public.
+          Quantlys Meeting is MIT-licensed video conferencing software you run
+          in the browser with your own keys. Guests join from a link. Recorded
+          sessions can write a markdown PRD. Memory mode covers podcasts, books,
+          and oral history. Not a locked SaaS notetaker — source is public.
         </p>
         <div className="qml-cta">
           <a
@@ -217,9 +217,13 @@ export default function OpenSourceVideoMeetingPage() {
         </span>
         <span>
           <Link href="/">Home</Link>
+          <Link href="/open-source-zoom-alternative">Zoom alternative</Link>
+          <Link href="/self-hosted-video-conferencing">Self-hosted</Link>
+          <Link href="/browser-video-meeting-no-download">No download</Link>
           <Link href="/memory-mode">Memory</Link>
           <Link href="/meeting-that-writes-prd">Meeting → PRD</Link>
           <Link href="/prd-from-meeting">PRD from meeting</Link>
+          <Link href="/notes-vs-prd">Notes vs PRD</Link>
           <Link href="/privacy">Privacy</Link>
           <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a>
         </span>

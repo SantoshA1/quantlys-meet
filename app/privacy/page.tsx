@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: "Privacy — Quantlys Meeting",
   description:
     "How Quantlys Meeting uses meeting audio, recordings, captions, notes, and host email. Operated by Agility Business Services / Quantlys.",
+  robots: { index: true, follow: true },
   alternates: {
     canonical: "https://quantlys-meeting.com/privacy",
   },

@@ -122,7 +122,7 @@ export default function Page() {
         <h2>Related</h2>
         <ul>
           <li><Link href="/open-source-zoom-alternative">Open-source Zoom alternative</Link>: comparison table</li>
-          <li><Link href="/open-source-video-meeting">Open-source video meeting</Link>: product overview</li>
+          <li><Link href="/open-source-video-meeting">Open-source video conferencing software</Link>: product overview</li>
           <li><Link href="/podcast-recording-in-browser">Podcast recording in the browser</Link></li>
         </ul>
       </article>
