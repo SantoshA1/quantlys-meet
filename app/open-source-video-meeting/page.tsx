@@ -190,7 +190,7 @@ export default function OpenSourceVideoMeetingPage() {
         <h2>Who built this</h2>
         <p>
           Santosh Adari built Quantlys Meeting as dogfood for{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>. Live hosted
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>. Live hosted
           product: <Link href="/">quantlys-meeting.com</Link>. Quantlys
           Conclave and the rest of the platform stay closed — this repo is the
           meeting app only (Conclave-compatible rubrics + paste-handoff). No
@@ -213,7 +213,7 @@ export default function OpenSourceVideoMeetingPage() {
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>
         </span>
         <span>
           <Link href="/">Home</Link>

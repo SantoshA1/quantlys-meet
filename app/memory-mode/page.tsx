@@ -171,7 +171,7 @@ export default function MemoryModePage() {
           <Link href="/">quantlys-meeting.com</Link>; source on{" "}
           <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a>{" "}
           (MIT, v1.0.0-oss). Dogfood for{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a> by Santosh Adari.
+          <a href="https://www.quantlys.ai/">quantlys.ai</a> by Santosh Adari.
         </p>
 
         <p>
@@ -207,7 +207,7 @@ export default function MemoryModePage() {
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>
         </span>
         <span>
           <Link href="/">Home</Link>

@@ -52,7 +52,7 @@ export default function PrivacyPage() {
           business as Quantlys. The hosted product is at{" "}
           <a href="https://quantlys-meeting.com">quantlys-meeting.com</a>. The
           parent site is{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>.
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>.
         </p>
 
         <h2>What this product does</h2>
@@ -144,7 +144,7 @@ export default function PrivacyPage() {
           through the host sign-in email channel — the address you use at{" "}
           <Link href="/host">/host</Link> — or the site operator, Quantlys /
           Agility Business Services, via{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a> or{" "}
+          <a href="https://www.quantlys.ai/">quantlys.ai</a> or{" "}
           <a href="https://quantlys-meeting.com">this site</a>.
         </p>
       </article>
@@ -152,7 +152,7 @@ export default function PrivacyPage() {
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>
         </span>
         <span>
           <Link href="/">Home</Link>

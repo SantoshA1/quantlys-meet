@@ -148,7 +148,7 @@ export default function Page() {
         <p>
           Product overview: <Link href="/open-source-video-meeting">open-source video conferencing software</Link>.
           Built by Santosh Adari as dogfood for{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>.
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>.
         </p>
       </article>
     </IntentShell>
