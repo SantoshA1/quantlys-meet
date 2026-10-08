@@ -22,6 +22,7 @@ export const INTENT_LINKS: { href: string; label: string }[] = [
   { href: "/notes-vs-prd", label: "Notes vs PRD" },
   { href: "/recap-vs-prd", label: "Recap vs PRD" },
   { href: "/example-prd", label: "Example PRD" },
+  { href: "/about", label: "About" },
   { href: "/privacy", label: "Privacy" },
 ];
 
@@ -84,7 +85,7 @@ export function IntentShell({
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a> · Built by{" "}
+          <a href="https://www.quantlys.ai/platform">Built on Quantlys</a> · Built by{" "}
           <a href="https://santoshadari.com/">Santosh Adari</a>
         </span>
         <span>
