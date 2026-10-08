@@ -63,12 +63,12 @@ export default function Page() {
           Quantlys Meeting is a browser video meeting app whose recorded
           session writes a markdown PRD. It is built by{" "}
           <a href="https://santoshadari.com/">Santosh Adari</a> as dogfood
-          for <a href="https://www.quantlys.ai/platform">Quantlys</a>, the AI
+          for <a href="https://www.quantlys.ai/">Quantlys</a>, the AI
           platform that designs and builds web, iOS, and Android apps. The
           meeting app is open source under MIT.
         </p>
         <div className="qml-cta">
-          <a className="qml-btn qml-btn-primary" href="https://www.quantlys.ai/platform">
+          <a className="qml-btn qml-btn-primary" href="https://www.quantlys.ai/">
             What is Quantlys?
           </a>
           <a className="qml-btn qml-btn-ghost" href="https://github.com/SantoshA1/quantlys-meet">
@@ -148,7 +148,7 @@ export default function Page() {
           <li><Link href="/meeting-that-writes-prd">Meeting that writes a PRD</Link></li>
           <li><Link href="/open-source-zoom-alternative">Open-source Zoom alternative</Link></li>
           <li><Link href="/memory-mode">Memory mode</Link> for podcasts and oral history</li>
-          <li><a href="https://www.quantlys.ai/platform">The Quantlys platform</a></li>
+          <li><a href="https://www.quantlys.ai/">The Quantlys platform (quantlys.ai)</a></li>
         </ul>
       </article>
     </IntentShell>

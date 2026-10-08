@@ -148,7 +148,7 @@ export default function MeetingThatWritesPrdPage() {
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>
         </span>
         <span>
           <Link href="/">Home</Link>

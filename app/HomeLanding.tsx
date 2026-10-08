@@ -290,7 +290,7 @@ export default function HomeLanding() {
           {" · "}
           <Link href="/open-source-video-meeting">open-source video meeting</Link>
           {" · dogfood for "}
-          <a href="https://www.quantlys.ai/platform">the Quantlys AI platform</a>
+          <a href="https://www.quantlys.ai/">the Quantlys AI platform</a>
           {" · "}
           <Link href="/about">about</Link>.
         </p>
@@ -398,7 +398,7 @@ export default function HomeLanding() {
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai">quantlys.ai</a>
+          <a href="https://www.quantlys.ai/">quantlys.ai</a>
           {" · "}
           Built by{" "}
           <a href="https://santoshadari.com/">Santosh Adari</a>
@@ -420,7 +420,7 @@ export default function HomeLanding() {
           <Link href="/example-prd">Example PRD</Link>
           <Link href="/about">About</Link>
           <Link href="/privacy">Privacy</Link>
-          <a href="https://www.quantlys.ai/platform">Built on Quantlys</a>
+          <a href="https://www.quantlys.ai/">Built on Quantlys</a>
           <a href="https://github.com/SantoshA1/quantlys-meet">GitHub</a>
           <a href="https://github.com/SantoshA1/quantlys-meet/releases/tag/v1.0.0-oss">
             v1.0.0-oss
