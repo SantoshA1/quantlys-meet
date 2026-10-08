@@ -41,18 +41,28 @@ const jsonLd = {
     {
       "@type": "Organization",
       "@id": "https://www.quantlys.ai/#org",
-      name: "Agility Business Services dba Quantlys",
-      url: "https://www.quantlys.ai",
+      name: "Quantlys",
+      legalName: "Agility Business Services, Inc.",
+      alternateName: ["Quantlys AI", "Agility Business Services dba Quantlys"],
+      url: "https://www.quantlys.ai/",
       sameAs: [
-        "https://x.com/SantoshAdari1",
-        "https://www.linkedin.com/in/santoshadari/",
+        "https://www.agilityserv.com/",
+        "https://medium.com/quantlys",
+        "https://github.com/Agility-Business-Services",
       ],
-      founder: {
-        "@type": "Person",
-        "@id": "https://santoshadari.com/#person",
-        name: "Santosh Adari",
-        url: "https://santoshadari.com/",
-      },
+      founder: { "@id": "https://santoshadari.com/#person" },
+    },
+    {
+      "@type": "Person",
+      "@id": "https://santoshadari.com/#person",
+      name: "Santosh Adari",
+      url: "https://santoshadari.com/",
+      jobTitle: "Founder, Quantlys",
+      sameAs: [
+        "https://www.linkedin.com/in/santoshadari",
+        "https://x.com/SantoshAdari1",
+        "https://github.com/SantoshA1",
+      ],
     },
     {
       "@type": "WebSite",
@@ -83,6 +93,8 @@ const jsonLd = {
       license: "https://github.com/SantoshA1/quantlys-meet/blob/main/LICENSE",
       codeRepository: "https://github.com/SantoshA1/quantlys-meet",
       brand: { "@id": "https://www.quantlys.ai/#org" },
+      creator: { "@id": "https://santoshadari.com/#person" },
+      sameAs: ["https://github.com/SantoshA1/quantlys-meet"],
       offers: {
         "@type": "Offer",
         price: "0",

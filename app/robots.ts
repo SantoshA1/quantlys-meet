@@ -27,6 +27,7 @@ export default function robots(): MetadataRoute.Robots {
         "/self-hosted-video-conferencing",
         "/podcast-recording-in-browser",
         "/ai-meeting-assistant-prd",
+        "/about",
         "/privacy",
       ],
       disallow: [

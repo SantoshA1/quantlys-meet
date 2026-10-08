@@ -43,6 +43,7 @@ const defaultUrls = [
   `https://${host}/notes-vs-prd`,
   `https://${host}/recap-vs-prd`,
   `https://${host}/example-prd`,
+  `https://${host}/about`,
   `https://${host}/privacy`,
   `https://${host}/sitemap.xml`,
 ];
