@@ -258,3 +258,16 @@ export const COPY = {
   guestHelper: "The host has to approve this. You'll get the PRD after they end the session, not a Zoom-style recap.",
   guestButton: "Request",
 };
+
+/**
+ * How long the room waits before asking /api/spec-email again.
+ * Fast only while the feature is on and the session is live; slow while it is
+ * off (a guest still notices the host turning it on); slower in a hidden tab;
+ * stopped after End. Returns null to stop polling.
+ */
+export const SPEC_POLL_MS = { live: 5_000, off: 30_000, hidden: 60_000 } as const;
+export function specPollDelay(opts: { on: boolean; ended: boolean; hidden: boolean }): number | null {
+  if (opts.ended) return null;
+  if (opts.hidden) return SPEC_POLL_MS.hidden;
+  return opts.on ? SPEC_POLL_MS.live : SPEC_POLL_MS.off;
+}

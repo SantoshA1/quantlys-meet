@@ -1,10 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import {
-  COPY, guestStateLabel, afterEndCopy, isEmail, type RequestStatus,
+  COPY, guestStateLabel, afterEndCopy, isEmail, specPollDelay, type RequestStatus,
 } from "@/lib/spec-email";
+
+function tabHidden(): boolean {
+  try { return typeof document !== "undefined" && document.visibilityState === "hidden"; } catch { return false; }
+}
+
+/**
+ * Poll with an adaptive delay instead of a fixed setInterval. `tick` runs and
+ * returns the latest { on, ended }; the next run is scheduled from that.
+ * Coming back to a hidden tab refreshes right away.
+ */
+function useSpecPoll(tick: () => Promise<{ on: boolean; ended: boolean } | null>, deps: unknown[]) {
+  const last = useRef({ on: false, ended: false });
+  useEffect(() => {
+    let alive = true;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const run = async () => {
+      if (t) { clearTimeout(t); t = null; }
+      try {
+        const s = await tick();
+        if (s) last.current = s;
+      } catch { /* keep last state */ }
+      if (!alive) return;
+      const d = specPollDelay({ ...last.current, hidden: tabHidden() });
+      if (d != null) t = setTimeout(run, d);
+    };
+    const onVis = () => { if (!tabHidden() && !last.current.ended) run(); };
+    run();
+    document.addEventListener("visibilitychange", onVis);
+    return () => { alive = false; if (t) clearTimeout(t); document.removeEventListener("visibilitychange", onVis); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
 
 type HostReq = {
   id: string;
@@ -47,21 +79,18 @@ export function SpecEmailHost({
       headers: { Authorization: `Bearer ${await token()}` },
     });
     const j = await r.json().catch(() => ({}));
-    if (!j?.host) return;
+    if (!j?.host) return { on: false, ended: true };
     setOn(Boolean(j.on));
     setHostCopy(j.hostCopy !== false);
     setHostEmail(j.hostEmail || accountEmail);
     setPending(Number(j.pending) || 0);
     setRequests(Array.isArray(j.requests) ? j.requests : []);
     setEnded(Boolean(j.ended));
+    // Off: the toggle in this panel updates state directly, so no idle polling.
+    return { on: Boolean(j.on), ended: Boolean(j.ended) || !j.on };
   }, [room, accountEmail]);
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (!on) return;
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [on, load]);
+  useSpecPoll(load, [load, on]);
 
   const frozen = Boolean(readonly || ended);
 
@@ -209,9 +238,11 @@ export function SpecEmailGuest({
       setStatus(j.my.status);
       if (j.my.email) setEmail(j.my.email);
     }
+    // Untracked room (no meeting row) never gets the feature: stop asking.
+    return { on: Boolean(j.on), ended: Boolean(j.ended) || j?.tracked === false };
   }, [room, key]);
 
-  useEffect(() => { load(); const t = setInterval(load, 6000); return () => clearInterval(t); }, [load, disconnected]);
+  useSpecPoll(load, [load, disconnected]);
 
   const note = afterEndCopy({ on, myStatus: status as any, email });
   if (disconnected && ended) {
@@ -263,20 +294,14 @@ export function SpecEmailChip({
   onOpen: () => void;
 }) {
   const [n, setN] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const beat = async () => {
-      try {
-        const r = await fetch(`/api/spec-email?room=${encodeURIComponent(room)}`, {
-          headers: { Authorization: `Bearer ${await token()}` },
-        });
-        const j = await r.json().catch(() => ({}));
-        if (alive && j?.host) setN(Number(j.pending) || 0);
-      } catch { /* */ }
-    };
-    beat();
-    const t = setInterval(beat, 5000);
-    return () => { alive = false; clearInterval(t); };
+  useSpecPoll(async () => {
+    const r = await fetch(`/api/spec-email?room=${encodeURIComponent(room)}`, {
+      headers: { Authorization: `Bearer ${await token()}` },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!j?.host) { setN(0); return { on: false, ended: true }; }
+    setN(Number(j.pending) || 0);
+    return { on: Boolean(j.on), ended: Boolean(j.ended) };
   }, [room]);
   if (!n) return null;
   return (
