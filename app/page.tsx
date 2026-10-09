@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import HomeLanding from "./HomeLanding";
+import Home from "./_home/B";
 
 const title = "Video Meeting App That Writes Your PRD | Quantlys Meeting";
 const description =
@@ -165,7 +165,7 @@ export default function Page() {
   return (
     <>
       <JsonLd />
-      <HomeLanding />
+      <Home />
     </>
   );
 }

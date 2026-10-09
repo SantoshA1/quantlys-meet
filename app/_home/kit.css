@@ -1,0 +1,92 @@
+/* Shared skin for the homepage direction previews (B, C). Scoped to .qp. */
+body:has(.qp) .brandbar, body:has(.qh) .brandbar { display: none; }
+html:has(.qp) { background: #04060a; }
+
+@font-face { font-family: "QP Grotesk Fallback"; font-weight: 100 450;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Helvetica");
+  size-adjust: 108.5%; ascent-override: 90.7%; descent-override: 26.9%; line-gap-override: 0%; }
+@font-face { font-family: "QP Grotesk Fallback"; font-weight: 451 900;
+  src: local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Helvetica Bold");
+  size-adjust: 104.0%; ascent-override: 94.6%; descent-override: 28.1%; line-gap-override: 0%; }
+
+.qp {
+  flex-shrink: 0; /* main is a flex column: without this the page box is clipped to one screen */
+  --bg: #04060a; --bg2: #090d13; --card: rgba(255,255,255,.03);
+  --line: rgba(255,255,255,.08); --line2: rgba(255,255,255,.14);
+  --text: #eef2f6; --mut: #a3adbb; --dim: #8592a3;
+  --teal: #2DD4BF; --teal2: #5eead4; --amber: #F5B942; --red: #ff5d6c;
+  --sans: "Space Grotesk", "QP Grotesk Fallback", ui-sans-serif, system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  position: relative; isolation: isolate; min-height: 100%;
+  background: var(--bg); color: var(--text); color-scheme: dark;
+  font-family: var(--sans); -webkit-font-smoothing: antialiased; overflow-x: clip;
+}
+.qp a { color: inherit; }
+.qp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.qp :focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 6px; }
+.qp-mono { font-family: var(--mono); }
+.qp code { font-family: var(--mono); color: var(--teal2); font-size: .92em; }
+.qp-k { font: 500 11px/1.4 var(--mono); letter-spacing: .2em; text-transform: uppercase; color: var(--dim); margin: 0 0 16px; }
+.qp-mark { color: var(--text); flex: 0 0 auto; }
+.qp-brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; font-size: 15px; white-space: nowrap; }
+.qp-brand em { font-style: normal; color: var(--teal); font-weight: 500; }
+
+.qp-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 48px; padding: 0 22px;
+  border-radius: 999px; font: 500 15px/1 var(--sans); text-decoration: none; border: 1px solid transparent; white-space: nowrap;
+  transition: transform .2s, box-shadow .2s, background .2s, border-color .2s; }
+.qp-btn-sm { height: 38px; padding: 0 16px; font-size: 14px; }
+.qp .qp-btn-p { background: var(--teal); color: #03211d; box-shadow: 0 0 0 1px rgba(45,212,191,.4), 0 8px 30px rgba(45,212,191,.25); }
+.qp-btn-p:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(45,212,191,.6), 0 12px 40px rgba(45,212,191,.35); }
+.qp-btn-g { background: rgba(255,255,255,.04); color: var(--text); border-color: var(--line2); }
+.qp-btn-g:hover { background: rgba(255,255,255,.08); }
+.qp-btn:disabled { opacity: .5; cursor: default; transform: none; }
+
+.qp-joinbox { width: 100%; max-width: 520px; }
+.qp-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.qp-input { flex: 1 1 220px; min-width: 0; height: 48px; padding: 0 18px; border-radius: 999px; background: rgba(0,0,0,.4);
+  border: 1px solid var(--line2); color: var(--text); font: 15px var(--sans); }
+.qp-input::placeholder { color: var(--dim); }
+.qp-input:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 4px rgba(45,212,191,.14); }
+.qp-muted { color: var(--mut); font-size: 14px; }
+.qp-note { color: #ff8f9a; font-size: 14px; margin: 10px 0 0; }
+
+.qp-faq details { border-bottom: 1px solid var(--line); }
+.qp-faq summary { display: flex; align-items: center; gap: 18px; padding: 20px 2px; cursor: pointer; list-style: none; }
+.qp-faq summary::-webkit-details-marker { display: none; }
+.qp-faq summary::after { content: "+"; margin-left: auto; font: 300 24px/1 var(--sans); color: var(--dim); transition: transform .25s; }
+.qp-faq details[open] summary::after { transform: rotate(45deg); color: var(--teal); }
+.qp-faq summary h3 { margin: 0; font-size: 18px; font-weight: 500; }
+.qp-faq summary .qp-mono { font-size: 12px; color: var(--dim); }
+.qp-faq details p { margin: -4px 0 22px 0; color: var(--mut); line-height: 1.6; max-width: 62ch; }
+.qp-faq details a { color: var(--teal2); }
+
+.qp-foot { max-width: 1200px; margin: 0 auto; padding: 72px 24px 96px; }
+.qp-foot-top { display: grid; grid-template-columns: 1fr 2.4fr; gap: 40px; padding-bottom: 36px; border-bottom: 1px solid var(--line); }
+.qp-foot-top p { color: var(--mut); font-size: 14px; line-height: 1.6; max-width: 32ch; }
+.qp-foot-top p a { color: var(--text); }
+.qp-foot-cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+.qp-foot-cols div { display: flex; flex-direction: column; gap: 10px; }
+.qp-foot-cols a { color: var(--mut); text-decoration: none; font-size: 13.5px; }
+.qp-foot-cols a:hover { color: var(--text); }
+.qp-foot-bot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 20px; font-size: 12.5px; color: var(--dim); }
+@media (max-width: 860px) {
+  .qp-foot-top { grid-template-columns: 1fr; }
+  .qp-foot-cols { grid-template-columns: 1fr 1fr; }
+  .qp-foot-cols div:nth-child(2) { display: none; } /* phones: keep the footer short; SEO links stay on / */
+}
+
+/* Direction switcher — preview chrome only */
+.qp-switch { position: fixed; z-index: 50; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px;
+  padding: 5px; border-radius: 999px; background: rgba(12,16,22,.82); border: 1px solid rgba(255,255,255,.14);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  font: 12px/1 "IBM Plex Mono", ui-monospace, monospace; color: #a3adbb; }
+.qp-switch > span { padding: 0 10px 0 12px; letter-spacing: .14em; text-transform: uppercase; font-size: 10px; color: #8592a3; }
+.qp-switch a { color: #c6ced8; text-decoration: none; padding: 8px 12px; border-radius: 999px; white-space: nowrap; }
+.qp-switch a b { color: #2DD4BF; margin-right: 4px; }
+.qp-switch a.on { background: #2DD4BF; color: #03211d; }
+.qp-switch a.on b { color: #03211d; }
+@media (max-width: 520px) { .qp-switch > span { display: none; } .qp-switch a { padding: 8px 10px; } .qp-switch a span { display: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .qp *, .qp *::before, .qp *::after { animation: none !important; transition: none !important; }
+}
