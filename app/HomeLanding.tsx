@@ -255,8 +255,9 @@ export default function HomeLanding() {
               <span className="qh-mono">v1.0.0-oss · MIT</span>
             </p>
             <h1>
-              The video meeting that leaves <span className="qh-nw"><span className="qh-grad">a spec</span>,</span>{" "}
-              <span className="qh-soft">not notes.</span>
+              <span className="qh-l">The video meeting</span>{" "}
+              <span className="qh-l">that leaves <span className="qh-nw"><span className="qh-grad">a spec</span>,</span></span>{" "}
+              <span className="qh-l qh-soft">not notes.</span>
             </h1>
           </div>
           <div>

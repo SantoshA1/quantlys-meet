@@ -5,6 +5,7 @@
    is hidden here because the page carries its own floating nav. */
 
 body:has(.qh) .brandbar { display: none; }
+html:has(.qh) { background: #05070a; }
 
 /* Metric-matched fallback so the swap to Space Grotesk does not reflow the
    display headline (CLS). Numbers from Next's capsize metrics: Space Grotesk
@@ -17,6 +18,7 @@ body:has(.qh) .brandbar { display: none; }
   size-adjust: 104.0%; ascent-override: 94.6%; descent-override: 28.1%; line-gap-override: 0%; }
 
 .qh {
+  flex-shrink: 0; /* main is a flex column: without this the page box is clipped to one screen */
   --qbg: #05070a; --qbg2: #0a0e14; --qcard: rgba(255,255,255,.028);
   --qline: rgba(255,255,255,.08); --qline2: rgba(255,255,255,.14);
   --qtext: #eef2f6; --qmut: #a3adbb; --qdim: #8592a3;
@@ -73,7 +75,7 @@ body:has(.qh) .brandbar { display: none; }
   text-decoration: none; border: 1px solid transparent; white-space: nowrap;
   transition: transform .2s ease, box-shadow .2s ease, background .2s ease, border-color .2s; }
 .qh-btn-sm { height: 38px; padding: 0 16px; font-size: 14px; }
-.qh-btn-p { background: var(--qteal); color: #03211d;
+.qh .qh-btn-p { background: var(--qteal); color: #03211d;
   box-shadow: 0 0 0 1px rgba(45,212,191,.4), 0 8px 30px rgba(45,212,191,.25); }
 .qh-btn-p:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(45,212,191,.6), 0 12px 40px rgba(45,212,191,.35); }
 .qh-btn-g { background: rgba(255,255,255,.04); color: var(--qtext); border-color: var(--qline2);
@@ -93,6 +95,8 @@ body:has(.qh) .brandbar { display: none; }
   -webkit-background-clip: text; background-clip: text; color: transparent; }
 .qh-soft { color: #6f7b8c; }
 .qh-nw { white-space: nowrap; }
+/* Phones: fixed three-line headline so a late web font can't change the line count (CLS). */
+@media (max-width: 600px) { .qh h1 { font-size: min(44px, 11vw); } .qh-l { display: block; white-space: nowrap; } }
 .qh-lede { font-size: clamp(17px, 1.5vw, 20px); line-height: 1.6; color: var(--qmut); max-width: 600px; margin: 0 0 32px; }
 .qh-fine { font-size: 13px; color: var(--qdim); margin: 18px 0 0; }
 .qh-cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
@@ -105,7 +109,7 @@ body:has(.qh) .brandbar { display: none; }
 @media (max-width: 960px) { .qh-hero-grid { grid-template-columns: 1fr; } .qh-for { display: none; } }
 .qh-pill { display: inline-flex; align-items: center; gap: 10px; margin: 0; padding: 7px 14px;
   border-radius: 999px; border: 1px solid rgba(45,212,191,.28); background: rgba(45,212,191,.06);
-  font-size: 13px; color: var(--qteal2); }
+  font-size: 13px; line-height: 18px; color: var(--qteal2); }
 .qh-pill .qh-mono { font-size: 11.5px; color: var(--qmut); letter-spacing: .04em; }
 .qh-pill-sep { width: 1px; height: 12px; background: var(--qline2); }
 .qh-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--qteal); position: relative; }
