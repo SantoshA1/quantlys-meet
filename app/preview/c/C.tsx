@@ -10,7 +10,7 @@
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
-import { GH, Mark, Arrow, Check, JoinBox, FAQ, Foot } from "../kit";
+import { GH, Mark, Arrow, Check, JoinBox, FAQ, Foot } from "../../_home/kit";
 import "./c.css";
 
 const STEPS = [

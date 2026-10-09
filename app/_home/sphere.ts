@@ -69,14 +69,19 @@ export function mountSphere(canvas: HTMLCanvasElement, onFirstFrame: () => void)
   } catch {
     return null;
   }
-  const small = window.innerWidth < 760;
-  const dpr = Math.min(window.devicePixelRatio || 1, small ? 1.5 : 1.75);
+  const small = Math.min(window.innerWidth, window.innerHeight) < 760;
+  const dprCap = () => Math.min(window.devicePixelRatio || 1, Math.min(window.innerWidth, window.innerHeight) < 760 ? 1.5 : 1.75);
+  let dpr = dprCap();
   renderer.setPixelRatio(dpr);
   renderer.setClearColor(0x000000, 0);
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(32, 1, 0.1, 50);
-  camera.position.set(0, 0, 6.2);
+  // Framing: the canvas is a square box (CSS --S). At this distance the dot
+  // sphere (R 0.98) spans 62% of the box, leaving the rest for the glow, which
+  // the CSS mask fades to nothing before the box edge — so if the box fits on
+  // screen, the sphere and its glow do too.
+  camera.position.set(0, 0, 0.98 / (Math.tan((16 * Math.PI) / 180) * 0.62));
   const rig = new Group();
   const spin = new Group();
   rig.add(spin);
@@ -124,12 +129,17 @@ export function mountSphere(canvas: HTMLCanvasElement, onFirstFrame: () => void)
   function size() {
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
+    dpr = dprCap();
+    renderer.setPixelRatio(dpr);
+    // Dot size follows the box so a phone-sized sphere is not a blur of fat points.
+    pm.uniforms.uPx.value = dpr * (2.1 + 1.5 * Math.min(Math.max((Math.min(w, h) - 300) / 600, 0), 1));
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
   const ro = new ResizeObserver(size);
   ro.observe(canvas);
+  window.addEventListener("orientationchange", size);
   size();
 
   // Mouse parallax
@@ -164,6 +174,7 @@ export function mountSphere(canvas: HTMLCanvasElement, onFirstFrame: () => void)
       if (raf) cancelAnimationFrame(raf);
       io.disconnect(); ro.disconnect();
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("orientationchange", size);
       document.removeEventListener("visibilitychange", onVis);
       g.dispose(); pm.dispose(); orbG.dispose(); orbM.dispose(); glowG.dispose(); glowM.dispose();
       renderer.dispose();

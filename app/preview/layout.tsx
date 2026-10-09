@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import "./kit.css";
+import "../_home/kit.css";
 import Switcher from "./Switcher";
 
 // Design-direction previews (A/B/C) for the homepage. Not linked from the

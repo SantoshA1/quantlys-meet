@@ -1,5 +1,4 @@
 /* Direction B — Signal sphere. Scoped to .qb */
-.qb { --orb: min(66vh, 640px); }
 
 .b-nav { position: absolute; z-index: 10; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 24px;
   max-width: 1320px; margin: 0 auto; padding: 22px 32px; }
@@ -8,33 +7,47 @@
 .b-links a:hover { color: var(--text); }
 @media (max-width: 760px) { .b-links { display: none; } .b-nav .qp-btn { margin-left: auto; } .b-nav { padding: 16px 18px; } }
 
-/* Hero: one lit object, type around it */
-.b-hero { position: relative; min-height: max(720px, 100svh); max-height: 1100px; overflow: hidden;
+/* Hero: one lit object, type around it.
+   Sizing model (all modes): the sphere lives in a square box of side --S that
+   also contains its glow (edges are masked to transparent), and the dotted
+   sphere itself is --D = 0.62 x --S across. --S is derived from the viewport so
+   the whole box always fits on screen; the WebGL canvas fills the box and
+   re-sizes itself with a ResizeObserver.
+   Modes: wide (default) | stack (<=900px wide, portrait) | land (short landscape). */
+.qb { --H: min(max(720px, 100vh), 1440px); --mode: wide; }
+@supports (height: 100svh) { .qb { --H: min(max(720px, 100svh), 1440px); } }
+.qb { --S: min(calc(var(--H) * .86), 92vw, 1200px); --D: calc(var(--S) * .62); --cy: calc(var(--H) * .45); }
+
+.b-hero { position: relative; min-height: var(--H); overflow: hidden;
   display: flex; flex-direction: column; justify-content: space-between; padding: 96px 32px 48px;
   background:
-    radial-gradient(42% 46% at 50% 42%, rgba(45,212,191,.13), transparent 70%),
+    radial-gradient(calc(var(--S) * .5) calc(var(--S) * .5) at 50% var(--cy), rgba(45,212,191,.12), transparent 70%),
     radial-gradient(80% 60% at 50% 110%, rgba(45,212,191,.06), transparent 70%), var(--bg); }
 .b-hero::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1; opacity: .08; mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
 .b-stage { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
-.b-orb { position: absolute; left: 50%; top: 43%; width: calc(var(--orb) * 1.7); height: calc(var(--orb) * 1.7); transform: translate(-50%, -50%); }
+.b-orb { position: absolute; left: 50%; top: var(--cy); width: var(--S); height: var(--S); transform: translate(-50%, -50%);
+  -webkit-mask-image: radial-gradient(closest-side, #000 72%, rgba(0,0,0,.55) 86%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 72%, rgba(0,0,0,.55) 86%, transparent 100%); }
 .b-orb canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity 1.2s ease; }
 .b-orb.is-live canvas { opacity: 1; }
 .b-orb.is-live .b-poster { opacity: 0; }
-/* Static poster: the same orb in CSS, shown until (or instead of) WebGL */
+/* Static poster: the same orb in CSS, sized from --D, shown until (or instead of) WebGL */
 .b-poster { position: absolute; inset: 0; display: grid; place-items: center; transition: opacity 1.2s ease; }
-.b-poster i { width: calc(var(--orb) * .66); aspect-ratio: 1; border-radius: 50%;
+.b-poster i { width: calc(var(--D) * .88); aspect-ratio: 1; border-radius: 50%; position: relative;
   background:
-    radial-gradient(circle at 34% 28%, rgba(255,255,255,.22), transparent 18%),
-    radial-gradient(circle at 50% 50%, #04070a 58%, rgba(45,212,191,.35) 72%, rgba(45,212,191,0) 74%);
-  box-shadow: 0 0 120px 20px rgba(45,212,191,.16), inset 0 0 60px rgba(45,212,191,.25); position: relative; }
-.b-poster i::before { content: ""; position: absolute; inset: -12%; border-radius: 50%;
-  background: radial-gradient(circle, rgba(165,180,196,.55) 1px, transparent 1.6px) 0 0 / 14px 14px;
-  -webkit-mask-image: radial-gradient(circle, transparent 52%, #000 62%, transparent 72%); mask-image: radial-gradient(circle, transparent 52%, #000 62%, transparent 72%); }
+    radial-gradient(circle at 34% 28%, rgba(255,255,255,.2), transparent 18%),
+    radial-gradient(circle closest-side, #04070a 80%, rgba(45,212,191,.38) 96%, rgba(45,212,191,0) 100%);
+  box-shadow: 0 0 calc(var(--D) * .3) calc(var(--D) * .04) rgba(45,212,191,.16), inset 0 0 calc(var(--D) * .12) rgba(45,212,191,.22); }
+.b-poster i::before { content: ""; position: absolute; inset: -6.8%; border-radius: 50%;
+  background: radial-gradient(circle, rgba(165,180,196,.55) 1px, transparent 1.6px) 0 0 / 12px 12px;
+  -webkit-mask-image: radial-gradient(circle closest-side, transparent 80%, #000 92%, transparent 100%);
+  mask-image: radial-gradient(circle closest-side, transparent 80%, #000 92%, transparent 100%); }
 
-/* Caption fragments condensing into the orb */
-.b-frags { position: absolute; left: 50%; top: 43%; }
-.b-frag { position: absolute; left: 0; top: 0; white-space: nowrap; font: 12.5px/1 var(--mono); color: #c7d0da;
+/* Caption fragments condensing into the orb (start offsets set by JS) */
+.b-frags { position: absolute; left: 50%; top: var(--cy); }
+.b-frags:not(.is-set) { visibility: hidden; }
+.b-frag { --x: 0px; --y: 0px; position: absolute; left: 0; top: 0; white-space: nowrap; font: 12.5px/1 var(--mono); color: #c7d0da;
   padding: 8px 12px; border-radius: 999px; background: rgba(10,14,20,.6); border: 1px solid var(--line2);
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   animation: bfrag 8.1s cubic-bezier(.55,0,.75,.4) var(--d) infinite both; opacity: 0; }
@@ -48,12 +61,12 @@
   100% { transform: translate(-50%,-50%) translate(0, 0) scale(.35); opacity: 0; }
 }
 /* The one thing that comes out */
-.b-card { position: absolute; left: calc(50% + var(--orb) * .3); top: calc(43% - var(--orb) * .04); width: 270px; padding: 14px 16px;
+.b-card { position: absolute; left: min(calc(50% + var(--D) * .26), calc(100% - 294px)); top: calc(var(--cy) - var(--D) * .08); width: 270px; padding: 14px 16px;
   border-radius: 16px; background: linear-gradient(180deg, rgba(14,24,26,.82), rgba(6,10,14,.86)); border: 1px solid rgba(45,212,191,.5);
   box-shadow: 0 0 0 1px rgba(45,212,191,.15), 0 0 60px rgba(45,212,191,.25), 0 30px 60px rgba(0,0,0,.6);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); animation: bcard 1.2s cubic-bezier(.2,.7,.2,1) .8s both; }
 @keyframes bcard { from { opacity: 0; transform: translateY(14px) scale(.96); } }
-.b-card-h { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--mut); margin-bottom: 10px; }
+.b-card-h { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 11px; color: var(--mut); margin-bottom: 10px; white-space: nowrap; }
 .b-ok { display: inline-flex; align-items: center; gap: 6px; font: 500 11px/1 var(--mono); color: var(--teal2); }
 .b-ok i { width: 6px; height: 6px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 10px var(--teal); }
 .b-card p { margin: 0 0 6px; font-size: 12.5px; color: var(--mut); line-height: 1.4; }
@@ -75,21 +88,53 @@
 .b-cta { display: flex; gap: 10px; flex-wrap: wrap; }
 .b-cta-c { justify-content: center; }
 
+/* Stack: phones and portrait tablets. Sphere sits in flow above the headline,
+   sized to the narrower of the width and ~half the screen height. */
 @media (max-width: 900px) {
-  .qb { --orb: min(86vw, 400px); }
-  .b-hero { min-height: 0; max-height: none; padding: 84px 20px 40px; justify-content: flex-start; }
-  .b-orb { top: 270px; }
-  .b-frags { top: 270px; }
-  .b-frag { font-size: 10.5px; padding: 6px 9px; }
-  .b-frag:nth-child(n+4) { display: none; }
-  .b-card { left: auto; right: 14px; top: 292px; width: 214px; padding: 11px 13px; }
+  .qb { --mode: stack; --S: min(calc(100vw - 24px), calc(100vh * .46), 600px); --cy: 50%; }
+  @supports (height: 100svh) { .qb { --S: min(calc(100vw - 24px), calc(100svh * .46), 600px); } }
+  .b-hero { min-height: 0; padding: 76px 0 40px; justify-content: flex-start;
+    background: radial-gradient(70% calc(var(--S) * .45) at 50% calc(96px + var(--S) / 2), rgba(45,212,191,.1), transparent 70%), var(--bg); }
+  .b-top { order: 1; padding: 0 20px; }
+  .b-stage { order: 2; position: relative; inset: auto; flex: 0 0 auto; width: 100%; height: var(--S); margin: 8px 0 12px; }
+  .b-bottom { order: 3; padding: 0 20px; grid-template-columns: 1fr; gap: 20px; }
+  .b-side { display: none; }
+  .b-card { left: auto; top: auto; right: max(12px, calc(50% - var(--S) / 2)); bottom: 0; width: 226px; padding: 11px 13px; }
+  .b-card .b-x { display: none; }   /* compact card on small screens: story + decision */
   .b-card p { font-size: 11.5px; margin-bottom: 4px; }
   .b-card .b-dec { font-size: 11px !important; }
-  .b-side { display: none; }
-  .b-top { margin-bottom: 470px; }
-  .b-bottom { grid-template-columns: 1fr; gap: 20px; }
+  .b-frag { font-size: 10.5px; padding: 6px 9px; }
+  .b-frag:not(.m) { display: none; }
 }
-@media (max-width: 900px) { @keyframes bfrag { 0% { transform: translate(-50%,-50%) translate(calc(var(--x) * .45), calc(var(--y) * .9)); opacity: 0 } 15% { opacity: 1 } 86% { transform: translate(-50%,-50%) scale(.35); opacity: 0 } 100% { opacity: 0 } } }
+@media (max-width: 600px) { .b-hero .b-cta .qp-btn { flex: 1 1 auto; padding-left: 16px; padding-right: 16px; } }
+@media (max-width: 360px) {
+  .b-frag:not(.s) { display: none; }
+  .b-card { width: 200px; padding: 10px 11px; }
+  .b-card .b-pre { display: none; }
+  .b-card p { font-size: 11px; }
+}
+/* Land: phones held sideways. Text left, sphere right, everything in one screen. */
+@media (max-height: 560px) and (orientation: landscape) {
+  .qb { --mode: land; --S: min(calc(100vh - 72px), 46vw); --cy: 50%; }
+  @supports (height: 100svh) { .qb { --S: min(calc(100svh - 72px), 46vw); } }
+  .b-hero { min-height: 0; padding: 64px 24px 24px; justify-content: center; gap: 14px;
+    background: radial-gradient(calc(var(--S) * .5) calc(var(--S) * .5) at 74% 50%, rgba(45,212,191,.1), transparent 70%), var(--bg); }
+  .b-stage { position: absolute; inset: auto; right: 0; top: 56px; width: 48%; height: calc(100vh - 56px); margin: 0; }
+  @supports (height: 100svh) { .b-stage { height: calc(100svh - 56px); } }
+  .b-top, .b-bottom { width: 52%; max-width: none; margin: 0; padding: 0; }
+  .b-bottom { grid-template-columns: 1fr; gap: 14px; }
+  .qb h1 { font-size: min(40px, 9.5vh, 5.4vw); }
+  .qb h1 .l { display: block; white-space: nowrap; }
+  .b-right p { font-size: 14px; line-height: 1.5; margin-bottom: 14px; }
+  .b-side { display: none; }
+  .b-card { left: auto; top: auto; right: 12px; bottom: 10px; width: 204px; padding: 10px 11px; }
+  .b-card .b-pre { display: none; }
+  .b-card p { font-size: 11px; margin-bottom: 3px; }
+  .b-card .b-dec { font-size: 10.5px !important; padding: 4px 7px; }
+  .b-card-h { margin-bottom: 6px; }
+  .b-frag { font-size: 10.5px; padding: 6px 9px; }
+  .b-frag:not(.s) { display: none; }
+}
 
 /* Sections */
 .b-sec { max-width: 1256px; margin: 0 auto; padding: 120px 32px 0; }
@@ -150,3 +195,8 @@
 .b-final h2 { max-width: 12em; }
 @media (max-width: 1290px) { .b-final { margin-left: 20px; margin-right: 20px; } }
 @media (max-width: 700px) { .b-final { margin-top: 80px; padding: 64px 20px; } }
+@media (max-width: 360px) {
+  .b-nav { padding: 14px 12px; gap: 10px; }
+  .b-nav .qp-btn { padding: 0 12px; font-size: 13px; }
+}
+.qb [id] { scroll-margin-top: 24px; }
