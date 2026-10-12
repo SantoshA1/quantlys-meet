@@ -45,17 +45,26 @@ export async function POST(req: NextRequest) {
     const svc = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!,
       { cookies: { getAll: () => [], setAll: () => {} } });
     const { data: m, error: mErr } = await svc.from("meetings")
-      .select("id, requires_approval, active").eq("room_name", room).maybeSingle();
+      .select("id, active").eq("room_name", room).maybeSingle();
     // Security (audit 2026-10-12): no token for rooms without a meeting row,
-    // and guests cannot join a meeting the host has ended.
-    if (!mErr && !m) {
+    // and guests cannot join a meeting the host has ended. Fail closed here:
+    // this legacy route has no self-host "no database" mode.
+    if (mErr) {
+      return NextResponse.json({ error: "Could not check this meeting. Try again." }, { status: 503 });
+    }
+    if (!m) {
       return NextResponse.json({ error: "This meeting does not exist." }, { status: 404 });
     }
-    if ((m as any)?.active === false) {
+    if ((m as any).active === false) {
       return NextResponse.json({ error: "This meeting has ended. Ask the host to reopen it." }, { status: 409 });
     }
+    // requires_approval is optional (not every schema has the column); a
+    // missing column must not hide the existence check above.
+    const appr = await svc.from("meetings")
+      .select("requires_approval").eq("room_name", room).maybeSingle();
+    const needsApproval = !appr.error && Boolean((appr.data as any)?.requires_approval);
 
-    if (m?.requires_approval) {
+    if (needsApproval) {
       const { data: row } = await svc.from("pending_admissions")
         .insert({ room_name: room, display_name: displayName }).select("id").single();
       return NextResponse.json({ pending: true, admissionId: row!.id }, { status: 202 });
