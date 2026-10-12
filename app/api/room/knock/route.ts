@@ -47,7 +47,7 @@ async function anyoneInside(room: string): Promise<boolean | undefined> {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "room-knock", LIMITS.knock);
+  const limited = await rateLimit(req, "room-knock", LIMITS.knock);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });

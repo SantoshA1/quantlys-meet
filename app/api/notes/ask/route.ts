@@ -32,7 +32,7 @@ function admin() {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "notes-ask", LIMITS.llm);
+  const limited = await rateLimit(req, "notes-ask", LIMITS.llm);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });

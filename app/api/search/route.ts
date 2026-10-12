@@ -56,7 +56,7 @@ function stem(name: string) {
 type Found = { id: string; room: string; when: string; videoPath?: string; audioPath?: string };
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "search", LIMITS.llm);
+  const limited = await rateLimit(req, "search", LIMITS.llm);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });

@@ -60,7 +60,7 @@ function fromAddress(hostEmail: string): { from: string; domain: string } {
 
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "meetings-invite", LIMITS.email);
+  const limited = await rateLimit(req, "meetings-invite", LIMITS.email);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
