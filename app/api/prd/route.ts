@@ -16,13 +16,14 @@
 // is a paste, and the app says so rather than pretending.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { chooseModel, modelLikelyVision } from "@/lib/model";
 import {
   detectModeFor, rubricFor, metaFor, prdPrompt, prdSystemPrompt, extractJson,
   normalizeReport, fallbackReport, stitchTranscripts, handoffPlan, prdMarkdown,
   prdFilename, prdPath, answeredKeys, type MeetingSource,
 } from "@/lib/prd";
-import { readContext } from "../project/route";
+import { readContext } from "@/lib/project-context";
 import { describeWorkflow, toMermaid, whiteboardNotes, type Workflow } from "@/lib/workflow";
 import {
   myRooms, roomsForProject, resolveProject, roomFromPath, mayReadRecording, type MeetingRow,
@@ -65,6 +66,8 @@ async function listAll(sb: any, prefix: string, cap: number) {
 const norm = (s: any) => String(s || "").trim().toLowerCase();
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "prd", LIMITS.llm);
+  if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
   }
@@ -383,6 +386,8 @@ export async function POST(req: Request) {
 
 /** Read back the last assessment without paying for a new one. */
 export async function GET(req: Request) {
+  const limited = rateLimit(req, "prd-get", LIMITS.read);
+  if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
   }

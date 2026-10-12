@@ -15,6 +15,7 @@
 // the exact problem it was supposed to remove.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { askPrompt, parseAnswer, timedTranscript } from "@/lib/notes";
 import { chooseModel } from "@/lib/model";
 
@@ -31,6 +32,8 @@ function admin() {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "notes-ask", LIMITS.llm);
+  if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
   }

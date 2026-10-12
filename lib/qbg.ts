@@ -360,7 +360,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
       .finally(() => { this.mediapipeWarming = null; });
   }
 
-  /** Apply soft MODNet alpha — no harden / open / island / plant / face-hull. */
+  /** Apply soft MODNet alpha — no harden / open / island / plant / face hull. */
   private applyModnetMask(alpha: Uint8ClampedArray, mw: number, mh: number) {
     const mix = adaptiveSmoothAlpha(this.smooth, alpha as any);
     this.smooth = blendMask(this.smooth, alpha as any, mix) as Uint8ClampedArray;
@@ -757,7 +757,7 @@ class QuantlysBackground extends VideoTransformer<QbgOptions> {
     pc.restore();
     let id: ImageData;
     try {
-      id = this.plateCtx.getImageData(0, 0, W, H);
+      id = this.plateCtx!.getImageData(0, 0, W, H);
     } catch {
       this.paintBlurAll(frame, W, H);
       return;

@@ -1,4 +1,5 @@
 "use client";
+import { useDataChannel } from "@/lib/use-data-channel";
 
 // The agent in the room.
 //
@@ -29,7 +30,7 @@
 // record so it reaches /api/prd the same way.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
+import { useLocalParticipant } from "@livekit/components-react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 import { finals, type Caption } from "@/lib/captions";
 import {

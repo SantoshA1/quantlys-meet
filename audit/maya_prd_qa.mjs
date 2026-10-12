@@ -21,6 +21,7 @@ const { CLOUD, reset, fakeFetch, content, RETIRED_MODEL_404 } = await import("./
 process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role";
 process.env.NEXT_PUBLIC_SUPABASE_URL = "https://fake.supabase.co";
 process.env.OPENROUTER_API_KEY = "or-key";
+process.env.RATE_LIMIT_DISABLED = "1"; // in-process harness: every call shares one fake IP
 globalThis.fetch = fakeFetch;
 
 const { POST, GET } = await import("../app/api/prd/route.ts");

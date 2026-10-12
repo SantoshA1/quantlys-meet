@@ -10,6 +10,7 @@
 // stares at a wall for ten minutes and then joins on Google Meet instead.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { dedupeKnocks, position, isStale, type Knock } from "@/lib/waiting";
 
@@ -46,6 +47,8 @@ async function anyoneInside(room: string): Promise<boolean | undefined> {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "room-knock", LIMITS.knock);
+  if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
   }

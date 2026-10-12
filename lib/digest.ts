@@ -143,7 +143,9 @@ export function shortDay(iso: string, tz?: string): string {
 }
 
 export function rangeLabel(fromISO: string, toISO: string, tz?: string): string {
-  const opt: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", timeZone: tz };
+  // Week bounds are UTC ISO strings, so label them in UTC unless a zone is given;
+  // otherwise a server in America/* labels Aug 10–16 as "Aug 9 – Aug 16".
+  const opt: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", timeZone: tz || "UTC" };
   return `${new Date(fromISO).toLocaleDateString("en-US", opt)} – ${new Date(toISO).toLocaleDateString("en-US", opt)}`;
 }
 

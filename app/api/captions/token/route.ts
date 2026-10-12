@@ -15,6 +15,7 @@
 // works right up until somebody reads your JavaScript.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,6 +31,8 @@ function admin() {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "captions-token", LIMITS.token);
+  if (limited) return limited;
   const key = process.env.DEEPGRAM_API_KEY;
   if (!key) {
     // Not an error. It means "use the other engine", and the caller is told

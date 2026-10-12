@@ -23,13 +23,14 @@
 // which model it used instead.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { chooseModel } from "@/lib/model";
 import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath, contextBlock, answeredKeys } from "@/lib/prd";
 import {
   acceptSessionMode, memoryRubric, memorySuggestionsFor, memoryAgentQuestionPrompt,
   MEMORY_META, type SessionMode,
 } from "@/lib/memory";
-import { readContext } from "../../project/route";
+import { readContext } from "@/lib/project-context";
 import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, dropCoveredByRecent, detectIntents, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
@@ -50,6 +51,8 @@ function admin() {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "agent-question", LIMITS.llm);
+  if (limited) return limited;
   const jwt = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
   let user: any = null;
   if (process.env.SUPABASE_SERVICE_ROLE_KEY && jwt) {

@@ -422,7 +422,7 @@ body { background:transparent; color:inherit;
 .lk-form-control { background:var(--sunk) !important; border:1px solid var(--fieldline) !important;
   border-radius:0 !important; color:var(--text) !important; }
 
-/* ── marketing homepage (`/`) ─────────────────────────────────────────── */
+/* ── marketing homepage ("/") ─────────────────────────────────────────── */
 .qml { max-width: 1080px; margin: 0 auto; padding: 0 22px 0;
   color: var(--text); }
 .qml-nav { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
@@ -517,7 +517,7 @@ body { background:transparent; color:inherit;
 .qml-foot a { color: var(--muted); margin-right: 14px; }
 .qml-foot a:hover { color: var(--text); }
 
-/* ── public legal pages (`/privacy`) ──────────────────────────────────── */
+/* ── public legal pages ("/privacy") ──────────────────────────────────── */
 .qml-legal { max-width: 720px; padding: 8px 0 48px; }
 .qml-legal h2 { font-size: 20px; margin: 28px 0 10px; font-weight: 600; }
 .qml-legal p, .qml-legal li { color: var(--muted); line-height: 1.6; font-size: 15px; margin: 0 0 12px; }

@@ -4,9 +4,11 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 
 export default function Standup() {
-  const supabase = supabaseBrowser();
   const router = useRouter();
   useEffect(() => { (async () => {
+    // Created inside the effect so prerender at build time never needs
+    // NEXT_PUBLIC_SUPABASE_* (the client only exists in the browser).
+    const supabase = supabaseBrowser();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.replace("/?next=/standup"); return; }   // logged-in link, not the guest link
     const today = new Date().toISOString().slice(0, 10);

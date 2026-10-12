@@ -66,6 +66,8 @@ npm test                     # offline Maya / lib guards (Node 22+ for .ts impor
 npm run dev                  # open /host (sign in) + paste the guest link in a second tab
 ```
 
+**Local smoke test:** `npm test` should print no `FAIL`. Then start a meeting from `/host` and open the guest link in two browser tabs: both should see and hear each other.
+
 Set `APP_URL` to your public origin (local: `http://localhost:3000`, prod: your Vercel URL).
 
 Full env reference: [`.env.example`](.env.example). Self-hosted SFU: [`docs/SELF_HOST.md`](docs/SELF_HOST.md).

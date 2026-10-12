@@ -22,6 +22,7 @@
 // request body that could point somewhere else.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { parseQuery, isEmptyQuery, toDoc, rank, searchPrompt, parseSearchAnswer, type MeetingDoc } from "@/lib/search";
 import { chooseModel } from "@/lib/model";
 
@@ -55,6 +56,8 @@ function stem(name: string) {
 type Found = { id: string; room: string; when: string; videoPath?: string; audioPath?: string };
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "search", LIMITS.llm);
+  if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
   }
