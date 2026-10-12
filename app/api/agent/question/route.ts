@@ -23,6 +23,7 @@
 // which model it used instead.
 
 import { createClient } from "@supabase/supabase-js";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { chooseModel } from "@/lib/model";
 import { rubricFor, metaFor, detectModeFor, suggestionsFor, prdPath, contextBlock, answeredKeys } from "@/lib/prd";
 import {
@@ -50,6 +51,8 @@ function admin() {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "agent-question", LIMITS.llm);
+  if (limited) return limited;
   const jwt = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
   let user: any = null;
   if (process.env.SUPABASE_SERVICE_ROLE_KEY && jwt) {

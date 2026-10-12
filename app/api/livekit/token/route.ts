@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { AccessToken } from "livekit-server-sdk";
 import { createServerClient } from "@supabase/ssr";
 import { GUEST_JOIN_CLOSED, guestJoinAllowed } from "@/lib/guest-join";
@@ -13,6 +14,8 @@ async function getUser(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const limited = rateLimit(req, "livekit-token", LIMITS.token);
+  if (limited) return limited;
   const { room, name } = await req.json();
   if (!room) return NextResponse.json({ error: "room required" }, { status: 400 });
 
@@ -41,8 +44,16 @@ export async function POST(req: NextRequest) {
   if (!isHost) {
     const svc = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!,
       { cookies: { getAll: () => [], setAll: () => {} } });
-    const { data: m } = await svc.from("meetings")
-      .select("id, requires_approval").eq("room_name", room).maybeSingle();
+    const { data: m, error: mErr } = await svc.from("meetings")
+      .select("id, requires_approval, active").eq("room_name", room).maybeSingle();
+    // Security (audit 2026-10-12): no token for rooms without a meeting row,
+    // and guests cannot join a meeting the host has ended.
+    if (!mErr && !m) {
+      return NextResponse.json({ error: "This meeting does not exist." }, { status: 404 });
+    }
+    if ((m as any)?.active === false) {
+      return NextResponse.json({ error: "This meeting has ended. Ask the host to reopen it." }, { status: 409 });
+    }
 
     if (m?.requires_approval) {
       const { data: row } = await svc.from("pending_admissions")

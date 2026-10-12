@@ -3,6 +3,7 @@
 // other route, so the existing room keeps working exactly as it does today.
 
 import { AccessToken } from "livekit-server-sdk";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { GUEST_JOIN_CLOSED, guestJoinAllowed } from "@/lib/guest-join";
@@ -13,32 +14,43 @@ export const dynamic = "force-dynamic";
 // people who should be here are here, the host closes the door and the link
 // stops working for anyone else. No queue to watch, nothing to approve, and
 // nobody standing outside wondering whether they were seen.
-async function doorState(room: string): Promise<{ locked: boolean; waitingRoom: boolean }> {
+type Door = { exists: boolean; joinable: boolean; locked: boolean; waitingRoom: boolean; isHost: boolean };
+
+// Security (audit 2026-10-12): a token is only minted for a room that has a
+// meeting row. Only the authenticated host may reopen an ended meeting
+// (active=false) or reset spec_email_sent_at; guests cannot resurrect rows.
+async function doorState(room: string, userId: string | null): Promise<Door> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const open = { locked: false, waitingRoom: false };
-  if (!url || !key) return open;          // no database to ask → never lock anyone out
+  // No database configured (bare self-host): there is no meeting registry to
+  // check against, so keep the old open behaviour.
+  const open: Door = { exists: true, joinable: true, locked: false, waitingRoom: false, isHost: false };
+  if (!url || !key) return open;
   try {
     const sb = createClient(url, key, { auth: { persistSession: false } });
     let data: any = null;
     const full = await sb
       .from("meetings")
-      .select("id, locked, waiting_room, active, ended_at, spec_email_sent_at")
+      .select("id, created_by, locked, waiting_room, active, ended_at, spec_email_sent_at")
       .eq("room_name", room)
       .maybeSingle();
     if (!full.error) data = full.data;
     else {
       const basic = await sb
         .from("meetings")
-        .select("id, locked, waiting_room, active")
+        .select("id, created_by, locked, waiting_room, active")
         .eq("room_name", room)
         .maybeSingle();
+      if (basic.error) return open;      // DB hiccup: fail open, as before
       data = basic.data;
     }
-    // A leftover "ended" row (old host END, cron, Kids) is not meeting death.
-    // OPEN mints a token and brings the row back to life. Fail open: a missed
-    // update must not refuse the token.
-    if (data && (data as any).id) {
+    if (!data || !(data as any).id) {
+      return { exists: false, joinable: false, locked: false, waitingRoom: false, isHost: false };
+    }
+    const isHost = !!userId && (data as any).created_by === userId;
+    // A leftover "ended" row is not meeting death, but only the HOST brings
+    // it back to life. Fail open: a missed update must not refuse the token.
+    if (isHost) {
       const patch: any = {};
       if ((data as any).active === false) patch.active = true;
       // A rejoin after End is a later session: the next End may send again.
@@ -54,8 +66,11 @@ async function doorState(room: string): Promise<{ locked: boolean; waitingRoom: 
       }
     }
     return {
+      exists: true,
+      joinable: isHost || (data as any).active !== false,
       locked: Boolean((data as any)?.locked),
       waitingRoom: Boolean((data as any)?.waiting_room),
+      isHost,
     };
   } catch {
     return open;                          // the door fails OPEN, never shut
@@ -124,6 +139,8 @@ async function signedInUser(req: Request): Promise<{ id: string } | null> {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, "room-token", LIMITS.token);
+  if (limited) return limited;
   let body: any = {};
   try {
     body = await req.json();
@@ -149,14 +166,23 @@ export async function POST(req: Request) {
 
   // Global kill switch. Product default is guests ON; ALLOW_GUEST_JOIN=false
   // refuses unsigned callers. Hosts and other signed-in people still enter.
+  const user = await signedInUser(req);
   if (!guestJoinAllowed()) {
-    const user = await signedInUser(req);
     if (!user) {
       return Response.json({ error: GUEST_JOIN_CLOSED }, { status: 403 });
     }
   }
 
-  const door = await doorState(room);
+  const door = await doorState(room, user?.id ?? null);
+  if (!door.exists) {
+    return Response.json({ error: "This meeting does not exist. Check the link with your host." }, { status: 404 });
+  }
+  if (!door.joinable) {
+    return Response.json(
+      { error: "This meeting has ended. Ask the host to reopen it." },
+      { status: 409 }
+    );
+  }
   if (door.locked) {
     return Response.json(
       { error: "This meeting is locked — the host has closed it to new people. Ask them to unlock it." },
