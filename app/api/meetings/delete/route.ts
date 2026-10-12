@@ -15,6 +15,23 @@
 // at them, and the answer says exactly what was removed.
 
 import { createClient } from "@supabase/supabase-js";
+import { RoomServiceClient } from "livekit-server-sdk";
+
+/** How many people are in the LiveKit room right now. null = could not ask
+ *  (no LiveKit config, or the SFU did not answer). */
+async function peopleInside(room: string): Promise<number | null> {
+  const host = process.env.LIVEKIT_URL || process.env.NEXT_PUBLIC_LIVEKIT_URL || process.env.LIVEKIT_WS_URL || "";
+  const key = process.env.LIVEKIT_API_KEY;
+  const secret = process.env.LIVEKIT_API_SECRET;
+  if (!host || !key || !secret) return null;
+  try {
+    const svc = new RoomServiceClient(host.replace(/^ws/, "http"), key, secret);
+    const ps = await svc.listParticipants(room);
+    return ps.length;
+  } catch {
+    return 0;   // no such room on the SFU = nobody is in it
+  }
+}
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,13 +78,21 @@ export async function POST(req: Request) {
   }
 
   // A meeting people are still IN is not a meeting you delete out from under
-  // them. End it first — that's a different button, and it's reversible in
-  // the way this isn't.
-  if ((meeting as any).active && !body?.force) {
-    return Response.json(
-      { error: "That meeting is still running. Press End first — deleting one people are in would drop them mid-sentence.", running: true },
-      { status: 409 }
-    );
+  // them. FIELD 2026-10-12: this used to test `meetings.active`, but End no
+  // longer flips `active` (the row stays reusable; see session-end.test), so
+  // EVERY meeting looked "still running" and Delete always answered 409 —
+  // the row never left the list. Ask LiveKit who is actually inside instead.
+  if (!body?.force) {
+    const inside = await peopleInside(room);
+    if (inside && inside > 0) {
+      return Response.json(
+        {
+          error: `${inside} ${inside === 1 ? "person is" : "people are"} still in that meeting. Press End first — deleting it would drop them mid-sentence.`,
+          running: true,
+        },
+        { status: 409 }
+      );
+    }
   }
 
   const report: Record<string, unknown> = { room, title: (meeting as any).title };

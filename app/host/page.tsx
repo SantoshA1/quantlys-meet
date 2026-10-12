@@ -194,6 +194,7 @@ export default function HostConsole() {
   // can't style, can't explain and can't say what will actually be removed —
   // and it trains people to click through warnings.
   const [confirmDel, setConfirmDel] = useState("");
+  const [delNote, setDelNote] = useState<{ room: string; text: string }>({ room: "", text: "" });
   const [deleting, setDeleting] = useState("");
   // Meeting (PRD/spec) vs Memory (story/podcast/book) — chosen on the Launch card
   // before start so Memory users do not hunt the in-room toggle.
@@ -649,8 +650,13 @@ export default function HostConsole() {
       });
       const j = await r.json();
       if (!r.ok || j?.error) {
-        setInviteNote(j?.error || "Couldn't delete that meeting.");
+        // Shown on the row itself — a note at the top of the page is easy to
+        // miss, and then Delete just looks like it did nothing.
+        setDelNote({ room, text: j?.error || "Couldn't delete that meeting." });
+        setDeleting("");
+        return;
       } else {
+        setDelNote({ room: "", text: "" });
         const bits = [
           j.files_removed ? `${j.files_removed} recording file${j.files_removed === 1 ? "" : "s"}` : "",
           j.action_items ? `${j.action_items} action item${j.action_items === 1 ? "" : "s"}` : "",
@@ -662,7 +668,7 @@ export default function HostConsole() {
         loadItems();
       }
     } catch {
-      setInviteNote("Couldn't reach the server to delete that.");
+      setDelNote({ room, text: "Couldn't reach the server to delete that." });
     }
     setDeleting("");
     setConfirmDel("");
@@ -934,13 +940,16 @@ export default function HostConsole() {
                         </>
                       ) : (
                         <button className="qh-ghost qh-del"
-                          onClick={() => { setConfirmDel(m.room_name); setInviteNote(""); }}
+                          onClick={() => { setConfirmDel(m.room_name); setInviteNote(""); setDelNote({ room: "", text: "" }); }}
                           title="Delete this meeting, its recordings and its notes">
                           DELETE
                         </button>
                       )}
                     </span>
                   </div>
+                  {delNote.room === m.room_name && delNote.text ? (
+                    <p className="qm-warn" role="alert">{delNote.text}</p>
+                  ) : null}
                   {confirmDel === m.room_name ? (
                     <p className="qm-warn">
                       This removes the meeting, its recording files and any action
