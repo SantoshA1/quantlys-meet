@@ -139,7 +139,7 @@ async function signedInUser(req: Request): Promise<{ id: string } | null> {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "room-token", LIMITS.token);
+  const limited = await rateLimit(req, "room-token", LIMITS.token);
   if (limited) return limited;
   let body: any = {};
   try {

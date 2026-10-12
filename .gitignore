@@ -61,3 +61,6 @@ public/ort/
 credentials.json
 **/service-account*.json
 .secrets/
+
+# MediaPipe wasm is copied from node_modules at build (scripts/copy-mediapipe.mjs)
+public/mediapipe/wasm/

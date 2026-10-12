@@ -51,7 +51,7 @@ function admin() {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "agent-question", LIMITS.llm);
+  const limited = await rateLimit(req, "agent-question", LIMITS.llm);
   if (limited) return limited;
   const jwt = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
   let user: any = null;

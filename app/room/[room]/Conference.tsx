@@ -243,6 +243,7 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
         return;
       }
       setToken(data.token);
+      currentRoomToken = data.token;
       setUrl(data.url);
       setJoined(true);
     } catch {
@@ -269,6 +270,7 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
         if (!alive) return;
         if (d?.state === "admitted" && d.token) {
           setToken(d.token);
+          currentRoomToken = d.token;
           setUrl(d.url);
           setJoined(true);
           return;
@@ -2456,6 +2458,10 @@ function ControlDock({ children }: { children: React.ReactNode }) {
 // runs, the person is told — including where their voice goes.
 // ───────────────────────────────────────────────────────────────────────────
 
+/** The LiveKit JWT this tab joined with. Sent to /api/captions/token as
+ *  proof of membership in the room (audit 2026-10-12). */
+let currentRoomToken = "";
+
 function hasBrowserRecogniser(): boolean {
   if (typeof window === "undefined") return false;
   return Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
@@ -2650,7 +2656,10 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       try {
         const r = await fetch("/api/captions/token", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(currentRoomToken ? { Authorization: `Bearer ${currentRoomToken}` } : {}),
+          },
           body: JSON.stringify({ room }),
         });
         const j = await r.json();

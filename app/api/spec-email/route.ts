@@ -66,7 +66,7 @@ async function listRequests(sb: any, meetingId: string) {
 }
 
 export async function GET(req: Request) {
-  const limited = rateLimit(req, "spec-email-get", LIMITS.read);
+  const limited = await rateLimit(req, "spec-email-get", LIMITS.read);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ on: false, live: false });
@@ -123,7 +123,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "spec-email", LIMITS.email);
+  const limited = await rateLimit(req, "spec-email", LIMITS.email);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });

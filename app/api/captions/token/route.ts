@@ -15,6 +15,7 @@
 // works right up until somebody reads your JavaScript.
 
 import { createClient } from "@supabase/supabase-js";
+import { TokenVerifier } from "livekit-server-sdk";
 import { rateLimit, LIMITS } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +32,7 @@ function admin() {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "captions-token", LIMITS.token);
+  const limited = await rateLimit(req, "captions-token", LIMITS.token);
   if (limited) return limited;
   const key = process.env.DEEPGRAM_API_KEY;
   if (!key) {
@@ -60,6 +61,24 @@ export async function POST(req: Request) {
   }
   const room = String(body?.room || "").trim();
   if (!room) return Response.json({ error: "Which meeting?" }, { status: 400 });
+
+  // Proof of membership (audit 2026-10-12): the caller must present the
+  // LiveKit access token it joined this room with. A room name alone is not
+  // enough — it would make this a Deepgram key vend for anyone with a link.
+  const lkKey = process.env.LIVEKIT_API_KEY;
+  const lkSecret = process.env.LIVEKIT_API_SECRET;
+  if (lkKey && lkSecret) {
+    const jwt = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+    if (!jwt) return Response.json({ error: "Join the meeting first." }, { status: 401 });
+    try {
+      const claims: any = await new TokenVerifier(lkKey, lkSecret).verify(jwt);
+      if (claims?.video?.room !== room || !claims?.video?.roomJoin) {
+        return Response.json({ error: "That token is for a different meeting." }, { status: 403 });
+      }
+    } catch {
+      return Response.json({ error: "Join the meeting first." }, { status: 401 });
+    }
+  }
 
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
     try {

@@ -49,7 +49,7 @@ async function listAll(sb: any, prefix: string, cap: number) {
 const norm = (s: any) => String(s || "").trim().toLowerCase();
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, "memory", LIMITS.llm);
+  const limited = await rateLimit(req, "memory", LIMITS.llm);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });
@@ -337,7 +337,7 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
-  const limited = rateLimit(req, "memory-get", LIMITS.read);
+  const limited = await rateLimit(req, "memory-get", LIMITS.read);
   if (limited) return limited;
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return Response.json({ error: "Server storage is not configured." }, { status: 503 });

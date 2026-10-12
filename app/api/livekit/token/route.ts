@@ -14,7 +14,7 @@ async function getUser(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const limited = rateLimit(req, "livekit-token", LIMITS.token);
+  const limited = await rateLimit(req, "livekit-token", LIMITS.token);
   if (limited) return limited;
   const { room, name } = await req.json();
   if (!room) return NextResponse.json({ error: "room required" }, { status: 400 });
