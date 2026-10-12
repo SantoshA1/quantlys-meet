@@ -5,14 +5,14 @@
 // console report instead of a broken meeting; promote it once reports are clean.
 const CSP_REPORT_ONLY = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://va.vercel-scripts.com https://cdn.jsdelivr.net",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://va.vercel-scripts.com https://cdn.jsdelivr.net https://vercel.live",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob: https:",
   "media-src 'self' blob: data: https://*.supabase.co",
-  "connect-src 'self' https://*.supabase.co wss://*.supabase.co wss://*.livekit.cloud https://*.livekit.cloud wss://api.deepgram.com https://api.deepgram.com https://va.vercel-scripts.com https://cdn.jsdelivr.net https://storage.googleapis.com",
+  "connect-src 'self' https://*.supabase.co wss://*.supabase.co wss://*.livekit.cloud https://*.livekit.cloud wss://api.deepgram.com https://api.deepgram.com https://va.vercel-scripts.com https://cdn.jsdelivr.net https://storage.googleapis.com https://vercel.live wss://ws-us3.pusher.com",
   "worker-src 'self' blob:",
-  "frame-src 'self'",
+  "frame-src 'self' https://vercel.live",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
