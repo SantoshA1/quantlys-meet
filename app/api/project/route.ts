@@ -26,6 +26,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   acceptBrief, acceptDecision, mergeDecisions, projectPath, type ProjectContext,
 } from "@/lib/prd";
+import { readContext } from "@/lib/project-context";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -51,22 +52,8 @@ async function gate(req: Request, project: string): Promise<{ err?: Response; sb
   return { sb, user };
 }
 
-/** Shared with /api/prd and /api/agent/question — one reader, so the three of
- *  them can never disagree about what a project's context is. */
-export async function readContext(sb: any, userId: string, project: string): Promise<ProjectContext> {
-  try {
-    const { data } = await sb.storage.from("recordings").download(projectPath(userId, project));
-    if (!data) return { brief: "", decisions: [] };
-    const j: any = JSON.parse(await data.text());
-    return {
-      brief: String(j?.brief || ""),
-      decisions: Array.isArray(j?.decisions) ? j.decisions : [],
-    };
-  } catch {
-    // No file is the normal state of a new project, not an error.
-    return { brief: "", decisions: [] };
-  }
-}
+// readContext lives in lib/project-context.ts: a route file may only export
+// route handlers and config.
 
 async function writeContext(sb: any, userId: string, project: string, ctx: ProjectContext) {
   await sb.storage.from("recordings").upload(

@@ -15,6 +15,7 @@
 
 import { redirect } from "next/navigation";
 
-export default function MeetingRedirect({ params }: { params: { room: string } }) {
-  redirect(`/room/${encodeURIComponent(params.room)}`);
+export default async function MeetingRedirect({ params }: { params: Promise<{ room: string }> }) {
+  const { room } = await params;
+  redirect(`/room/${encodeURIComponent(room)}`);
 }

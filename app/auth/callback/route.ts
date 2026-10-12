@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(`${origin}/?error=missing_code`);
   }
 
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   // Prepare the response first so the SDK can write refreshed auth cookies onto it.
   const res = NextResponse.redirect(`${origin}${safeNext}`);
 

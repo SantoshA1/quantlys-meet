@@ -30,7 +30,7 @@ import {
   acceptSessionMode, memoryRubric, memorySuggestionsFor, memoryAgentQuestionPrompt,
   MEMORY_META, type SessionMode,
 } from "@/lib/memory";
-import { readContext } from "../../project/route";
+import { readContext } from "@/lib/project-context";
 import { agentQuestionPrompt, parseAgentQuestion, pickDimension, rankOpen, dropCoveredByRecent, detectIntents, MAX_QUESTIONS, SPEC_MAX_QUESTIONS, SPEC_MAX_PER_DIMENSION, MAX_PER_DIMENSION } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";

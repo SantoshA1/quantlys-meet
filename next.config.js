@@ -1,7 +1,5 @@
 /** @type {import("next").NextConfig} */
 module.exports = {
-  typescript: { ignoreBuildErrors: true },
-  eslint: { ignoreDuringBuilds: true },
   reactStrictMode: true,
   // App surfaces (rooms, consoles, shared PRD/Memory links, auth) must never
   // be indexed. robots.txt already disallows crawling them; this header is
@@ -13,6 +11,10 @@ module.exports = {
       "/meetings/:path*", "/memory/:path*", "/prd/:path*", "/standup",
       "/auth/:path*", "/api/:path*",
     ].map((source) => ({ source, headers: noindex }));
+  },
+  // Turbopack (default bundler in Next 16) equivalent of the webpack aliases.
+  turbopack: {
+    resolveAlias: { sharp: "./lib/empty-module.js", "onnxruntime-node": "./lib/empty-module.js" },
   },
   webpack: (config) => {
     config.resolve.alias = {

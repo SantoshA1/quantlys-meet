@@ -19,7 +19,7 @@ const STEPS = [
   { k: "03", t: "The spec lands", d: "Decisions caught as they’re said. One markdown PRD per project." },
 ];
 
-function useScrollScene(ref: React.RefObject<HTMLElement>) {
+function useScrollScene(ref: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;

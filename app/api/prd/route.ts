@@ -23,7 +23,7 @@ import {
   normalizeReport, fallbackReport, stitchTranscripts, handoffPlan, prdMarkdown,
   prdFilename, prdPath, answeredKeys, type MeetingSource,
 } from "@/lib/prd";
-import { readContext } from "../project/route";
+import { readContext } from "@/lib/project-context";
 import { describeWorkflow, toMermaid, whiteboardNotes, type Workflow } from "@/lib/workflow";
 import {
   myRooms, roomsForProject, resolveProject, roomFromPath, mayReadRecording, type MeetingRow,
