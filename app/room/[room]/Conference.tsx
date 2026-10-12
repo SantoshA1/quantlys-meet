@@ -1,4 +1,5 @@
 "use client";
+import { useDataChannel } from "@/lib/use-data-channel";
 
 // The whole meeting: names on every tile, chat, screen share, mic and camera
 // controls, leave — from LiveKit's own conference component. On top: the
@@ -10,7 +11,6 @@ import { createPortal } from "react-dom";
 import {
   LiveKitRoom,
   VideoConference,
-  useDataChannel,
   useLocalParticipant,
   useParticipants,
   useRoomContext,

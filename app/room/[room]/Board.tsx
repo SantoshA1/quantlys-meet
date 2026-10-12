@@ -1,4 +1,5 @@
 "use client";
+import { useDataChannel } from "@/lib/use-data-channel";
 
 // The pen: annotation over a shared screen, and a whiteboard when there is
 // nothing being shared.
@@ -22,7 +23,7 @@
 //     the diagram rather than an empty screen.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
+import { useLocalParticipant } from "@livekit/components-react";
 import {
   COLORS, WIDTHS, EMPTY_BOARD, applyEvent, catchUp, canUndo,
   toSurface, shouldKeepPoint, isShape, constrain, hitStroke,
