@@ -98,6 +98,14 @@ Optional: `NOTES_MODEL`, `AGENT_MODEL`, `ALLOWED_EMAIL_DOMAIN`, `SPEC_EMAIL_SECR
 
 Any host that can run `next build && next start` works; Vercel is the path this repo dogfoods.
 
+## Upgrading
+
+Read [`CHANGELOG.md`](CHANGELOG.md) before you upgrade. **v1.0.1 is a security update**, and it needs:
+- Node.js 22+
+- `npm install`
+- the Supabase migration `supabase/migrations/20261012_rate_limits.sql` (rate-limit table)
+- a redeploy
+
 ## Guest join
 
 - `ALLOW_GUEST_JOIN` (server) gates unsigned token mint. **Unset / true = guests ON**. Set `false` to require sign-in.
