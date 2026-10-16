@@ -54,6 +54,8 @@ import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
   toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
 } from "@/lib/captions";
+import { keytermParams, sanitizeNames } from "@/lib/keyterms";
+import { recentTranscript, type Catchup } from "@/lib/catchup";
 
 // SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
 // throw from inside a mount effect when it was absent — which crashed the
@@ -1688,6 +1690,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
         >
           {toggleLabel(cc.engine === "none" && !cc.on ? "browser" : cc.engine, cc.on)}
         </button>
+        <CatchupButton room={room} project={project || ""} log={cc.log} captionsOn={cc.on} enableCaptions={cc.enable} sessionMode={sessionMode} />
         <button
           className={`qmr-ghost${railOpen ? " qmr-on" : ""}`}
           onClick={() => setRailOpen((v) => !v)}
@@ -1771,6 +1774,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
               {locked ? "Locked — unlock" : sessionMode === "memory" ? "Lock the session" : "Lock the meeting"}
             </button>
           </div>
+
+          <GlossaryEditor room={room} />
 
           <div className="qmr-panel-head qmr-wr">
             <span className="qmr-fine" style={{ margin: 0 }}>
@@ -2589,13 +2594,29 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       return () => {};
     }
 
-    const qs = new URLSearchParams({
-      model: "nova-2",
-      smart_format: "true",
-      interim_results: "true",
-      punctuate: "true",
-      encoding: "opus",
-    });
+    // Name + glossary boosting: the people in the room and the host's
+    // per-meeting glossary go to Deepgram as keyterm (nova-3) / keywords
+    // (nova-2). A missing glossary just means names only.
+    const DG_MODEL = "nova-2";
+    let glossary: string[] = [];
+    try {
+      const g = await fetch(`/api/room/glossary?room=${encodeURIComponent(room)}`, {
+        headers: currentRoomToken ? { "x-room-token": currentRoomToken } : {},
+      });
+      if (g.ok) glossary = ((await g.json())?.terms || []).map(String);
+    } catch { /* names only */ }
+    const names = sanitizeNames([
+      myName,
+      ...Array.from(lkRoom.remoteParticipants.values()).map((p) => p.name || ""),
+    ]);
+    const qs = new URLSearchParams([
+      ["model", DG_MODEL],
+      ["smart_format", "true"],
+      ["interim_results", "true"],
+      ["punctuate", "true"],
+      ["encoding", "opus"],
+      ...keytermParams(DG_MODEL, names, glossary),
+    ]);
     ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, ["token", token]);
 
     ws.onopen = () => {
@@ -2637,7 +2658,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
       try { ws?.close(); } catch {}
     };
-  }, [emit, me, myName, startBrowser, lkRoom]);
+  }, [emit, me, myName, startBrowser, lkRoom, room]);
 
   const toggle = useCallback(() => {
     if (on) {
@@ -3071,3 +3092,111 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 
 .qmr-fine { margin: 12px 0 0; font-size: 12px; color: #8b93a5; line-height: 1.5; }
 `;
+
+// ── "What did I miss?" ─────────────────────────────────────────────────────
+// A private recap of the last ~5 minutes of captions, shown only to whoever
+// clicked. Gated server-side on this tab's room token + the rate limiter.
+function CatchupButton({ room, project, log, captionsOn, enableCaptions, sessionMode }: {
+  room: string; project: string; log: Caption[]; captionsOn: boolean;
+  enableCaptions: () => void; sessionMode: SessionMode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<(Catchup & { error?: string; model_note?: string }) | null>(null);
+  const ask = async () => {
+    setOpen(true);
+    if (!captionsOn && !log.length) {
+      setOut({ summary: "Captions are off, so there's nothing to recap yet. Turning them on now — ask again in a few minutes.", decisions: [], open_questions: [], prd_changes: [] });
+      enableCaptions();
+      return;
+    }
+    setBusy(true);
+    try {
+      // The caption clock: "now" is the newest line said.
+      const nowAt = log.reduce((m, c) => Math.max(m, c.at || 0), 0);
+      const r = await fetch("/api/room/catchup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(currentRoomToken ? { Authorization: `Bearer ${currentRoomToken}` } : {}) },
+        body: JSON.stringify({ room, project, sessionMode, recent: recentTranscript(log, nowAt) }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) setOut({ summary: "", decisions: [], open_questions: [], prd_changes: [], error: j?.error || `Couldn't get a recap (${r.status}).` });
+      else setOut(j);
+    } catch {
+      setOut({ summary: "", decisions: [], open_questions: [], prd_changes: [], error: "Couldn't reach the server." });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sec = (title: string, items: string[]) => items?.length ? (
+    <div style={{ marginTop: 8 }}><strong>{title}</strong><ul style={{ margin: "4px 0 0 18px", padding: 0 }}>{items.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+  ) : null;
+  return (
+    <>
+      <button className={`qmr-ghost${open ? " qmr-on" : ""}`} onClick={ask} disabled={busy} title="A private recap of the last 5 minutes — only you see it">
+        {busy ? "Catching up…" : "What did I miss?"}
+      </button>
+      {open ? (
+        <div role="dialog" aria-label="What did I miss" style={{ position: "fixed", top: 64, right: 16, zIndex: 60, width: 360, maxWidth: "calc(100vw - 32px)", maxHeight: "70vh", overflow: "auto", background: "#11151c", color: "#e8edf3", border: "1px solid #2a3240", borderRadius: 12, padding: 14, fontSize: 13, lineHeight: 1.45, boxShadow: "0 12px 32px rgba(0,0,0,.45)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <strong>Last 5 minutes · only you see this</strong>
+            <button className="qmr-ghost" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+          </div>
+          {busy ? <p>Reading the last few minutes…</p> : out?.error ? <p>{out.error}</p> : out ? (
+            <>
+              {out.summary ? <p style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{out.summary}</p> : null}
+              {sec("Decisions", out.decisions)}
+              {sec("Open questions", out.open_questions)}
+              {sec(sessionMode === "memory" ? "New in the story" : "What changed in the PRD", out.prd_changes)}
+              {!out.summary && !out.decisions?.length && !out.open_questions?.length && !out.prd_changes?.length ? <p>Nothing notable in the last five minutes.</p> : null}
+              {out.model_note ? <p style={{ opacity: .6, marginTop: 8 }}>{out.model_note}</p> : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// ── Caption glossary (host) ────────────────────────────────────────────────
+// Names and jargon the captions should spell right. Up to 50 terms.
+function GlossaryEditor({ room }: { room: string }) {
+  const [text, setText] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const call = useCallback(async (terms?: string) => {
+    const sess = (await db()?.auth.getSession())?.data;
+    const r = await fetch("/api/room/glossary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${sess?.session?.access_token ?? ""}` },
+      body: JSON.stringify(terms === undefined ? { room } : { room, terms }),
+    });
+    return { ok: r.ok, j: await r.json().catch(() => ({})) };
+  }, [room]);
+  useEffect(() => {
+    let live = true;
+    call().then(({ ok, j }) => { if (live && ok) setText((j.terms || []).join(", ")); }).catch(() => {});
+    return () => { live = false; };
+  }, [call]);
+  return (
+    <div className="qmr-panel-head" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+      <label className="qmr-fine" style={{ margin: 0 }} htmlFor="qm-glossary">
+        Caption glossary — names and terms to spell right (comma-separated, up to 50). Applies when captions next start.
+      </label>
+      <textarea id="qm-glossary" rows={2} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)}
+        placeholder="e.g. Quantlys, LiveKit, Conclave" style={{ width: "100%", fontSize: 13, background: "transparent", color: "inherit", border: "1px solid #2a3240", borderRadius: 8, padding: 6 }} />
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button className="qmr-lock" disabled={busy} onClick={async () => {
+          setBusy(true); setMsg("");
+          try {
+            const { ok, j } = await call(text);
+            if (ok) { setText((j.terms || []).join(", ")); setMsg(`Saved ${j.terms?.length || 0} terms.`); }
+            else setMsg(j?.error || "Couldn't save.");
+          } catch { setMsg("Couldn't save."); }
+          setBusy(false);
+        }}>{busy ? "Saving…" : "Save glossary"}</button>
+        {msg ? <span className="qmr-fine" style={{ margin: 0 }}>{msg}</span> : null}
+      </div>
+    </div>
+  );
+}

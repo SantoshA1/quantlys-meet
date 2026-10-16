@@ -2,6 +2,12 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.1.0 (2026-10-16)
+
+### Added
+- **"What did I miss?"** — a button in the room that recaps the last ~5 minutes of live captions: a short summary, decisions, open questions, and what changed in the PRD (or, in Memory mode, what's new in the story). Only the person who clicked sees it. Needs a valid room token and is rate-limited like the other AI endpoints. Without a model key it shows the last few lines as said.
+- **Name + glossary boosting for live captions.** Participant names and an optional host-edited glossary (up to 50 terms, in *Manage people*) are sent to Deepgram so names and jargon are spelled right. `keywords` is used for nova-2 (the current caption model) and `keyterm` for nova-3. The glossary is saved as a small JSON file in the host's storage folder, so **no database migration is needed**.
+
 ## v1.0.1 (2026-10-12)
 
 **Security update. Recommended for every self-hosted install.**

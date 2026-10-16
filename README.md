@@ -25,7 +25,8 @@ I’m **Santosh Adari** — I built Quantlys Meeting as Quantlys dogfood / a sid
 ## What you get
 
 - Real-time video/audio via **LiveKit** (Cloud or your own `livekit-server`)
-- Live captions / transcription via **Deepgram**
+- Live captions / transcription via **Deepgram**, with participant-name and per-meeting glossary boosting
+- **"What did I miss?"** — a private, in-room recap of the last 5 minutes
 - Auth, meeting history, and RLS via **Supabase**
 - Recordings to **S3-compatible** storage (Cloudflare R2, AWS S3, MinIO, …)
 - Notes, PRD, Memory chapters/clips, and search write-ups via **OpenRouter** or **OpenAI**
@@ -100,7 +101,7 @@ Any host that can run `next build && next start` works; Vercel is the path this 
 
 ## Upgrading
 
-Read [`CHANGELOG.md`](CHANGELOG.md) before you upgrade. **v1.0.1 is a security update**, and it needs:
+Read [`CHANGELOG.md`](CHANGELOG.md) before you upgrade. **v1.1.0** adds features only: no migration, no new env vars (optional `CATCHUP_MODEL`). **v1.0.1 is a security update**, and it needs:
 - Node.js 22+
 - `npm install`
 - the Supabase migration `supabase/migrations/20261012_rate_limits.sql` (rate-limit table)
