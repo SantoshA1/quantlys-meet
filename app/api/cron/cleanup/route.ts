@@ -11,6 +11,16 @@
 // and it's the wrong answer to "what happens to my data".
 
 import { createClient } from "@supabase/supabase-js";
+import { listTree, planRetention, removePaths, retentionDays, stillThere } from "@/lib/recording-storage";
+
+const MAX_TAKES_PER_RUN = 500;
+
+/** An Egress prefix is at least `<something>/<something>` — never "" or a
+ *  bare owner folder, which would sweep a whole account. */
+function safePrefix(p: string): boolean {
+  const parts = p.split("/");
+  return parts.length >= 2 && parts.every((s) => s && s !== "." && s !== "..");
+}
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -48,34 +58,84 @@ export async function GET(req: Request) {
   const now = new Date().toISOString();
   const report: Record<string, unknown> = { ran_at: now };
 
-  // 1. Recordings past their stated expiry. The FILES go first — a row with no
-  //    file behind it lists like a recording and 404s when you press play,
-  //    which is a worse experience than either having it or not.
+  // 1a. Browser recordings past RECORDING_RETENTION_DAYS.
+  //
+  // FIELD 2026-10-19: /meetings printed "DELETES <date>" from this setting and
+  // nothing ever deleted anything — the job below only read `recordings`
+  // rows, which the in-browser recorder never writes. Now the job deletes the
+  // same takes the page dates: video created_at + the window. Unset or 0
+  // means OFF, matching the page's "No automatic deletion is configured".
+  // `?dry=1` lists what is due and deletes nothing.
+  const dry = new URL(req.url).searchParams.get("dry") === "1";
+  report.dry_run = dry;
+  const days = retentionDays(process.env.RECORDING_RETENTION_DAYS);
+  report.retention_days = days;
   try {
-    const { data: expired } = await sb
+    const plan = await planRetention(sb, days, Date.now());
+    if (plan.error) throw new Error(plan.error);
+    // Bounded per night, oldest first, so one run can't run past maxDuration;
+    // whatever is left is still due tomorrow.
+    const due = plan.due.sort((a, b) => (a.created < b.created ? -1 : 1)).slice(0, MAX_TAKES_PER_RUN);
+    report.takes_due = plan.due.length;
+    if (dry) {
+      report.would_delete = due.map((t) => ({ owner: t.owner, room: t.room, take: t.stem, created: t.created, files: t.paths.length, bytes: t.bytes }));
+    } else {
+      const paths = due.flatMap((t) => t.paths);
+      const gone = await removePaths(sb, paths);
+      if (gone.error) throw new Error(gone.error);
+      const check = await stillThere(sb, paths);
+      if (check.error) throw new Error(check.error);
+      report.takes_deleted = due.length;
+      report.take_files_removed = gone.removed;
+      if (check.left.length) report.take_files_left = check.left.length;
+    }
+  } catch (e: any) {
+    report.retention_error = e?.message || String(e);
+  }
+
+  // 1b. Legacy Egress rows past their stated expiry. The FILES go first — a
+  //     row with no file behind it lists like a recording and 404s when you
+  //     press play. A row is only removed once its files are confirmed gone.
+  try {
+    const { data: expired, error } = await sb
       .from("recordings")
       .select("id, storage_prefix")
       .lt("expires_at", now)
       .limit(200);
-    let files = 0;
-    for (const r of expired || []) {
-      const prefix = String((r as any).storage_prefix || "");
-      if (!prefix) continue;
-      const { data: listed } = await sb.storage.from("recordings").list(prefix, { limit: 100 });
-      const paths = (listed || []).map((f: any) => `${prefix}/${f.name}`);
-      if (paths.length) {
-        const { error } = await sb.storage.from("recordings").remove(paths);
-        if (!error) files += paths.length;
-      }
-    }
-    if ((expired || []).length) {
-      await sb.from("recordings").delete().in("id", (expired || []).map((r: any) => r.id));
-    }
+    if (error) throw error;
     report.expired_recordings = (expired || []).length;
-    report.files_removed = files;
+    if (dry) {
+      report.would_delete_rows = (expired || []).map((r: any) => ({ id: r.id, prefix: r.storage_prefix }));
+    } else {
+      let files = 0;
+      const cleared: string[] = [];
+      for (const r of expired || []) {
+        const prefix = String((r as any).storage_prefix || "").replace(/^\/+|\/+$/g, "");
+        if (prefix && !safePrefix(prefix)) continue;      // never walk the bucket root
+        if (prefix) {
+          const tree = await listTree(sb, prefix);
+          if (tree.error) continue;
+          const paths = tree.files.map((f) => f.path);
+          const gone = await removePaths(sb, paths);
+          if (gone.error) continue;
+          const check = await stillThere(sb, paths);
+          if (check.error || check.left.length) continue;
+          files += gone.removed;
+        }
+        cleared.push((r as any).id);
+      }
+      if (cleared.length) {
+        const { error: dErr } = await sb.from("recordings").delete().in("id", cleared);
+        if (dErr) throw dErr;
+      }
+      report.expired_rows_deleted = cleared.length;
+      report.files_removed = files;
+    }
   } catch (e: any) {
     report.recordings_error = e?.message || String(e);
   }
+
+  if (dry) return Response.json({ ok: true, ...report });
 
   // 2. Meetings nobody ended. Stamp ended_at so we know the last session
   //    went quiet on its own. The link still works — this is not meeting
@@ -111,7 +171,8 @@ export async function GET(req: Request) {
     report.items_error = e?.message || String(e);
   }
 
-  return Response.json({ ok: true, ...report });
+  const failed = Boolean(report.retention_error || report.recordings_error);
+  return Response.json({ ok: !failed, ...report }, { status: failed ? 500 : 200 });
 }
 
 export async function POST(req: Request) {

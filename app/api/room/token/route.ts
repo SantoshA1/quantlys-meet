@@ -14,11 +14,19 @@ export const dynamic = "force-dynamic";
 // people who should be here are here, the host closes the door and the link
 // stops working for anyone else. No queue to watch, nothing to approve, and
 // nobody standing outside wondering whether they were seen.
-type Door = { exists: boolean; joinable: boolean; locked: boolean; waitingRoom: boolean; isHost: boolean };
+type Door = { exists: boolean; joinable: boolean; locked: boolean; waitingRoom: boolean; isHost: boolean; unavailable?: string };
 
 // Security (audit 2026-10-12): a token is only minted for a room that has a
 // meeting row. Only the authenticated host may reopen an ended meeting
 // (active=false) or reset spec_email_sent_at; guests cannot resurrect rows.
+//
+// FIELD 2026-10-19: when the lookup ERRORED (database down, a self-host whose
+// schema is missing a table, a wrong service key) this answered "open" —
+// so the one moment nobody could check who a room belonged to was the moment
+// anyone could join any room. It now fails CLOSED with a 503 that says why.
+// Only the deliberate no-database setup (no Supabase env at all) stays open.
+const LOOKUP_TIMEOUT_MS = 6000;
+
 async function doorState(room: string, userId: string | null): Promise<Door> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -27,7 +35,12 @@ async function doorState(room: string, userId: string | null): Promise<Door> {
   const open: Door = { exists: true, joinable: true, locked: false, waitingRoom: false, isHost: false };
   if (!url || !key) return open;
   try {
-    const sb = createClient(url, key, { auth: { persistSession: false } });
+    // A database that HANGS is as unknown as one that errors: bound every
+    // lookup so the answer is a quick 503, not a function timeout.
+    const sb = createClient(url, key, {
+      auth: { persistSession: false },
+      global: { fetch: (input: any, init?: any) => fetch(input, { ...(init || {}), signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) }) },
+    });
     let data: any = null;
     const full = await sb
       .from("meetings")
@@ -41,7 +54,7 @@ async function doorState(room: string, userId: string | null): Promise<Door> {
         .select("id, created_by, locked, waiting_room, active")
         .eq("room_name", room)
         .maybeSingle();
-      if (basic.error) return open;      // DB hiccup: fail open, as before
+      if (basic.error) return shut(basic.error.message);
       data = basic.data;
     }
     if (!data || !(data as any).id) {
@@ -72,26 +85,15 @@ async function doorState(room: string, userId: string | null): Promise<Door> {
       waitingRoom: Boolean((data as any)?.waiting_room),
       isHost,
     };
-  } catch {
-    return open;                          // the door fails OPEN, never shut
+  } catch (e: any) {
+    return shut(e?.message || String(e));
   }
 }
 
-async function isLockedLegacy(room: string): Promise<boolean> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return false;      // no database to ask → never lock anyone out
-  try {
-    const sb = createClient(url, key, { auth: { persistSession: false } });
-    const { data } = await sb
-      .from("meetings")
-      .select("locked")
-      .eq("room_name", room)
-      .maybeSingle();
-    return Boolean(data?.locked);
-  } catch {
-    return false;                      // the door fails OPEN, never shut
-  }
+/** The meeting registry couldn't be read. Nobody gets a token on a guess. */
+function shut(why: string): Door {
+  console.error("[room/token] meeting lookup failed; refusing token:", why);
+  return { exists: false, joinable: false, locked: false, waitingRoom: false, isHost: false, unavailable: why };
 }
 
 function livekitUrl(): string {
@@ -174,6 +176,12 @@ export async function POST(req: Request) {
   }
 
   const door = await doorState(room, user?.id ?? null);
+  if (door.unavailable) {
+    return Response.json(
+      { error: "We couldn't check this meeting right now, so we can't let anyone in. Try again in a minute — if it keeps happening, the host's database isn't reachable." },
+      { status: 503, headers: { "Retry-After": "30" } }
+    );
+  }
   if (!door.exists) {
     return Response.json({ error: "This meeting does not exist. Check the link with your host." }, { status: 404 });
   }
