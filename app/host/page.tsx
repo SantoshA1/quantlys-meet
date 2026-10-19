@@ -12,6 +12,8 @@ import Search from "./Search";
 import Intelligence from "./Intelligence";
 import Prd, { PRD_CSS } from "./Prd";
 import Memory from "./Memory";
+import RecoverTakes from "@/app/_recovery/RecoverTakes";
+import { readUnrecorded, unrecordedText, UNRECORDED_KEY } from "@/lib/leave-guard";
 import { nextUp, inWords, stillOpen } from "@/lib/intelligence";
 import { newRoomId } from "@/lib/ids";
 import type { SessionMode } from "@/lib/memory";
@@ -178,6 +180,16 @@ export default function HostConsole() {
   const [digestNote, setDigestNote] = useState("");
   const [sending, setSending] = useState(false);
   const [handoffNote, setHandoffNote] = useState("");
+  // "This session wasn't recorded" — left by the room when a host leaves a
+  // Memory session that kept nothing (lib/leave-guard.ts).
+  const [unrecorded, setUnrecorded] = useState("");
+  useEffect(() => {
+    try {
+      const n = readUnrecorded(window.sessionStorage.getItem(UNRECORDED_KEY));
+      window.sessionStorage.removeItem(UNRECORDED_KEY);
+      if (n) setUnrecorded(unrecordedText(n));
+    } catch { /* private mode */ }
+  }, []);
   // Who's coming. One free-text box on purpose: people paste addresses out of
   // a calendar, a spreadsheet or an Outlook To: line, and every one of those
   // uses a different separator. The parser takes them all.
@@ -782,6 +794,17 @@ export default function HostConsole() {
       ) : (
         <div className="qh-grid">
           <div className="qh-main">
+            {unrecorded ? (
+              <div className="qh-panel qh-unrec" role="alert">
+                <p className="qh-eyebrow">NOT RECORDED</p>
+                <p style={{ margin: 0 }}>{unrecorded}</p>
+                <button className="qh-ghost qh-btn" style={{ marginTop: 10 }}
+                  onClick={() => setUnrecorded("")}>Dismiss</button>
+              </div>
+            ) : null}
+            {/* A tab that died mid-recording left its pieces in this browser.
+                Upload them now, through the same path a normal Stop uses. */}
+            <RecoverTakes client={db()} userId={user.id} auto />
 
             {/* ── LAUNCH ─────────────────────────────────────────────── */}
             <section className="qh-panel qh-launch">
@@ -1200,6 +1223,7 @@ const QH = `
 .qh-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .24em;
   color: var(--accent2, #4DD7CF); margin: 0 0 6px; }
 .qh-handoff { border: 1px solid #1d4f4c; background: #0d3d39; }
+.qh-unrec { border: 1px solid #6b2b35; background: #2a1418; color: #ffd6d6; }
 .qh-h1 { font-size: 30px; font-weight: 600; margin: 2px 0 8px; letter-spacing: -0.01em; }
 .qh-dim { color: var(--muted, #7b8aa0); font-size: 14px; line-height: 1.55; margin: 4px 0 14px; }
 .qh-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 0; }

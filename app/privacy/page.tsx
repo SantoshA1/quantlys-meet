@@ -104,7 +104,11 @@ export default function PrivacyPage() {
           The product needs a browser session to run the call — to connect
           audio and video, and to keep a host signed in. Hosts get a sign-in
           session after the email code. We store a theme preference in local
-          storage on your device. We do not use advertising cookies.
+          storage on your device. While a host records, the recording is also
+          kept temporarily in the host&apos;s own browser storage (IndexedDB) so it
+          can still be saved if the tab closes unexpectedly; that copy is deleted
+          once the upload finishes, or when the host discards it. We do not use
+          advertising cookies.
         </p>
 
         <h2>Infrastructure</h2>

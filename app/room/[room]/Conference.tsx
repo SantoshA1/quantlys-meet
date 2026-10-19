@@ -37,6 +37,11 @@ import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
 import { shouldFlushOnPageHide } from "@/lib/recording-flush";
 import {
+  PAGE_ID, newTakeId, putTake, putChunk, patchTake, deleteTake, holdTakeLock,
+} from "@/lib/take-store";
+import { leaveIntent, UNRECORDED_KEY } from "@/lib/leave-guard";
+import RecoverTakes from "@/app/_recovery/RecoverTakes";
+import {
   RECORDING_PRESET, RESUMABLE_THRESHOLD_BYTES, resumableEndpoint, resumableUpload,
   uploadRefusalText,
 } from "@/lib/recording-quality";
@@ -765,6 +770,18 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   const ticker = useRef<any>(null);
   const stopping = useRef(0);
   const saveWaiters = useRef<Array<() => void>>([]);
+  // The browser copy of the live take (lib/take-store.ts): every piece also
+  // goes to IndexedDB so a tab that dies mid-recording loses at most ~2s.
+  const takeId = useRef("");
+  const takeStartedAt = useRef(0);
+  const takeRelease = useRef<() => void>(() => {});
+  const takePersist = useRef(true);
+  const takeChain = useRef<Promise<unknown>>(Promise.resolve());
+  const takeBytes = useRef({ v: 0, a: 0, vSeq: 0, aSeq: 0 });
+  // Did this page ever record? "This session wasn't recorded" hangs off it.
+  const recordedThisPage = useRef(false);
+  const memoryAutoRec = useRef(false);
+  const [confirmLeave, setConfirmLeave] = useState<"" | "recording" | "unrecorded">("");
   // Full-resolution twins of every remote video, attached off-screen at the
   // take's size while recording. adaptiveStream sizes a subscription to its
   // LARGEST attached element, so this is what makes the SFU send the top
@@ -969,6 +986,27 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     const t = window.setTimeout(() => startRecordingRef.current(), 1200);
     return () => window.clearTimeout(t);
   }, [spec, signedIn, recording]);
+
+  // Memory mode records itself, for the host, like a spec session does.
+  // FIELD 2026-10-17: three Memory sessions, nobody pressed Record, nothing
+  // kept. Once per entry into Memory mode — if the host presses Stop it stays
+  // stopped; switching to Meeting and back to Memory arms it again. Everyone
+  // already agreed to "may be recorded" on the way in, and the red Recording
+  // badge goes up for the whole room the moment it starts.
+  useEffect(() => {
+    if (sessionMode !== "memory") { memoryAutoRec.current = false; return; }
+    if (spec || !isHost || !signedIn || recording || memoryAutoRec.current) return;
+    if (status?.kind === "busy") return;
+    const t = window.setTimeout(() => {
+      if (memoryAutoRec.current) return;
+      memoryAutoRec.current = true;
+      startRecordingRef.current();
+      if (vRec.current?.state === "recording") {
+        setStatus({ kind: "ok", text: "Memory mode records automatically — press Stop recording any time." });
+      }
+    }, 1200);
+    return () => window.clearTimeout(t);
+  }, [sessionMode, spec, isHost, signedIn, recording, status?.kind]);
   const flagNow = () => {
     const last = finals(cc.log).slice(-1)[0];
     const at = flagAt({
@@ -1261,7 +1299,41 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
       bitrate: RECORDING_PRESET.videoBitsPerSecond, container: vf[1], mime: vf[0],
     };
 
-    vr.ondataavailable = (e) => e.data && e.data.size && vChunks.current.push(e.data);
+    // The browser copy. Started before the first piece can arrive; writes are
+    // chained so they land in order and save() can wait for the last one.
+    const id = newTakeId();
+    takeId.current = id;
+    takeStartedAt.current = Date.now();
+    takePersist.current = true;
+    takeBytes.current = { v: 0, a: 0, vSeq: 0, aSeq: 0 };
+    takeRelease.current();
+    takeRelease.current = holdTakeLock(id);
+    takeChain.current = putTake({
+      id, userId: signedIn, room, title: title || "", sessionMode: sessionModeRef.current,
+      pageId: PAGE_ID, startedAt: takeStartedAt.current, updatedAt: Date.now(), elapsed: 0,
+      vExt: vf[1], vMime: vf[0], aExt: af ? af[1] : "", aMime: af ? af[0] : "",
+      vBytes: 0, aBytes: 0, people: names, captions: [], captionText: "",
+      video: recVideoMeta.current,
+    }).then((ok) => { if (!ok) takePersist.current = false; });
+    const keep = (kind: "v" | "a", data: Blob) => {
+      if (!takePersist.current || takeId.current !== id) return;
+      const b = takeBytes.current;
+      const seq = kind === "v" ? b.vSeq++ : b.aSeq++;
+      if (kind === "v") b.v += data.size; else b.a += data.size;
+      const bytes = { vBytes: b.v, aBytes: b.a };
+      takeChain.current = takeChain.current.then(async () => {
+        if (!takePersist.current) return;
+        const ok = await putChunk({ takeId: id, kind, seq, data }, bytes);
+        // Quota or a broken store: stop copying, never stop recording.
+        if (!ok) takePersist.current = false;
+      });
+    };
+
+    vr.ondataavailable = (e) => {
+      if (!e.data || !e.data.size) return;
+      vChunks.current.push(e.data);
+      keep("v", e.data);
+    };
     vr.onerror = (e: any) =>
       setStatus({ kind: "err", text: `Recording stopped: ${e?.error?.message || "unknown error"}` });
     vr.onstop = () => {
@@ -1278,7 +1350,11 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
       aExt.current = af[1];
       try {
         const ar = new MediaRecorder(new MediaStream(audio.getAudioTracks()), { mimeType: af[0] });
-        ar.ondataavailable = (e) => e.data && e.data.size && aChunks.current.push(e.data);
+        ar.ondataavailable = (e) => {
+          if (!e.data || !e.data.size) return;
+          aChunks.current.push(e.data);
+          keep("a", e.data);
+        };
         ar.onstop = () => {
           if (--stopping.current <= 0) void save();
         };
@@ -1291,6 +1367,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     }
 
     setRecording(true);
+    recordedThisPage.current = true;
     elapsedRef.current = 0;
     setElapsed(0);
     ticker.current = setInterval(() => setElapsed((s) => {
@@ -1334,6 +1411,31 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     const t = setInterval(() => announce(true), REC_BEAT_MS);
     return () => clearInterval(t);
   }, [recording, announce]);
+
+  // The browser copy's heartbeat: how long, who, and the captions so far, so
+  // a take recovered after a dead tab gets the same notes a normal save does.
+  const takeMetaRef = useRef<() => Record<string, unknown>>(() => ({}));
+  takeMetaRef.current = () => ({
+    updatedAt: Date.now(),
+    elapsed: elapsedRef.current,
+    people: names,
+    title: title || "",
+    sessionMode: sessionModeRef.current,
+    captions: [
+      ...toUtterances(cc.log),
+      ...flags.map((f) => ({ start: Math.round(f.at / 1000), speaker: -1, transcript: `⚑ Moment flagged by ${f.by}` })),
+    ].slice(0, 4000),
+    captionText: toTranscript(cc.log).slice(0, 200000),
+  });
+  useEffect(() => {
+    if (!recording) return;
+    const t = setInterval(() => {
+      const id = takeId.current;
+      if (!id || !takePersist.current) return;
+      takeChain.current = takeChain.current.then(() => patchTake(id, takeMetaRef.current() as any));
+    }, 5000);
+    return () => clearInterval(t);
+  }, [recording]);
 
   // …and an immediate beat the moment anyone new connects, so they don't wait
   // even those three seconds.
@@ -1379,9 +1481,33 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   }
   flushOnLeaveRef.current = () => { void flushRecording(); };
 
+  // A host leaving a Memory session that kept nothing hears about it on the
+  // host page too, not only in the room they just closed.
+  function noteUnrecorded() {
+    if (!isHost || sessionModeRef.current !== "memory" || recordedThisPage.current) return;
+    try {
+      window.sessionStorage.setItem(UNRECORDED_KEY, JSON.stringify({ room, title: title || "", at: Date.now() }));
+    } catch { /* private mode: the in-room confirm already said it */ }
+  }
+
+  async function leaveNow() {
+    setConfirmLeave("");
+    // Stop and upload BEFORE disconnecting. If the upload outlives the wait,
+    // the browser copy (lib/take-store.ts) is recovered on the next page.
+    await flushRecording();
+    noteUnrecorded();
+    ctx.disconnect();
+    window.location.href = "/host";
+  }
+
   startRecordingRef.current = startRecording;
 
   async function save() {
+    // The cloud copy is the record once the video is up; until then the
+    // browser copy stays, so a failed or interrupted save can be retried.
+    const id = takeId.current;
+    let uploaded = false;
+    let saveErr = "";
     try {
     const client = db();
     if (!signedIn || !client) return;
@@ -1392,13 +1518,16 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     vChunks.current = [];
     aChunks.current = [];
     if (video.size < 1024) {
+      uploaded = true;   // nothing to keep
       setStatus({ kind: "err", text: "Nothing was captured — the recording was empty." });
       return;
     }
 
     const mb = (video.size / 1048576).toFixed(1);
     setStatus({ kind: "busy", text: `Saving ${mb} MB…` });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    // Named for when the take STARTED, so the browser copy recovers to the
+    // same path (lib/take-store.ts recoveryPaths) instead of a duplicate.
+    const stamp = new Date(takeStartedAt.current || Date.now()).toISOString().replace(/[:.]/g, "-");
     const base = `${signedIn}/${room}/${stamp}`;
     const videoPath = `${base}.${vExt.current}`;
 
@@ -1446,6 +1575,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
         .upload(audioPath, audio, { contentType: audio.type, upsert: false });
       if (ua.error) audioPath = null; // the video is saved; the extra is optional
     }
+    uploaded = !upErr;
+    saveErr = upErr;
     if (upErr) {
       // The cloud refused the video, but the take is in this tab (Download
       // take) and the small audio twin usually still lands — so the notes,
@@ -1570,6 +1701,13 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     } finally {
       const waiters = saveWaiters.current.splice(0, saveWaiters.current.length);
       for (const w of waiters) w();
+      if (id) {
+        const release = takeRelease.current;
+        takeRelease.current = () => {};
+        void takeChain.current
+          .then(() => (uploaded ? deleteTake(id) : patchTake(id, { ...(takeMetaRef.current() as any), lastError: saveErr || "not uploaded" })))
+          .finally(() => release());
+      }
     }
   }
 
@@ -1736,11 +1874,15 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
         </button>
         <button
           className="qmr-leave"
-          onClick={async () => {
-            if (status?.kind === "busy") return;
-            await flushRecording();
-            ctx.disconnect();
-            window.location.href = "/host";
+          onClick={() => {
+            const intent = leaveIntent({
+              recording: recording || vRec.current?.state === "recording",
+              busy: status?.kind === "busy",
+              isHost, sessionMode, recordedThisPage: recordedThisPage.current,
+            });
+            if (intent === "wait") return;
+            if (intent === "leave") { void leaveNow(); return; }
+            setConfirmLeave(intent === "confirm-recording" ? "recording" : "unrecorded");
           }}
           disabled={status?.kind === "busy"}
           title={status?.kind === "busy" ? "Wait for the recording to finish saving" : "Leave"}
@@ -1748,6 +1890,30 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
           Leave
         </button>
       </span>
+
+      {confirmLeave ? (
+        <div className="qmr-leaveconfirm" role="alertdialog" aria-label="Leave this session?">
+          {confirmLeave === "recording" ? (
+            <p><b>You&apos;re still recording.</b> Leaving stops the recording and uploads it first — keep this tab open until it says Saved.</p>
+          ) : (
+            <p><b>This session wasn&apos;t recorded.</b> If you leave now, nothing from it is saved — no recording, transcript or story.</p>
+          )}
+          <span className="qmr-leaveconfirm-row">
+            <button className="qmr-ghost" onClick={() => setConfirmLeave("")}>Stay</button>
+            {confirmLeave === "unrecorded" && signedIn ? (
+              <button className="qmr-ghost" onClick={() => { setConfirmLeave(""); startRecording(); }}>Record now</button>
+            ) : null}
+            <button className="qmr-leave" onClick={() => void leaveNow()}>
+              {confirmLeave === "recording" ? "Save & leave" : "Leave anyway"}
+            </button>
+          </span>
+        </div>
+      ) : null}
+      {signedIn ? (
+        <div className="qmr-recoverwrap" style={{ top: headroom }}>
+          <RecoverTakes client={db()} userId={signedIn} />
+        </div>
+      ) : null}
 
       {isHost && panel ? (
         <div className="qmr-panel">
@@ -1923,6 +2089,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
                     setEnding(true);
                     setEndPhase("saving");
                     try { await flushRecording(); } catch { /* still end the session */ }
+                    noteUnrecorded();
                     setEndPhase("ending");
                     const out = await control("end");
                     setEnding(false);
@@ -2837,6 +3004,11 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 .qmr-ghost { background: transparent; color: #cfd6e4; border: 1px solid #2b3240; }
 .qmr-ghost:hover { border-color: #3b4356; }
 .qmr-leave { background: #3a1f26; color: #ffc9c9; border: 1px solid #5c2b35; }
+.qmr-leaveconfirm { position: fixed; right: 16px; top: 70px; z-index: 60; max-width: 380px; background: #1a1d27; color: #e9ecf5; border: 1px solid #5c2b35; border-radius: 10px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 13px; line-height: 1.45; }
+.qmr-leaveconfirm p { margin: 0 0 10px; }
+.qmr-leaveconfirm-row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.qmr-recoverwrap { position: fixed; left: 50%; transform: translateX(-50%); z-index: 55; width: min(620px, calc(100vw - 24px)); pointer-events: none; }
+.qmr-recoverwrap > * { pointer-events: auto; }
 .qmr-rec { background: #4a1f24; color: #ffd7d7; border: 1px solid #7a2f38;
   display: inline-flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
 .qmr-dot { width: 9px; height: 9px; border-radius: 50%; background: #ff5964;
