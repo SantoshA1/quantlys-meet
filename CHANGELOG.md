@@ -2,6 +2,20 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.1.1 (2026-10-19)
+
+**Recordings no longer get lost.** Prompted by three Memory sessions on Oct 17 that saved nothing.
+
+### Fixed
+- **Memory mode records automatically for the host**, like spec sessions already did. It starts about a second after the host is in the room (or switches into Memory). The red *Recording* badge goes up for everyone, and the join-screen notice is unchanged. If the host presses *Stop recording* it stays stopped; switching to Meeting and back to Memory turns it on again.
+- **A recording survives a closed or crashed tab.** Every ~2-second piece of the recording, plus the audio twin, is also written to the host's browser storage (IndexedDB) as it's recorded. That copy holds who was there, the live captions so far and the duration. The next time the host opens the host page, any unfinished recording is uploaded automatically through the normal save path, and its summary, PRD or Memory story is written. The room page offers *Upload now* / *Discard*. The copy is deleted as soon as the video upload succeeds. A Web Lock held by the recording tab makes sure a recording that's still live in another tab is never picked up. At most the last few seconds are lost.
+- **Leave asks first.** If you're recording, *Leave* asks to *Save & leave* and stops and uploads before disconnecting. Closing the tab still shows the browser's "leave site?" prompt while a recording is running or saving.
+- **"This session wasn't recorded."** If the host leaves a Memory session that recorded nothing, the room says so before they go (with a *Record now* option), and the host page shows a notice afterwards.
+
+### Notes
+- Live saves are now named after the time the recording **started** (it was the time it stopped), so a recovered take lands on the same file instead of a duplicate.
+- No database migration. No server or API changes; room-token gating, rate limits and security headers are untouched.
+
 ## v1.1.0 (2026-10-16)
 
 ### Added
