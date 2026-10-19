@@ -620,7 +620,7 @@ export const AGENT_CSS = `
 .qa-readonly { opacity:.85; cursor:default; pointer-events:none; }
 /* Placement (top/left/width/maxHeight) comes from cardPlacement(): viewport-fixed,
    below the header, above the control bar. */
-.qa-card { position:fixed; z-index:70; overflow:auto; box-sizing:border-box;
+.qa-card { position:fixed; z-index:70; overflow-x:hidden; overflow-y:auto; box-sizing:border-box;
   background:#0d1b1a; border:1px solid #14706a; border-radius:13px; padding:13px 14px;
   display:flex; flex-direction:column; gap:9px; box-shadow:0 18px 44px rgba(0,0,0,.6); }
 .qa-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
@@ -630,11 +630,12 @@ export const AGENT_CSS = `
 .qa-q { margin:0; color:#e9edf5; font-size:15px; line-height:1.45; }
 .qa-opts { display:flex; flex-direction:column; gap:6px; }
 .qa-opt { font:inherit; font-size:13px; text-align:left; cursor:pointer; color:#cfe9e6;
-  background:#123130; border:1px solid #1d4f4c; border-radius:9px; padding:8px 11px; line-height:1.4; }
+  background:#123130; border:1px solid #1d4f4c; border-radius:9px; padding:8px 11px; line-height:1.4;
+  white-space:normal; overflow-wrap:anywhere; max-width:100%; box-sizing:border-box; }
 .qa-opt:hover { background:#17403e; border-color:#2a6f6a; }
 .qa-why { margin:0; color:#8b93a5; font-size:11.5px; line-height:1.5; }
 .qa-fine { margin:0; color:#6c7688; font-size:10.5px; line-height:1.45; }
-.qa-status { position:fixed; z-index:70; overflow:auto; box-sizing:border-box; max-width:320px;
+.qa-status { position:fixed; z-index:70; overflow-x:hidden; overflow-y:auto; box-sizing:border-box; max-width:320px;
   background:#0b0e14; border:1px solid #1c2430; border-radius:11px; padding:10px 12px;
   display:flex; flex-direction:column; gap:3px; box-shadow:0 12px 30px rgba(0,0,0,.5); }
 .qa-status b { color:#7fe0d6; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
