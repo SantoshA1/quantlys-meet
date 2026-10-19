@@ -36,6 +36,7 @@ import { compositeBoardOnto, snapshotBoardDataUrl, dataUrlToBlob } from "@/lib/b
 import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
 import { shouldFlushOnPageHide } from "@/lib/recording-flush";
+import { diffSources, wantedAudio } from "@/lib/recording-mix";
 import {
   PAGE_ID, newTakeId, putTake, putChunk, patchTake, deleteTake, holdTakeLock,
 } from "@/lib/take-store";
@@ -664,11 +665,6 @@ function PlaybackGate() {
   );
 }
 
-// An <audio> element can only be handed to createMediaElementSource ONCE for
-// the lifetime of the page. Recording twice in one meeting would throw and
-// silently lose that person's voice, so the sources are kept and reused.
-const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
-
 function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, initialSessionMode = "meeting" }: {
   room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean; spec?: boolean; initialSessionMode?: SessionMode;
 }) {
@@ -769,6 +765,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   const aExt = useRef("m4a");
   const raf = useRef<number | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
+  const recMix = useRef<{ ac: AudioContext; dest: MediaStreamAudioDestinationNode; nodes: Map<string, MediaStreamAudioSourceNode>; off: () => void } | null>(null);
   const ticker = useRef<any>(null);
   const stopping = useRef(0);
   const saveWaiters = useRef<Array<() => void>>([]);
@@ -1097,34 +1094,62 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     ) as HTMLVideoElement[];
   }
 
+  // The recording's audio: the LiveKit tracks themselves, reconciled for the
+  // whole take (lib/recording-mix). FIELD 2026-10-19: mixing <audio> elements
+  // via createMediaElementSource recorded remote voices as silence in Chrome,
+  // and only the elements present at Record were ever included.
+  function syncRecAudio() {
+    const m = recMix.current;
+    if (!m) return;
+    let want = new Map<string, any>();
+    try {
+      const mic = ctx.localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
+      want = wantedAudio(Array.from(ctx.remoteParticipants.values()) as any, mic as any);
+    } catch { /* keep what we have */ }
+    const { add, remove } = diffSources(m.nodes.keys(), want.keys());
+    for (const id of remove) {
+      try { m.nodes.get(id)?.disconnect(); } catch { /* already gone */ }
+      m.nodes.delete(id);
+    }
+    for (const id of add) {
+      try {
+        const src = m.ac.createMediaStreamSource(new MediaStream([want.get(id) as MediaStreamTrack]));
+        src.connect(m.dest);
+        m.nodes.set(id, src);
+      } catch { /* one voice missing must not stop the recording */ }
+    }
+  }
+
+  function stopRecAudio() {
+    const m = recMix.current;
+    recMix.current = null;
+    if (!m) return;
+    m.off();
+    m.nodes.forEach((n) => { try { n.disconnect(); } catch { /* gone */ } });
+    m.nodes.clear();
+  }
+
   function buildAudio(): MediaStream {
+    stopRecAudio();
     const ac = audioCtx.current || new AudioContext();
     audioCtx.current = ac;
     if (ac.state === "suspended") ac.resume().catch(() => {});
     const dest = ac.createMediaStreamDestination();
-
-    Array.from(document.querySelectorAll("audio")).forEach((el) => {
-      const a = el as HTMLAudioElement;
-      try {
-        let src = AUDIO_SOURCES.get(a);
-        if (!src) {
-          src = ac.createMediaElementSource(a);
-          AUDIO_SOURCES.set(a, src);
-          src.connect(ac.destination); // keep it audible in the room
-        }
-        src.connect(dest);
-      } catch {
-        /* one voice missing must not stop the recording */
-      }
-    });
-
-    try {
-      const pub = ctx.localParticipant.getTrackPublication(Track.Source.Microphone);
-      const mst = pub?.track?.mediaStreamTrack;
-      if (mst) ac.createMediaStreamSource(new MediaStream([mst])).connect(dest);
-    } catch {
-      /* recording without your own voice beats no recording */
-    }
+    const resync = () => syncRecAudio();
+    const events = [
+      RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed, RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished,
+      RoomEvent.ParticipantDisconnected,
+    ];
+    events.forEach((e) => ctx.on(e as any, resync));
+    // Belt and braces: events can race the track becoming live, and a device
+    // switch replaces the track without a publish event.
+    const tick = setInterval(resync, 1500);
+    recMix.current = {
+      ac, dest, nodes: new Map(),
+      off: () => { clearInterval(tick); events.forEach((e) => ctx.off(e as any, resync)); },
+    };
+    syncRecAudio();
     return dest.stream;
   }
 
@@ -1342,6 +1367,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
       if (raf.current) cancelAnimationFrame(raf.current);
       videoStream.getTracks().forEach((t) => t.stop());
       clearRecStage();
+      stopRecAudio();
       if (--stopping.current <= 0) void save();
     };
     vr.start(2000);
