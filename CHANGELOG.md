@@ -2,6 +2,22 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.1.3 (2026-10-19)
+
+**The agent's question shows up, recordings include everyone, and Deepgram captions work on the hosted site.** Found while recording the product demo.
+
+### Fixed
+- **The PRD / Memory agent's question card was off-screen.** It was positioned inside the header's action row, so it rendered about 330px above the top of the window at every screen size, and the agent's questions were never seen. The card (and the agent's status box) are now fixed to the window: under the header and the "gaps still open" strip, on the left so they don't sit over Live notes, full-width on phones, and never taller than the space above the control bar. A tall card scrolls inside itself.
+- **Recordings missed the other people in the call.** In Chrome, the recorder's audio mix came from the page's `<audio>` elements, which record remote WebRTC voices as silence, and it only looked when Record was pressed. The audio copy (the one that gets transcribed into notes, PRDs and Memory) had only the recorder's own voice. The mix is now built from the LiveKit audio tracks themselves and kept up to date for the whole take: people who join after Record, a re-published or switched mic, and screen-share audio are included, and your own mic still is.
+- **Spec sessions had no captions.** The spec session and the PRD agent both switched captions on at the same moment; two browser speech recognisers started and stopped each other every 300ms, so no words ever appeared. Starting captions is now single-flight: a second "on" while starting or running does nothing, and turning them off cancels a start that's still in progress.
+- **Deepgram captions fell back to the browser on the hosted site.** The deployed `DEEPGRAM_API_KEY` can transcribe but can't create temporary browser keys (`keys:write`) or grants (`/v1/auth/grant`), so every meeting used the browser's recogniser and the caption glossary did nothing. Captions now try a grant, then a temporary key, and otherwise go through the new `/api/captions/relay`: your browser cuts your own mic into sentences at pauses and the server sends each one to Deepgram (nova-3, with names and the glossary as keyterms). The key never leaves the server. The relay requires the room's LiveKit token, fails closed when rooms aren't configured, is rate limited, and accepts only audio up to 400 KB. If it stops answering, captions switch to the browser's recogniser.
+
+### Changed
+- **The caption bar names the engine that's running:** "Deepgram", "Deepgram · via server" or "Browser speech". The captions panel and the button's tooltip say where your audio goes. With the relay, a line appears when the speaker pauses rather than word by word.
+
+### Notes
+- No database migration and no new environment variables. A Deepgram key with `keys:write` (or Member access, for grants) still gets word-by-word streaming captions. Any key that can transcribe gets the relay.
+
 ## v1.1.2 (2026-10-19)
 
 **Privacy and access fixes. Recommended for every self-hosted install.** Found while testing a fresh self-host.
