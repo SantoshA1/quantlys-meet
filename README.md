@@ -83,7 +83,7 @@ Full env reference: [`.env.example`](.env.example). Self-hosted SFU: [`docs/SELF
 | **OpenRouter or OpenAI** | `OPENROUTER_API_KEY` or `OPENAI_API_KEY` | Notes, PRD, Memory, search write-up |
 | **S3-compatible** | `S3_*` | Recordings + board sidecars |
 | **App URL** | `APP_URL` | Invite/share/callback links |
-| **Cron** | `CRON_SECRET`, `RECORDING_RETENTION_DAYS` | Retention cleanup (Vercel Cron) |
+| **Cron** | `CRON_SECRET`, `RECORDING_RETENTION_DAYS` | Nightly cleanup (Vercel Cron). Deletes recordings older than `RECORDING_RETENTION_DAYS`; unset = keep until the host deletes them. `?dry=1` previews. |
 | **Resend** (optional) | `RESEND_API_KEY`, `RESEND_FROM` | Invites, digest, email-the-spec |
 | **Guest policy** | `ALLOW_GUEST_JOIN`, `NEXT_PUBLIC_ALLOW_GUEST_JOIN` | Unsigned guest token mint (default on) |
 

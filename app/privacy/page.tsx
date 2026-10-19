@@ -42,7 +42,7 @@ export default function PrivacyPage() {
       <section className="qml-hero">
         <p className="qml-kicker">Privacy</p>
         <h1>How Quantlys Meeting uses your data</h1>
-        <p className="qml-lede">Last updated 29 August 2026.</p>
+        <p className="qml-lede">Last updated 19 October 2026.</p>
       </section>
 
       <article className="qml-legal">
@@ -124,10 +124,20 @@ export default function PrivacyPage() {
         <p>
           We keep recordings, transcripts, notes, action items, and PRDs while
           the host account exists. From the host page, a host can delete a
-          recording, and can delete a meeting — which removes that meeting&apos;s
-          recordings and notes. Completed action items may be pruned after a
-          year. Recordings may also be removed after a retention window we
-          configure for the hosted service.
+          recording, and can delete a meeting. Deleting a meeting removes, from
+          storage, every recording the host made in it — the video, the audio
+          copy, whiteboard snapshots, and the transcript and notes — along with
+          its action items and caption glossary; the app only reports the
+          meeting as deleted once those files are gone. A project&apos;s PRD or
+          Memory story, which can be built from several meetings, is kept.
+          Completed action items may be pruned after a year.
+        </p>
+        <p>
+          If a retention window is configured, recordings (video, audio,
+          whiteboard and transcript) are deleted automatically once they are
+          older than that window, and the meeting history shows each
+          recording&apos;s delete date. No retention window is currently set for
+          the hosted service, so recordings stay until the host deletes them.
         </p>
 
         <h2>Children</h2>

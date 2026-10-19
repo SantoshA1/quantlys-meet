@@ -16,6 +16,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { RoomServiceClient } from "livekit-server-sdk";
+import { meetingStoragePaths, prefixInScope, listTree, removePaths, stillThere } from "@/lib/recording-storage";
 
 /** How many people are in the LiveKit room right now. null = could not ask
  *  (no LiveKit config, or the SFU did not answer). */
@@ -96,60 +97,68 @@ export async function POST(req: Request) {
   }
 
   const report: Record<string, unknown> = { room, title: (meeting as any).title };
+  const hostId = user.id;
 
   // 1. The FILES, before the rows that name them. Do it the other way round
   //    and a failure halfway leaves video in storage that nothing points at,
   //    which nobody will ever find again to delete.
-  let filesRemoved = 0;
-  const orphaned: string[] = [];
-  try {
-    const { data: recs } = await sb
-      .from("recordings")
-      .select("id, storage_prefix")
-      .eq("room_name", room);
-    for (const r of recs || []) {
-      const prefix = String((r as any).storage_prefix || "");
-      if (!prefix) continue;
-      // FIELD 2026-08-18 (Conclave round 39): this asked for 200 files and
-      // then behaved as though 200 were all of them. A meeting with more —
-      // long sessions write video, audio and a sidecar per recording — would
-      // report "deleted" while leaving files in storage with no row pointing
-      // at them. Nobody would ever find those again. Page until a page comes
-      // back short; that is the only answer that means "all of them".
-      const paths: string[] = [];
-      for (let offset = 0; offset < 5000; offset += 200) {
-        const { data: listed } = await sb.storage
-          .from("recordings")
-          .list(prefix, { limit: 200, offset });
-        const page = listed || [];
-        paths.push(...page.map((f: any) => `${prefix}/${f.name}`));
-        if (page.length < 200) break;
-      }
-      if (!paths.length) continue;
-      // remove() itself takes a bounded list, so the deletion is paged too.
-      let failed = false;
-      for (let i = 0; i < paths.length; i += 100) {
-        const { error } = await sb.storage.from("recordings").remove(paths.slice(i, i + 100));
-        if (error) { failed = true; break; }
-        filesRemoved += Math.min(100, paths.length - i);
-      }
-      if (failed) orphaned.push(prefix);
-    }
-    report.recordings = (recs || []).length;
-  } catch (e: any) {
-    report.storage_error = e?.message || String(e);
+  //
+  // FIELD 2026-10-19: this only read `recordings` table rows (LiveKit Egress
+  // bookkeeping). The in-browser recorder — every real meeting — never writes
+  // one, so Delete removed the row, said "deleted", and left the video, the
+  // audio copy and the transcript in `<hostId>/<room>/`. Now the host's own
+  // folder for this room is the source of truth, and success is only reported
+  // once a re-list shows it empty.
+  const mine = await meetingStoragePaths(sb, hostId, room);
+  if (mine.error) {
+    return Response.json(
+      { error: `Nothing was deleted: couldn't list this meeting's files (${mine.error}). Try again in a moment.`, ...report },
+      { status: 502 }
+    );
   }
-  report.files_removed = filesRemoved;
+  const paths = [...mine.paths];
 
-  // If any file refused to go, stop. Better a meeting that is still listed
-  // than a person told their recording was deleted when it wasn't.
-  if (orphaned.length) {
+  // Legacy Egress rows, if this deployment ever made any. Only prefixes inside
+  // this host's folder (or an Egress-style `<room>/...`) are touched; a row
+  // pointing anywhere else stops the delete rather than being guessed at.
+  const { data: recs, error: rErr } = await sb
+    .from("recordings")
+    .select("id, storage_prefix")
+    .eq("room_name", room);
+  if (rErr) {
+    return Response.json({ error: `Nothing was deleted: couldn't read this meeting's recordings (${rErr.message}).`, ...report }, { status: 502 });
+  }
+  for (const r of recs || []) {
+    const prefix = String((r as any).storage_prefix || "").replace(/^\/+|\/+$/g, "");
+    if (!prefix) continue;
+    if (!prefixInScope(prefix, hostId, room)) {
+      return Response.json(
+        { error: "Nothing was deleted: a recording of this meeting is stored outside your folder, so it can't be removed safely from here.", ...report },
+        { status: 409 }
+      );
+    }
+    const tree = await listTree(sb, prefix);
+    if (tree.error) {
+      return Response.json({ error: `Nothing was deleted: couldn't list ${prefix} (${tree.error}).`, ...report }, { status: 502 });
+    }
+    for (const f of tree.files) if (!paths.includes(f.path)) paths.push(f.path);
+  }
+  report.recordings = (recs || []).length;
+
+  const gone = await removePaths(sb, paths);
+  report.files_removed = gone.removed;
+  const check = gone.error ? { left: paths } : await stillThere(sb, paths);
+  const left = check.left || [];
+  if (gone.error || (check as any).error || left.length) {
+    // If any file refused to go, stop. Better a meeting that is still listed
+    // than a person told their recording was deleted when it wasn't.
     return Response.json(
       {
         error:
-          `The meeting is still here on purpose: ${orphaned.length} recording file(s) couldn't be removed from storage, ` +
+          `The meeting is still here on purpose: ${left.length || "some"} recording file(s) couldn't be removed from storage, ` +
           "and deleting the row would have left them behind with nothing pointing at them. Try again in a moment.",
         ...report,
+        files_left: left.length,
       },
       { status: 502 }
     );
@@ -169,13 +178,12 @@ export async function POST(req: Request) {
     report.items_error = e?.message || String(e);
   }
 
-  try {
-    await sb.from("recordings").delete().eq("room_name", room);
-  } catch (e: any) {
-    report.recordings_error = e?.message || String(e);
+  {
+    const { error } = await sb.from("recordings").delete().eq("room_name", room);
+    if (error) report.recordings_error = error.message;
   }
 
-  const { data: gone, error: dErr } = await sb
+  const { data: rows, error: dErr } = await sb
     .from("meetings")
     .delete()
     .eq("id", (meeting as any).id)
@@ -184,7 +192,7 @@ export async function POST(req: Request) {
   if (dErr) {
     return Response.json({ error: `Couldn't delete it: ${dErr.message}`, ...report }, { status: 502 });
   }
-  if (!(gone || []).length) {
+  if (!(rows || []).length) {
     return Response.json({ error: "It's already gone.", ...report }, { status: 404 });
   }
 

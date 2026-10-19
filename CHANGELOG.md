@@ -2,6 +2,21 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.1.2 (2026-10-19)
+
+**Privacy and access fixes. Recommended for every self-hosted install.** Found while testing a fresh self-host.
+
+### Fixed
+- **Deleting a meeting now deletes its recordings.** Delete used to look only at Egress bookkeeping rows, which the in-browser recorder never writes, so it said "deleted" while the video, audio copy, whiteboard snapshot and `.summary.json` transcript stayed in storage. It now removes everything under the host's `<hostId>/<room>/` folder plus the meeting's caption glossary, then re-lists storage and only reports success when the files are actually gone. If listing or removing fails, nothing is deleted and the meeting stays in the list with an error. Scope is strictly that host and that room: other rooms, other people's folders, and project-level PRD / Memory files (which can span several meetings) are left alone.
+- **Retention actually deletes.** The nightly `/api/cron/cleanup` now deletes browser recordings older than `RECORDING_RETENTION_DAYS` (dated by the video's upload time — the same date the meeting history shows as "DELETES …"), video, audio, board and transcript together. Unset or `0` means off, matching the history page's "No automatic deletion is configured". Expired Egress rows are only removed once their files are confirmed gone. At most 500 recordings per run. `GET /api/cron/cleanup?dry=1` (with `CRON_SECRET`) lists what the next run would delete without deleting anything. The job reports failures with a 500 instead of `ok: true`.
+- **Room tokens fail closed.** If the meeting lookup errors or hangs (database down, a missing table, a wrong service key), `/api/room/token` now answers `503` with a clear message instead of letting anyone into any room. Lookups time out after 6 seconds. The deliberate no-database mode (no Supabase env at all) is unchanged.
+
+### Notes
+- **Upgrading with `RECORDING_RETENTION_DAYS` set?** The first nightly run after you deploy will delete every recording older than that window (the ones your meeting history already showed a past "DELETES" date for). Check `GET /api/cron/cleanup?dry=1` with `Authorization: Bearer $CRON_SECRET` first, or unset the variable to keep everything.
+- No database migration.
+- If you deleted meetings on an earlier version, their recording files may still be in your `recordings` bucket under `<hostId>/<room>/`. They're no longer listed anywhere; remove them from the Supabase dashboard if you want them gone.
+- Recordings made by someone other than the host are stored in that person's own folder, so they aren't removed by the host's Delete.
+
 ## v1.1.1 (2026-10-19)
 
 **Recordings no longer get lost.** Prompted by three Memory sessions on Oct 17 that saved nothing.
