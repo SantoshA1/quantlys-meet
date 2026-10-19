@@ -36,6 +36,7 @@ import { compositeBoardOnto, snapshotBoardDataUrl, dataUrlToBlob } from "@/lib/b
 import { toWorkflow } from "@/lib/workflow";
 import { screenShareCaptureDefaults } from "@/lib/share";
 import { shouldFlushOnPageHide } from "@/lib/recording-flush";
+import { diffSources, wantedAudio } from "@/lib/recording-mix";
 import {
   PAGE_ID, newTakeId, putTake, putChunk, patchTake, deleteTake, holdTakeLock,
 } from "@/lib/take-store";
@@ -57,9 +58,11 @@ import {
 import Board, { BOARD_CSS } from "./Board";
 import {
   CC_TOPIC, mergeCaption, pruneStale, visible, finals, stamp,
-  toTranscript, toUtterances, engineNote, pickEngine, toggleLabel,
+  toTranscript, toUtterances, engineNote, engineBadge, pickEngine, toggleLabel,
 } from "@/lib/captions";
-import { keytermParams, sanitizeNames } from "@/lib/keyterms";
+import { keytermParams, sanitizeNames, sanitizeGlossary, MAX_GLOSSARY_TERMS, MAX_NAMES } from "@/lib/keyterms";
+import { createCaptionController, type CaptionController, type Stopper } from "@/lib/caption-control";
+import { feedLevel, newSegment, rmsOf } from "@/lib/caption-relay";
 import { recentTranscript, type Catchup } from "@/lib/catchup";
 
 // SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
@@ -662,11 +665,6 @@ function PlaybackGate() {
   );
 }
 
-// An <audio> element can only be handed to createMediaElementSource ONCE for
-// the lifetime of the page. Recording twice in one meeting would throw and
-// silently lose that person's voice, so the sources are kept and reused.
-const AUDIO_SOURCES = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
-
 function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, initialSessionMode = "meeting" }: {
   room: string; title?: string; project?: string; camWanted?: boolean; micWanted?: boolean; spec?: boolean; initialSessionMode?: SessionMode;
 }) {
@@ -767,6 +765,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   const aExt = useRef("m4a");
   const raf = useRef<number | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
+  const recMix = useRef<{ ac: AudioContext; dest: MediaStreamAudioDestinationNode; nodes: Map<string, MediaStreamAudioSourceNode>; off: () => void } | null>(null);
   const ticker = useRef<any>(null);
   const stopping = useRef(0);
   const saveWaiters = useRef<Array<() => void>>([]);
@@ -976,14 +975,24 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
       return;
     }
     specCcOnce.current = true;
-    cc.toggle();
+    cc.enable();   // idempotent: the PRD agent may be switching them on too
   }, [spec, cc]);
 
   // Spec session: start recording once the canvas has video. Cleanup the
   // timeout so Strict Mode does not fire twice; host can still stop.
+  // ONCE per room visit (FIELD 2026-10-19): without the guard, stopping —
+  // including the stop inside Save & leave — re-armed this and started a
+  // second, empty take that was then saved as its own recording.
+  const specAutoRec = useRef(false);
   useEffect(() => {
-    if (!spec || !signedIn || recording) return;
-    const t = window.setTimeout(() => startRecordingRef.current(), 1200);
+    if (!spec || !signedIn || recording || specAutoRec.current) return;
+    const t = window.setTimeout(() => {
+      if (specAutoRec.current) return;
+      startRecordingRef.current();
+      // Only a take that actually started uses up the once; a failed start
+      // (no video yet) tries again on the next pass, as before.
+      if (vRec.current?.state === "recording") specAutoRec.current = true;
+    }, 1200);
     return () => window.clearTimeout(t);
   }, [spec, signedIn, recording]);
 
@@ -1095,34 +1104,62 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     ) as HTMLVideoElement[];
   }
 
+  // The recording's audio: the LiveKit tracks themselves, reconciled for the
+  // whole take (lib/recording-mix). FIELD 2026-10-19: mixing <audio> elements
+  // via createMediaElementSource recorded remote voices as silence in Chrome,
+  // and only the elements present at Record were ever included.
+  function syncRecAudio() {
+    const m = recMix.current;
+    if (!m) return;
+    let want = new Map<string, any>();
+    try {
+      const mic = ctx.localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
+      want = wantedAudio(Array.from(ctx.remoteParticipants.values()) as any, mic as any);
+    } catch { /* keep what we have */ }
+    const { add, remove } = diffSources(m.nodes.keys(), want.keys());
+    for (const id of remove) {
+      try { m.nodes.get(id)?.disconnect(); } catch { /* already gone */ }
+      m.nodes.delete(id);
+    }
+    for (const id of add) {
+      try {
+        const src = m.ac.createMediaStreamSource(new MediaStream([want.get(id) as MediaStreamTrack]));
+        src.connect(m.dest);
+        m.nodes.set(id, src);
+      } catch { /* one voice missing must not stop the recording */ }
+    }
+  }
+
+  function stopRecAudio() {
+    const m = recMix.current;
+    recMix.current = null;
+    if (!m) return;
+    m.off();
+    m.nodes.forEach((n) => { try { n.disconnect(); } catch { /* gone */ } });
+    m.nodes.clear();
+  }
+
   function buildAudio(): MediaStream {
+    stopRecAudio();
     const ac = audioCtx.current || new AudioContext();
     audioCtx.current = ac;
     if (ac.state === "suspended") ac.resume().catch(() => {});
     const dest = ac.createMediaStreamDestination();
-
-    Array.from(document.querySelectorAll("audio")).forEach((el) => {
-      const a = el as HTMLAudioElement;
-      try {
-        let src = AUDIO_SOURCES.get(a);
-        if (!src) {
-          src = ac.createMediaElementSource(a);
-          AUDIO_SOURCES.set(a, src);
-          src.connect(ac.destination); // keep it audible in the room
-        }
-        src.connect(dest);
-      } catch {
-        /* one voice missing must not stop the recording */
-      }
-    });
-
-    try {
-      const pub = ctx.localParticipant.getTrackPublication(Track.Source.Microphone);
-      const mst = pub?.track?.mediaStreamTrack;
-      if (mst) ac.createMediaStreamSource(new MediaStream([mst])).connect(dest);
-    } catch {
-      /* recording without your own voice beats no recording */
-    }
+    const resync = () => syncRecAudio();
+    const events = [
+      RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed, RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished,
+      RoomEvent.ParticipantDisconnected,
+    ];
+    events.forEach((e) => ctx.on(e as any, resync));
+    // Belt and braces: events can race the track becoming live, and a device
+    // switch replaces the track without a publish event.
+    const tick = setInterval(resync, 1500);
+    recMix.current = {
+      ac, dest, nodes: new Map(),
+      off: () => { clearInterval(tick); events.forEach((e) => ctx.off(e as any, resync)); },
+    };
+    syncRecAudio();
     return dest.stream;
   }
 
@@ -1340,6 +1377,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
       if (raf.current) cancelAnimationFrame(raf.current);
       videoStream.getTracks().forEach((t) => t.stop());
       clearRecStage();
+      stopRecAudio();
       if (--stopping.current <= 0) void save();
     };
     vr.start(2000);
@@ -1824,7 +1862,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
           className={`qmr-ghost${cc.on ? " qmr-on" : ""}`}
           onClick={cc.toggle}
           aria-pressed={cc.on}
-          title={cc.note || "Show what is being said, as it is said"}
+          title={cc.on && engineBadge(cc.engine) ? `${engineBadge(cc.engine)} — ${cc.note}` : (cc.note || "Show what is being said, as it is said")}
         >
           {toggleLabel(cc.engine === "none" && !cc.on ? "browser" : cc.engine, cc.on)}
         </button>
@@ -2656,8 +2694,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
   const [log, setLog] = useState<Caption[]>([]);
   const t0 = useRef<number>(0);
   const seq = useRef(0);
-  const stopper = useRef<null | (() => void)>(null);
-  const wantOn = useRef(false);
+  const ctrlRef = useRef<CaptionController | null>(null);
 
   const { send } = useDataChannel(CC_TOPIC, (msg) => {
     try {
@@ -2726,7 +2763,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
         if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
           stopped = true;
           setNote("Your browser refused microphone access for captions. Allow the microphone and turn captions on again.");
-          setOn(false);
+          ctrlRef.current?.disable();
         }
         // "no-speech" and "aborted" are normal. onend restarts.
       };
@@ -2737,34 +2774,8 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
   }, [emit, me, myName]);
 
   // ── Deepgram, streaming ─────────────────────────────────────────────────
-  const startDeepgram = useCallback(async (token: string) => {
-    let ws: WebSocket | null = null;
-    let mr: MediaRecorder | null = null;
-    let stream: MediaStream | null = null;
-    let stopped = false;
-    let utter = `${me}-${seq.current++}`;
-
-    try {
-      // A second getUserMedia here can fire a permission failure even while
-      // the published mic is already live, which is how a padlock banner
-      // appears over a working call. Reuse the published track when we can.
-      const pub = lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
-      const mst = pub?.track?.mediaStreamTrack;
-      if (mst && mst.readyState === "live") {
-        stream = new MediaStream([mst.clone()]);
-      } else {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
-    } catch {
-      setNote("Couldn't open the microphone for captions.");
-      setOn(false);
-      return () => {};
-    }
-
-    // Name + glossary boosting: the people in the room and the host's
-    // per-meeting glossary go to Deepgram as keyterm (nova-3) / keywords
-    // (nova-2). A missing glossary just means names only.
-    const DG_MODEL = "nova-2";
+  // Names in the room + the host's glossary, for Deepgram's keyterm boosting.
+  const loadTerms = useCallback(async (): Promise<{ names: string[]; glossary: string[] }> => {
     let glossary: string[] = [];
     try {
       const g = await fetch(`/api/room/glossary?room=${encodeURIComponent(room)}`, {
@@ -2776,6 +2787,39 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       myName,
       ...Array.from(lkRoom.remoteParticipants.values()).map((p) => p.name || ""),
     ]);
+    return { names, glossary };
+  }, [room, myName, lkRoom]);
+
+  // The published mic, cloned, so captions never ask for the microphone twice.
+  const micStream = useCallback(async (): Promise<MediaStream> => {
+    const pub = lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+    const mst = pub?.track?.mediaStreamTrack;
+    if (mst && mst.readyState === "live") return new MediaStream([mst.clone()]);
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }, [lkRoom]);
+
+  const startDeepgram = useCallback(async (token: string, scheme: "token" | "bearer" = "token") => {
+    let ws: WebSocket | null = null;
+    let mr: MediaRecorder | null = null;
+    let stream: MediaStream | null = null;
+    let stopped = false;
+    let utter = `${me}-${seq.current++}`;
+
+    try {
+      // A second getUserMedia here can fire a permission failure even while
+      // the published mic is already live, which is how a padlock banner
+      // appears over a working call. Reuse the published track when we can.
+      stream = await micStream();
+    } catch {
+      setNote("Couldn't open the microphone for captions.");
+      return null;
+    }
+
+    // Name + glossary boosting: the people in the room and the host's
+    // per-meeting glossary go to Deepgram as keyterm (nova-3) / keywords
+    // (nova-2). A missing glossary just means names only.
+    const DG_MODEL = "nova-2";
+    const { names, glossary } = await loadTerms();
     const qs = new URLSearchParams([
       ["model", DG_MODEL],
       ["smart_format", "true"],
@@ -2784,7 +2828,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       ["encoding", "opus"],
       ...keytermParams(DG_MODEL, names, glossary),
     ]);
-    ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, ["token", token]);
+    ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, [scheme, token]);
 
     ws.onopen = () => {
       if (stopped || !stream) return;
@@ -2815,8 +2859,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       if (stopped) return;
       setNote("Deepgram dropped the caption connection — switching to your browser's own recogniser.");
       setEngine("browser");
-      stopper.current?.();
-      stopper.current = startBrowser();
+      ctrlRef.current?.replace(startBrowser());
     };
 
     return () => {
@@ -2825,22 +2868,120 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
       try { ws?.close(); } catch {}
     };
-  }, [emit, me, myName, startBrowser, lkRoom, room]);
+  }, [emit, me, myName, startBrowser, loadTerms, micStream]);
 
-  const toggle = useCallback(() => {
-    if (on) {
-      wantOn.current = false;
-      stopper.current?.();
-      stopper.current = null;
-      setOn(false);
-      return;
+  // ── Deepgram through our server (the relay) ─────────────────────────────
+  // For keys that can transcribe but can't mint a browser key. The mic is cut
+  // into utterances at pauses (lib/caption-relay) and each one is posted to
+  // /api/captions/relay. A line appears when its speaker pauses.
+  const startRelay = useCallback(async (): Promise<Stopper | null> => {
+    let stream: MediaStream;
+    try {
+      stream = await micStream();
+    } catch {
+      setNote("Couldn't open the microphone for captions.");
+      return null;
     }
-    wantOn.current = true;
-    if (!t0.current) t0.current = Date.now();
-    setOn(true);
-    (async () => {
+    const { names, glossary } = await loadTerms();
+    const terms = sanitizeGlossary([...names, ...glossary], MAX_GLOSSARY_TERMS + MAX_NAMES).join(",");
+    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    const ac = new AudioContext();
+    try { await ac.resume(); } catch { /* resumes on the next gesture */ }
+    const an = ac.createAnalyser();
+    an.fftSize = 1024;
+    ac.createMediaStreamSource(stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let stopped = false;
+    let failures = 0;
+    let queue: Promise<void> = Promise.resolve();
+    let mr: MediaRecorder | null = null;
+    let seg = newSegment(performance.now());
+    let segAt = Date.now() - t0.current;
+
+    const post = (blob: Blob, at: number) => {
+      const id = `${me}-${seq.current++}`;
+      queue = queue.then(async () => {
+        if (stopped) return;
+        try {
+          const r = await fetch(`/api/captions/relay?room=${encodeURIComponent(room)}&terms=${encodeURIComponent(terms)}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": blob.type || "audio/webm",
+              ...(currentRoomToken ? { Authorization: `Bearer ${currentRoomToken}` } : {}),
+            },
+            body: blob,
+          });
+          if (r.status === 429) return;      // one line lost, not the captions
+          if (!r.ok) throw new Error(String(r.status));
+          failures = 0;
+          const text = String((await r.json())?.text || "").trim();
+          if (text && !stopped) emit({ id, who: myName, text, final: true, at });
+        } catch {
+          if (stopped) return;
+          if (++failures >= 3) {
+            // Falling back beats going quiet — and the bar says which engine runs.
+            setNote("The caption relay stopped answering — switching to your browser's own recogniser.");
+            setEngine("browser");
+            ctrlRef.current?.replace(startBrowser());
+          }
+        }
+      });
+    };
+
+    const begin = () => {
+      if (stopped) return;
+      const parts: Blob[] = [];
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+      rec.ondataavailable = (e) => { if (e.data.size > 0) parts.push(e.data); };
+      (rec as any)._parts = parts;
+      rec.start();
+      mr = rec;
+      seg = newSegment(performance.now(), seg.noise);
+      segAt = Date.now() - t0.current;
+    };
+    const cut = (send: boolean) => {
+      const rec = mr;
+      const at = segAt;
+      if (!rec) return begin();
+      rec.onstop = () => {
+        if (send && !stopped) post(new Blob((rec as any)._parts, { type: rec.mimeType || mime || "audio/webm" }), at);
+      };
+      try { rec.stop(); } catch { /* already stopped */ }
+      begin();
+    };
+
+    begin();
+    const tick = setInterval(() => {
+      if (stopped) return;
+      an.getFloatTimeDomainData(buf);
+      const r = feedLevel(seg, rmsOf(buf), performance.now());
+      seg = r.state;
+      if (r.action === "send") cut(true);
+      else if (r.action === "discard") cut(false);
+    }, 50);
+
+    return () => {
+      stopped = true;
+      clearInterval(tick);
+      try { if (mr) { mr.onstop = null; mr.stop(); } } catch {}
+      try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      try { ac.close(); } catch {}
+    };
+  }, [emit, me, myName, room, startBrowser, loadTerms, micStream]);
+
+  // Latest engine starters, for the controller (created once).
+  const starters = useRef({ startBrowser, startDeepgram, startRelay });
+  starters.current = { startBrowser, startDeepgram, startRelay };
+
+  // Single-flight start (lib/caption-control). FIELD 2026-10-19: a spec
+  // session and the PRD agent both switched captions on in the same tick;
+  // two Web Speech recognisers aborted each other every 300ms, forever.
+  if (!ctrlRef.current) {
+    ctrlRef.current = createCaptionController(async (isCurrent) => {
+      if (!t0.current) t0.current = Date.now();
       let picked: Engine = pickEngine(false, hasBrowserRecogniser());
       let token = "";
+      let scheme: "token" | "bearer" = "token";
       try {
         const r = await fetch("/api/captions/token", {
           method: "POST",
@@ -2854,24 +2995,28 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
         if (j?.engine === "deepgram" && j?.token) {
           picked = "deepgram";
           token = j.token;
-        } else if (j?.reason && !hasBrowserRecogniser()) {
-          setNote(j.reason);
+          scheme = j.scheme === "bearer" ? "bearer" : "token";
+        } else if (j?.engine === "relay" && typeof MediaRecorder !== "undefined") {
+          picked = "relay";
         }
       } catch {
         /* no token service reachable — the browser path still works */
       }
-      if (!wantOn.current) return;
+      if (!isCurrent()) return null;
       setEngine(picked);
       setNote(engineNote(picked));
-      if (picked === "deepgram") stopper.current = await startDeepgram(token);
-      else if (picked === "browser") stopper.current = startBrowser();
-      else setOn(false);
-    })();
-  }, [on, room, startBrowser, startDeepgram]);
+      const st = starters.current;
+      if (picked === "deepgram") return st.startDeepgram(token, scheme);
+      if (picked === "relay") return st.startRelay();
+      if (picked === "browser") return st.startBrowser();
+      return null;
+    }, setOn);
+  }
 
-  useEffect(() => () => { stopper.current?.(); }, []);
+  useEffect(() => () => { ctrlRef.current?.disable(); }, []);
 
-  const enable = useCallback(() => { if (!on) toggle(); }, [on, toggle]);
+  const toggle = useCallback(() => { ctrlRef.current?.toggle(); }, []);
+  const enable = useCallback(() => { ctrlRef.current?.enable(); }, []);
 
   return { on, engine, note, log, toggle, enable };
 }
@@ -2924,6 +3069,10 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
         <button className="qmr-cctoggle" onClick={onOpen}>
           {open ? "Hide" : `All ${settled.length || ""}`.trim()}
         </button>
+        {/* Which engine is producing these words — and so where the audio goes. */}
+        {engineBadge(cc.engine) ? (
+          <span className="qmr-ccengine" title={cc.note} data-engine={cc.engine}>{engineBadge(cc.engine)}</span>
+        ) : null}
       </div>
     </>
   );
@@ -3168,13 +3317,15 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 .qmr-ccbar { position: absolute; left: 50%; transform: translateX(-50%);
   bottom: 130px; z-index: 27; width: min(920px, calc(100% - 32px));
   background: rgba(8,10,14,.9); border: 1px solid #262b36; border-radius: 12px;
-  padding: 12px 56px 12px 16px; backdrop-filter: blur(10px);
+  padding: 12px 56px 22px 16px; backdrop-filter: blur(10px);
   box-shadow: 0 14px 40px rgba(0,0,0,.55); }
 /* Caption text is bigger than body text on purpose. It is being READ, at a
    glance, by somebody who may not be hearing the words at all. */
 .qmr-ccbar p { margin: 0 0 4px; font-size: 17px; line-height: 1.45; color: #f2f5fa; }
 .qmr-ccbar p:last-of-type { margin-bottom: 0; }
 .qmr-ccdraft { color: #97a0b2 !important; }
+.qmr-ccengine { position: absolute; right: 10px; bottom: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6f7789; white-space: nowrap; }
 .qmr-ccwho { color: #00a99d; font-weight: 600; margin-right: 8px; }
 .qmr-cctoggle { position: absolute; top: 10px; right: 10px; font: inherit;
   font-size: 12px; cursor: pointer; background: #1a1f2a; color: #9aa3b4;

@@ -95,6 +95,37 @@ export async function POST(req: Request) {
     }
   }
 
+  // Three ways to caption with Deepgram, best first:
+  //  1. a short-lived JWT from /v1/auth/grant (needs a Member-or-higher key),
+  //  2. a short-lived scoped key (needs `keys:write`),
+  //  3. the relay — the browser posts each utterance to /api/captions/relay
+  //     and the key stays here. Works with a key that can only transcribe.
+  // FIELD 2026-10-19: the hosted key could do neither 1 nor 2, so every
+  // meeting silently fell back to the browser recogniser. Now it relays.
+  const relay = (why: string) =>
+    Response.json({ engine: "relay", reason: why }, { status: 200 });
+
+  try {
+    const gr = await fetch("https://api.deepgram.com/v1/auth/grant", {
+      method: "POST",
+      headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttl_seconds: TTL_SECONDS }),
+    });
+    if (gr.ok) {
+      const gj: any = await gr.json().catch(() => null);
+      if (gj?.access_token) {
+        return Response.json({
+          engine: "deepgram",
+          token: gj.access_token,
+          scheme: "bearer",
+          expiresIn: Number(gj.expires_in) || TTL_SECONDS,
+        });
+      }
+    }
+  } catch {
+    /* try a scoped key next */
+  }
+
   try {
     // Which project the key belongs to — Deepgram scopes keys per project.
     const pr = await fetch("https://api.deepgram.com/v1/projects", {
@@ -130,25 +161,20 @@ export async function POST(req: Request) {
       }),
     });
     if (!kr.ok) {
-      const detail = await kr.text().catch(() => "");
-      return Response.json(
-        {
-          engine: "browser",
-          reason:
-            kr.status === 403
-              ? "This Deepgram key isn't allowed to create temporary keys (it needs the 'keys:write' scope), so captions fall back to your browser's own recogniser."
-              : `Deepgram wouldn't issue a caption key (${kr.status}). ${detail.slice(0, 160)}`,
-        },
-        { status: 200 }
+      // The key can transcribe (it listed its project) but can't hand the
+      // browser a key of its own. Relay through this server instead.
+      return relay(
+        kr.status === 403
+          ? "This Deepgram key can't create browser keys (no 'keys:write' scope), so captions go through this server instead."
+          : `Deepgram wouldn't issue a browser caption key (${kr.status}), so captions go through this server instead.`
       );
     }
     const kj: any = await kr.json();
-    if (!kj?.key) {
-      return Response.json({ engine: "browser", reason: "Deepgram returned no key." }, { status: 200 });
-    }
+    if (!kj?.key) return relay("Deepgram returned no browser key, so captions go through this server instead.");
     return Response.json({
       engine: "deepgram",
       token: kj.key,
+      scheme: "token",
       expiresIn: TTL_SECONDS,
     });
   } catch (e: any) {
