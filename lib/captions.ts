@@ -118,11 +118,14 @@ export function toUtterances(
 // voice goes. Captions that quietly ship your microphone somewhere are a
 // privacy decision made on somebody's behalf without telling them.
 
-export type Engine = "deepgram" | "browser" | "none";
+export type Engine = "deepgram" | "relay" | "browser" | "none";
 
 export function engineNote(engine: Engine): string {
   if (engine === "deepgram") {
     return "Captions are produced by Deepgram, the same service that transcribes your recordings. Your microphone audio is sent there while captions are on.";
+  }
+  if (engine === "relay") {
+    return "Captions are produced by Deepgram, the same service that transcribes your recordings, through this site's server. Your microphone audio is sent there, a sentence at a time, while captions are on — each line appears when the speaker pauses.";
   }
   if (engine === "browser") {
     return "Captions are produced by your own browser's speech recogniser. In Chrome and Edge that means your microphone audio is sent to Google while captions are on. Nothing is sent by Quantlys.";
@@ -137,6 +140,15 @@ export function pickEngine(hasKey: boolean, hasBrowserRecogniser: boolean): Engi
   if (hasKey) return "deepgram";
   if (hasBrowserRecogniser) return "browser";
   return "none";
+}
+
+/** The small tag on the caption bar naming what is producing the words, so
+ *  nobody has to guess (or open a tooltip) to know where their audio goes. */
+export function engineBadge(engine: Engine): string {
+  if (engine === "deepgram") return "Deepgram";
+  if (engine === "relay") return "Deepgram · via server";
+  if (engine === "browser") return "Browser speech";
+  return "";
 }
 
 /** What the header button says. A control that cannot work must say so before
