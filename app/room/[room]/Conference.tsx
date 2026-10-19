@@ -980,9 +980,19 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
 
   // Spec session: start recording once the canvas has video. Cleanup the
   // timeout so Strict Mode does not fire twice; host can still stop.
+  // ONCE per room visit (FIELD 2026-10-19): without the guard, stopping —
+  // including the stop inside Save & leave — re-armed this and started a
+  // second, empty take that was then saved as its own recording.
+  const specAutoRec = useRef(false);
   useEffect(() => {
-    if (!spec || !signedIn || recording) return;
-    const t = window.setTimeout(() => startRecordingRef.current(), 1200);
+    if (!spec || !signedIn || recording || specAutoRec.current) return;
+    const t = window.setTimeout(() => {
+      if (specAutoRec.current) return;
+      startRecordingRef.current();
+      // Only a take that actually started uses up the once; a failed start
+      // (no video yet) tries again on the next pass, as before.
+      if (vRec.current?.state === "recording") specAutoRec.current = true;
+    }, 1200);
     return () => window.clearTimeout(t);
   }, [spec, signedIn, recording]);
 

@@ -22,10 +22,15 @@ export type CardPlacement = {
   maxHeight: number;
 };
 
-export function cardPlacement(headerBottom: number, vw: number, vh: number): CardPlacement {
+/** `stripBottom` is where the gaps strip actually ends (0 when it isn't shown
+ *  or hasn't been measured) — it wraps to two rows on narrower screens. */
+export function cardPlacement(headerBottom: number, vw: number, vh: number, stripBottom = 0): CardPlacement {
   const narrow = vw <= 720;
   const edge = narrow ? 8 : 12;
-  const top = Math.max(48, Math.round(headerBottom)) + (narrow ? 52 : CARD_GAP_STRIP);
+  const top = Math.max(
+    Math.max(48, Math.round(headerBottom)) + (narrow ? 52 : CARD_GAP_STRIP),
+    Math.round(stripBottom) + 8
+  );
   // On a short window the floor wins and the card keeps a usable height; it
   // still sits below the header, so nothing above it is covered.
   const maxHeight = Math.max(CARD_MIN_H, Math.round(vh - top - CARD_FOOT));

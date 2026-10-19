@@ -116,7 +116,16 @@ export default function Agent({
     window.addEventListener("resize", read);
     return () => window.removeEventListener("resize", read);
   }, []);
-  const place = cardPlacement(gapsTop, vp.w, vp.h);
+  // The gaps strip wraps to two rows on narrow screens — measure where it ends.
+  const gapsRef = useRef<HTMLDivElement | null>(null);
+  const [stripBottom, setStripBottom] = useState(0);
+  useEffect(() => {
+    const read = () => setStripBottom(Math.round(gapsRef.current?.getBoundingClientRect().bottom || 0));
+    read();
+    const t = setInterval(read, 1000);
+    return () => clearInterval(t);
+  }, []);
+  const place = cardPlacement(gapsTop, vp.w, vp.h, stripBottom);
   // Guests do not generate. They learn that the host's agent is on — and which
   // dims are still open — from the room broadcast, so the strip is the same
   // for everyone.
@@ -455,6 +464,7 @@ export default function Agent({
           auth; only generation (/api/agent/question) stays host-signed-in. */}
       {gaps.visible ? (
         <div
+          ref={gapsRef}
           className={`qa-gaps${gapsExpanded ? " is-open" : " is-collapsed"}`}
           role="status"
           aria-label={gapStripAria(sessionMode)}
