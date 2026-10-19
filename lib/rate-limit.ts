@@ -20,6 +20,8 @@ export const LIMITS = {
   token: { limit: 30, windowMs: 60_000 },
   knock: { limit: 120, windowMs: 60_000 },
   read: { limit: 120, windowMs: 60_000 },
+  // One request per spoken utterance (captions relay). ~15/min per speaker.
+  relay: { limit: 120, windowMs: 60_000 },
 } satisfies Record<string, Limit>;
 
 export function clientIp(req: Request): string {
