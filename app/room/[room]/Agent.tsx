@@ -633,6 +633,9 @@ export const AGENT_CSS = `
   background:#123130; border:1px solid #1d4f4c; border-radius:9px; padding:8px 11px; line-height:1.4;
   white-space:normal; overflow-wrap:anywhere; max-width:100%; box-sizing:border-box; }
 .qa-opt:hover { background:#17403e; border-color:#2a6f6a; }
+/* The card lives inside .qmr-bar, whose ".qmr-bar button { white-space:nowrap }"
+   outranks .qa-opt — long answers were cut off at the card's edge. */
+.qa-card .qa-opt { white-space:normal; }
 .qa-why { margin:0; color:#8b93a5; font-size:11.5px; line-height:1.5; }
 .qa-fine { margin:0; color:#6c7688; font-size:10.5px; line-height:1.45; }
 .qa-status { position:fixed; z-index:70; overflow-x:hidden; overflow-y:auto; box-sizing:border-box; max-width:320px;
