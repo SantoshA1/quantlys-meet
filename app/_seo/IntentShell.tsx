@@ -22,6 +22,10 @@ export const INTENT_LINKS: { href: string; label: string }[] = [
   { href: "/notes-vs-prd", label: "Notes vs PRD" },
   { href: "/recap-vs-prd", label: "Recap vs PRD" },
   { href: "/example-prd", label: "Example PRD" },
+  { href: "/zoom-vs-quantlys-meeting", label: "Zoom vs Quantlys Meeting" },
+  { href: "/otter-alternative", label: "Otter alternative" },
+  { href: "/self-hosted-zoom-alternative", label: "Self-hosted Zoom alternative" },
+  { href: "/granola-fireflies-alternative", label: "Granola / Fireflies alternative" },
   { href: "/about", label: "About" },
   { href: "/privacy", label: "Privacy" },
 ];
@@ -50,11 +54,14 @@ export function IntentShell({
   title,
   description,
   children,
+  ld,
 }: {
   path: string;
   title: string;
   description: string;
   children: React.ReactNode;
+  /** Extra WebPage JSON-LD fields (e.g. author) for pages that need them. */
+  ld?: Record<string, unknown>;
 }) {
   const jsonLd = {
     "@context": "https://schema.org",
@@ -65,6 +72,7 @@ export function IntentShell({
     isPartOf: { "@id": `${SITE}/#website` },
     about: { "@id": `${SITE}/#app` },
     publisher: { "@id": "https://www.quantlys.ai/#org" },
+    ...(ld || {}),
   };
   return (
     <div className="qml">
