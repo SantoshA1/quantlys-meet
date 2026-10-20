@@ -242,10 +242,18 @@ export function buildPlan(input: {
 
 export type ExistingRef = { external_id: string; external_url: string };
 
+/** A story's issue title without the "Story:" label, for trackers where the
+ *  item isn't really a Story (Linear sub-issues, Jira Tasks). GitHub keeps
+ *  the label: its issues have no type, and it tells stories apart from the
+ *  PRD issue in the list. */
+export function childTitle(title: string): string {
+  return String(title || "").replace(/^Story:\s*/i, "");
+}
+
 /** What a push WILL do, item by item, before anything is sent. */
 export function previewPlan(plan: ExportPlan, existing: Record<string, ExistingRef>, provider: Provider) {
   const items = (provider === "notion" ? plan.items.slice(0, 1) : plan.items).map((it) => ({
-    key: it.key, kind: provider === "notion" ? "page" : it.kind, title: it.title,
+    key: it.key, kind: provider === "notion" ? "page" : it.kind, title: provider === "linear" ? childTitle(it.title) : it.title,
     criteria: it.story ? it.story.criteria.length : plan.parts.criteria.length,
     action: existing[it.key] ? (provider === "notion" ? "replace" : "update") : "create",
     url: existing[it.key]?.external_url || "",
@@ -255,14 +263,24 @@ export function previewPlan(plan: ExportPlan, existing: Record<string, ExistingR
   return { items, untouched, droppedStories: plan.droppedStories, stories: plan.parts.stories.length };
 }
 
-const footer = (link: string) => link ? `\n\n---\n_Exported from Quantlys Meeting · full PRD: ${link}_` : "\n\n---\n_Exported from Quantlys Meeting_";
+/** A markdown link that every target renders: GitHub and Linear natively,
+ *  Jira via mdToAdf (link mark) and Notion via notionRichText. A bare URL
+ *  inside _…_ doesn't: Linear swallowed the closing "_" into the link
+ *  (…/host#prd_) and Jira showed it as plain italic text. Parentheses and
+ *  spaces are escaped so the URL can't end the link early. */
+export function mdLink(text: string, url: string): string {
+  const u = String(url || "").replace(/[()\s]/g, (ch) => ch === "(" ? "%28" : ch === ")" ? "%29" : "%20");
+  return `[${String(text).replace(/[\[\]]/g, "")}](${u})`;
+}
+
+export const footer = (link: string) => link ? `\n\n---\nExported from Quantlys Meeting · ${mdLink("full PRD", link)}` : "\n\n---\nExported from Quantlys Meeting";
 
 /** Cut a markdown body to `max` characters, ending on a line, with a
  *  pointer to the full document rather than a silent loss. */
 export function truncateBody(body: string, max: number, link: string): string {
   const b = String(body || "");
   if (b.length <= max) return b;
-  const note = `\n\n…truncated.${link ? ` Full PRD: ${link}` : ""}`;
+  const note = `\n\n…truncated.${link ? ` ${mdLink("Full PRD", link)}` : ""}`;
   let cut = b.slice(0, Math.max(0, max - note.length));
   const nl = cut.lastIndexOf("\n");
   if (nl > cut.length * 0.6) cut = cut.slice(0, nl);
@@ -274,14 +292,57 @@ export const LINEAR_BODY_MAX = 60000;
 
 export type ChildRef = { title: string; ref: string; url: string };
 
-/** GitHub / Linear parent body: the PRD itself, criteria as a checklist,
- *  plus a checklist of the child issues once they exist. */
+/** GitHub / Linear / Jira parent body: the PRD itself (minus its H1, which
+ *  is already the issue's title), criteria as a checklist, and, once the
+ *  child issues exist, its story section as a linked checklist of them. */
 export function parentMarkdown(plan: ExportPlan, children: ChildRef[], max: number, refs: boolean): string {
-  let body = checklistify(plan.markdown.trim());
+  let md = dropTitle(plan.markdown.trim());
   if (refs && children.length) {
-    body += `\n\n## Stories\n\n${children.map((c) => `- [ ] ${c.ref} ${c.title.replace(/^Story:\s*/, "")}`).join("\n")}`;
+    // The stories now live in their own issues, so the PRD's story section
+    // becomes the linked checklist instead of listing every story twice.
+    const list = children.map((c) => `- [ ] ${c.ref} ${c.title.replace(/^Story:\s*/, "")}`);
+    if (plan.droppedStories) {
+      list.push("", `_${plan.droppedStories} more stor${plan.droppedStories === 1 ? "y is" : "ies are"} in the full PRD (limit ${MAX_CHILDREN} per push)._`);
+    }
+    md = replaceStorySection(md, list) ?? `${md}\n\n## Stories\n\n${list.join("\n")}`;
   }
-  return truncateBody(body + footer(plan.backlink), max, plan.backlink);
+  return truncateBody(checklistify(md) + footer(plan.backlink), max, plan.backlink);
+}
+
+/** Remove the PRD's first H1 (the line extractPrd takes the title from) and
+ *  the blank lines after it. Headings inside code fences don't count. */
+export function dropTitle(markdown: string): string {
+  const src = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  let inFence = false;
+  for (let i = 0; i < src.length; i++) {
+    if (/^\s*(```|~~~)/.test(src[i])) { inFence = !inFence; continue; }
+    if (inFence || !/^\s{0,3}#\s+\S/.test(src[i])) continue;
+    let j = i + 1;
+    while (j < src.length && !src[j].trim()) j++;
+    return [...src.slice(0, i), ...src.slice(j)].join("\n").trim();
+  }
+  return String(markdown || "").trim();
+}
+
+/** Swap the body of the PRD's first "User stories" section (up to the next
+ *  heading at the same or a higher level) for `lines`. The heading itself is
+ *  kept. Returns null when the PRD has no such section. Code fences are
+ *  skipped, the same way checklistify skips them. */
+export function replaceStorySection(markdown: string, lines: string[]): string | null {
+  const src = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  let inFence = false, start = -1, level = 0, end = src.length;
+  for (let i = 0; i < src.length; i++) {
+    if (/^\s*(```|~~~)/.test(src[i])) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const h = src[i].match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (!h) continue;
+    if (start < 0) {
+      if (STORY_HEAD.test(plainText(h[2]))) { start = i; level = h[1].length; }
+    } else if (h[1].length <= level) { end = i; break; }
+  }
+  if (start < 0) return null;
+  const after = src.slice(end);
+  return [...src.slice(0, start + 1), "", ...lines, ...(after.length ? ["", ...after] : [])].join("\n");
 }
 
 export function storyMarkdown(story: Story, parentRef: string, link: string, max: number): string {
@@ -403,7 +464,7 @@ export function mdToNotionBlocks(markdown: string, link: string): { title: strin
   const blocks: any[] = [];
   if (link) {
     blocks.push({ object: "block", type: "callout", callout: {
-      rich_text: notionRichText(`Exported from Quantlys Meeting · [full PRD](${link})`), icon: { type: "emoji", emoji: "📝" },
+      rich_text: notionRichText(`Exported from Quantlys Meeting · ${mdLink("full PRD", link)}`), icon: { type: "emoji", emoji: "📝" },
     } });
   }
   const mk = (type: string, body: any) => ({ object: "block", type, [type]: body });
@@ -431,7 +492,7 @@ export function mdToNotionBlocks(markdown: string, link: string): { title: strin
       } else { blocks.push(block); lastTop = block; }
     }
   });
-  blocks.push(mk("paragraph", { rich_text: notionRichText(link ? `Full PRD: ${link}` : "Exported from Quantlys Meeting") }));
+  blocks.push(mk("paragraph", { rich_text: notionRichText(link ? `Exported from Quantlys Meeting · ${mdLink("full PRD", link)}` : "Exported from Quantlys Meeting") }));
   return { title, blocks };
 }
 
@@ -535,7 +596,7 @@ export const URL_MAX = 8000;
 export function fitUrl(build: (body: string) => string, body: string, link: string, max = URL_MAX): string {
   const full = build(body);
   if (full.length <= max) return full;
-  const note = `\n\n…truncated.${link ? ` Full PRD: ${link}` : ""}`;
+  const note = `\n\n…truncated.${link ? ` ${mdLink("Full PRD", link)}` : ""}`;
   let lo = 0, hi = body.length, best = build(note.trim());
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;

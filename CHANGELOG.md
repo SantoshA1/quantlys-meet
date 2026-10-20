@@ -2,6 +2,27 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.2.1 (2026-10-19)
+
+**Direct push tells you what's wrong with a token before you push, and a push that fails halfway can be retried without duplicates.** Found by pushing a test PRD to a real private GitHub repo on the hosted site.
+
+### Fixed
+- **Connect checks that the token can actually create issues.** Before, Connect only checked who the token belonged to, so a GitHub token without the Issues permission connected fine and the problem only showed up as a vague error at push time.
+  - **GitHub, fine-grained tokens:** each repo is checked with a title-less issue request. GitHub checks permission first, so it answers "not allowed" (403/404) or "title missing" (422, meaning allowed), and nothing is ever created. At most the 30 most recently updated repos are checked per click; past that, a note says so and you can type `owner/repo`. Connect is refused if the token can't create issues anywhere.
+  - **GitHub, classic tokens:** judged by their scopes (`repo`, or `public_repo` for public repos), with no extra calls.
+  - **Linear:** Connect is refused if the key can't see any team.
+  - **Jira:** Connect is refused if the account can't create issues in any project, and the project list only shows projects you can create issues in.
+- **The repo list only shows repos you can push to.** Public repos the token can only read are no longer listed.
+- **Permission errors say what to change.** GitHub's `x-accepted-github-permissions` header is turned into words: "This token needs Issues: Read and write on owner/repo", "This token can't see owner/repo. Add it under Repository access…", and a separate message for an expired token or a used-up rate limit. Linear, Jira and Notion get the same treatment (team access, the Create issues permission, sharing the page under Connections, the Insert content capability).
+- **A push that fails partway no longer duplicates on retry.** Every created or updated item is saved the moment it exists, for all four services, instead of only after the whole push succeeds. The error message says how many were saved. In Notion, a page that fails halfway through writing is moved to the trash, and the previous export stays the remembered one.
+- **The PRD issue no longer lists the stories twice.** Once the story issues exist, the PRD's "User stories" section is replaced by the linked checklist (`- [ ] #12 As a…`); each story's criteria live in its own issue. Stories over the 25-per-push limit are mentioned instead of disappearing. A PRD without a story section still gets the checklist at the end.
+- **Jira projects without a Story type are handled honestly.** Team-managed Jira Cloud projects (like a new Scrum project) often have Epic, Feature, Task and Subtask but no Story. Stories already went in as Tasks; now the push says so ("This project has no Story type, so each user story went in as a Task."), and their summaries no longer start with "Story:". The "Jira refused an Epic" fallback names the type it really used. Found by pushing to a real team-managed project. The Export menu option now reads "one issue per user story" (sub-issue for Linear).
+- **The Jira Epic and the Linear parent no longer list the stories twice either.** Like the GitHub PRD issue, once the child issues exist the PRD's "User stories" section becomes a list of them: linked issue keys in Jira, sub-issue identifiers in Linear.
+- **Descriptions don't repeat the title.** The PRD's H1 is already the issue's title, so it's left out of the GitHub, Linear and Jira descriptions (Notion already did this).
+- **The "full PRD" link at the bottom of every exported item works everywhere.** It was a bare URL inside `_…_`. Linear pulled the closing `_` into the link (`…/host#prd_`) and showed a stray `\_`, and Jira showed it as italic text with no link. It's now a real markdown link, "Exported from Quantlys Meeting · [full PRD](…)": a link in GitHub and Linear, a link mark in Jira, and a linked text run in Notion. The "…truncated" note links the same way. Found by pushing to a real Linear team.
+- **Linear sub-issues no longer start with "Story:".** A Linear sub-issue isn't typed as a story, so its title is just the story, in the preview too. Jira keeps "Story:" only when the issue type really is Story. GitHub keeps it, because issues there have no type and the label tells story issues apart from the PRD issue in the list.
+- **A recreated PRD issue gets its stories back.** If the PRD issue was deleted and a re-push makes a new one, the existing story issues are attached to it as GitHub sub-issues (moved from the old parent), moved under the new parent in Linear, and under the new Epic in Jira.
+
 ## v1.2.0 (2026-10-19)
 
 **Export a PRD into GitHub Issues, Linear, Jira and Notion.** The PRD can now go straight into the tools the team already plans in, instead of staying in a file.

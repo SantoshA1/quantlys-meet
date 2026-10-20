@@ -28,7 +28,7 @@ import {
   type Provider, type ExistingRef,
 } from "@/lib/integrations";
 import { integrationsKey, encryptSecret, decryptSecret, aadFor, secretHint } from "@/lib/integrations-crypto";
-import { PROVIDER_API, ProviderError, authMsg, type Ctx } from "@/lib/integrations-providers";
+import { PROVIDER_API, ProviderError, authMsg, explainError, type Ctx, type PushedItem } from "@/lib/integrations-providers";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -86,13 +86,18 @@ async function loadCreds(sb: any, userId: string, provider: Provider) {
   try { return JSON.parse(decryptSecret(String(data.secret), key, aadFor(userId, provider))); } catch { return null; }
 }
 
-function failure(e: any, provider: Provider) {
-  if (e instanceof ProviderError) {
+function failure(e: any, provider: Provider, target = "", saved = 0) {
+  const after = saved
+    ? ` ${saved} item${saved === 1 ? " was" : "s were"} already made and saved, so pushing again updates ${saved === 1 ? "it" : "them"} instead of making duplicates.`
+    : "";
+  const x = explainError(provider, e, target);
+  if (x instanceof ProviderError) {
     const label = { github: "GitHub", linear: "Linear", jira: "Jira", notion: "Notion" }[provider];
-    const msg = authMsg(e.status, label) || `${label}: ${e.message}`;
-    return json({ error: msg }, e.status === 401 || e.status === 403 ? 400 : e.status === 404 ? 404 : 502);
+    const msg = x.friendly ? x.message : authMsg(x.status, label) || `${label}: ${x.message}`;
+    const status = x.status === 404 ? 404 : x.status === 429 ? 429 : x.status >= 400 && x.status < 500 ? 400 : 502;
+    return json({ error: msg + (after && !/[.!?]$/.test(msg) ? "." : "") + after }, status);
   }
-  return json({ error: "Something went wrong talking to the service. Nothing secret was logged." }, 502);
+  return json({ error: "Something went wrong talking to the service. Nothing secret was logged." + after }, 502);
 }
 
 export async function POST(req: Request) {
@@ -167,7 +172,10 @@ export async function POST(req: Request) {
   if (!creds) return json({ error: "Connect this service first.", connected: false }, 400);
 
   if (action === "targets") {
-    try { return json({ targets: (await api.targets(ctx(), creds)).slice(0, 200) }); } catch (e) { return failure(e, provider); }
+    try {
+      const t = await api.targets(ctx(), creds);
+      return json({ targets: t.targets.slice(0, 200), ...(t.note ? { note: t.note } : {}) });
+    } catch (e) { return failure(e, provider); }
   }
 
   // preview / push
@@ -189,16 +197,27 @@ export async function POST(req: Request) {
     return json({ provider, target, title: plan.title, ...previewPlan(plan, existing, provider) });
   }
 
-  let result;
-  try { result = await api.push(ctx(), creds, target, plan, existing); } catch (e) { return failure(e, provider); }
-  const now = new Date().toISOString();
-  const up = result.items.map((it) => ({
+  const rowOf = (it: PushedItem) => ({
     user_id: user.id, project_slug: slug, provider, target, item_key: it.key,
-    external_id: it.id, external_url: it.url, title: it.title.slice(0, 300), updated_at: now,
-  }));
-  const saved = up.length ? await sb.from(EXPORT_TABLE).upsert(up, { onConflict: "user_id,project_slug,provider,target,item_key" }) : { error: null };
+    external_id: it.id, external_url: it.url, title: it.title.slice(0, 300), updated_at: new Date().toISOString(),
+  });
+  const onConflict = "user_id,project_slug,provider,target,item_key";
+  // Each item is remembered the moment it exists on the other side, so a
+  // push that fails halfway can be retried without duplicating what it made.
+  const remembered = new Set<string>();
+  let rememberFailed = false;
+  const record = async (it: PushedItem) => {
+    try {
+      const { error } = await sb.from(EXPORT_TABLE).upsert(rowOf(it), { onConflict });
+      if (error) rememberFailed = true; else remembered.add(it.key);
+    } catch { rememberFailed = true; }
+  };
+  let result;
+  try { result = await api.push(ctx(), creds, target, plan, existing, record); } catch (e) { return failure(e, provider, target, remembered.size); }
+  const up = result.items.map(rowOf);
+  const saved = up.length ? await sb.from(EXPORT_TABLE).upsert(up, { onConflict }) : { error: null };
   const warnings = [...result.warnings];
-  if (saved.error) warnings.push("Pushed, but couldn't remember the links — a re-push may create duplicates.");
+  if (saved.error && (rememberFailed || remembered.size < up.length)) warnings.push("Pushed, but couldn't remember the links — a re-push may create duplicates.");
   if (plan.droppedStories) warnings.push(`${plan.droppedStories} more stor${plan.droppedStories === 1 ? "y was" : "ies were"} left out (limit 25 per push).`);
   return json({ ok: true, provider, target, items: result.items, warnings });
 }
