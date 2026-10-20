@@ -19,12 +19,11 @@ export const CHECKED = "Oct 19, 2026";
 export const CHECKED_SHORT = "as of Oct 2026";
 export const CORRECTIONS = "admin@agilityserv.com";
 
-// PRD export, as shipped in v1.2.0 (app/host/Export.tsx, lib/integrations.ts).
-// Quick export is always on. Direct push is built but stays hidden until the
-// server owner sets INTEGRATIONS_ENCRYPTION_KEY and runs the 20261019
-// migration, so these pages call it "coming once enabled", never live.
-export const EXPORT_CELL =
-  "Exports to GitHub, Linear, Jira and Notion via links and copy-paste; direct push coming once enabled";
+// PRD export, as shipped in v1.2.0 (app/host/Export.tsx, lib/integrations.ts,
+// lib/integrations-providers.ts). Quick export is always on. Direct push is
+// on for quantlys-meeting.com (Oct 19, 2026); self-hosters turn it on with
+// INTEGRATIONS_ENCRYPTION_KEY + the 20261019 migration (docs/INTEGRATIONS.md).
+export const EXPORT_CELL = "Direct push to GitHub Issues, Linear, Jira and Notion with your own token";
 export const INTEGRATIONS_DOC = "https://github.com/SantoshA1/quantlys-meet/blob/main/docs/INTEGRATIONS.md";
 
 export type Cell =
@@ -208,11 +207,24 @@ export function PrdExport() {
         hand.
       </p>
       <p>
-        <strong>Coming once enabled:</strong> direct push into GitHub Issues,
-        Linear, Jira and Notion with your own credentials, including one issue
-        per user story in GitHub, Linear and Jira. It&apos;s built, but it stays switched off until the
-        server owner sets it up (an encryption key and a database migration;
-        see <a href={INTEGRATIONS_DOC}>docs/INTEGRATIONS.md</a>).
+        <strong>Direct push.</strong> You can also push the PRD straight into
+        GitHub Issues, Linear, Jira or Notion. You connect your own token for
+        each tool; it&apos;s stored encrypted and only its last 4 characters
+        are shown again. You see a preview of exactly what will be created
+        before anything is sent.
+      </p>
+      <ul>
+        <li><strong>GitHub Issues:</strong> one PRD issue plus one issue per user story, with acceptance criteria as a checklist. Stories are linked as sub-issues where the repo supports it.</li>
+        <li><strong>Linear:</strong> one PRD issue with a sub-issue per user story, criteria as a checklist.</li>
+        <li><strong>Jira Cloud:</strong> the PRD as an Epic with each user story as a Story under it (unlinked Stories if the project has no Epic type).</li>
+        <li><strong>Notion:</strong> one page under a parent page you pick, with criteria as to-dos.</li>
+      </ul>
+      <p>
+        Re-pushing updates the items it made last time instead of duplicating
+        them. In Notion it writes a fresh page and moves the old one to the
+        trash. Self-hosting? Direct push needs an encryption key and a
+        database migration; see{" "}
+        <a href={INTEGRATIONS_DOC}>docs/INTEGRATIONS.md</a>.
       </p>
     </>
   );

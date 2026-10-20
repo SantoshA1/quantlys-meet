@@ -2,7 +2,7 @@ import Link from "next/link";
 import { IntentShell, intentMetadata } from "../_seo/IntentShell";
 import {
   CompareJsonLd, CompareTable, EXPORT_CELL, FaqSection, HowWeCompared, PERSON_ID, PrdExport, REPO, SeeAlso, TrademarkNote,
-  no, partial, txt, unlisted, yes, type Faq, type Row,
+  no, txt, unlisted, yes, type Faq, type Row,
 } from "../_seo/Compare";
 
 const path = "/otter-alternative";
@@ -38,7 +38,7 @@ const rows: Row[] = [
   { label: "Private catch-up while the meeting runs", cells: [yes("“What did I miss?”"), unlisted(O_HOME)] },
   { label: "Mobile apps", cells: [no("Browser only"), yes("iOS and Android", O_PRICING)] },
   { label: "Built-in integrations", cells: [
-    partial(EXPORT_CELL),
+    yes(EXPORT_CELL),
     yes("Salesforce, HubSpot, Zapier, Slack, Jira, Notion and more", O_HOME),
   ] },
   { label: "SSO / SCIM", cells: [no(), yes("Enterprise", O_PRICING)] },
