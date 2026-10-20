@@ -20,13 +20,15 @@ Shown only when the server has `INTEGRATIONS_ENCRYPTION_KEY` and the `20261019_i
 
 | Service | Credential | Where it goes | What it creates |
 | --- | --- | --- | --- |
-| GitHub | Fine-grained personal access token, **Issues: Read and write** on the chosen repos | A repository | One PRD issue, plus one issue per user story with its criteria as `- [ ]` checklists. Stories are linked from the PRD issue and attached as sub-issues where supported. |
+| GitHub | Fine-grained personal access token, **Issues: Read and write** on the chosen repos | A repository | One PRD issue, plus one issue per user story with its criteria as `- [ ]` checklists. The PRD issue's "User stories" section becomes a checklist linking each story issue, and stories are attached as sub-issues where supported. |
 | Linear | Personal API key (Settings → Security & access) | A team | A PRD issue with one sub-issue per story. |
 | Jira Cloud | Site URL, Atlassian email, API token (id.atlassian.com → Security) | A project | An Epic for the PRD and a Story per user story under it, with descriptions in Atlassian Document Format. |
 | Notion | Internal integration token (notion.so/my-integrations). **Share the parent page with the integration.** | A parent page | One page with the PRD as headings, lists and to-dos. |
 
+- **Connect checks access.** A token that can't create issues anywhere is refused with what to change. **List repos / teams / projects** shows only places you can create issues in. For fine-grained GitHub tokens this is checked per repo with a title-less issue request that GitHub always rejects (it creates nothing), for the 30 most recently updated repos; type `owner/repo` to use another one.
+- **Errors name the fix**, e.g. "This token needs Issues: Read and write on owner/repo" or "This token can't see owner/repo. Add it under Repository access."
 - **Preview** shows exactly what will be created or updated. Nothing is sent until you press **Push**.
-- **Re-push** updates the same items. Item ids are stored per project and destination, so nothing is duplicated. Anything deleted on the other side is recreated. In Notion, a fresh page is written first, then the old one is moved to Notion's trash.
+- **Re-push** updates the same items. Item ids are stored per project and destination, so nothing is duplicated. Anything deleted on the other side is recreated; if that's the PRD issue, the existing stories are re-attached to the new one. Each item is saved as soon as it's made, so retrying a push that failed partway doesn't duplicate anything. In Notion, a fresh page is written first, then the old one is moved to Notion's trash.
 - Up to 25 stories per push. Stories are read from the PRD's "User stories" section, either as bullets (with criteria as nested bullets) or as `###` headings.
 - **Disconnect & delete token** removes the stored credential.
 

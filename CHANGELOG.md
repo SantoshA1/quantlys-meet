@@ -2,6 +2,22 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.2.1 (2026-10-19)
+
+**Direct push tells you what's wrong with a token before you push, and a push that fails halfway can be retried without duplicates.** Found by pushing a test PRD to a real private GitHub repo on the hosted site.
+
+### Fixed
+- **Connect checks that the token can actually create issues.** Before, Connect only checked who the token belonged to, so a GitHub token without the Issues permission connected fine and the problem only showed up as a vague error at push time.
+  - **GitHub, fine-grained tokens:** each repo is checked with a title-less issue request. GitHub checks permission first, so it answers "not allowed" (403/404) or "title missing" (422, meaning allowed), and nothing is ever created. At most the 30 most recently updated repos are checked per click; past that, a note says so and you can type `owner/repo`. Connect is refused if the token can't create issues anywhere.
+  - **GitHub, classic tokens:** judged by their scopes (`repo`, or `public_repo` for public repos), with no extra calls.
+  - **Linear:** Connect is refused if the key can't see any team.
+  - **Jira:** Connect is refused if the account can't create issues in any project, and the project list only shows projects you can create issues in.
+- **The repo list only shows repos you can push to.** Public repos the token can only read are no longer listed.
+- **Permission errors say what to change.** GitHub's `x-accepted-github-permissions` header is turned into words: "This token needs Issues: Read and write on owner/repo", "This token can't see owner/repo. Add it under Repository access…", and a separate message for an expired token or a used-up rate limit. Linear, Jira and Notion get the same treatment (team access, the Create issues permission, sharing the page under Connections, the Insert content capability).
+- **A push that fails partway no longer duplicates on retry.** Every created or updated item is saved the moment it exists, for all four services, instead of only after the whole push succeeds. The error message says how many were saved. In Notion, a page that fails halfway through writing is moved to the trash, and the previous export stays the remembered one.
+- **The PRD issue no longer lists the stories twice.** Once the story issues exist, the PRD's "User stories" section is replaced by the linked checklist (`- [ ] #12 As a…`); each story's criteria live in its own issue. Stories over the 25-per-push limit are mentioned instead of disappearing. A PRD without a story section still gets the checklist at the end.
+- **A recreated PRD issue gets its stories back.** If the PRD issue was deleted and a re-push makes a new one, the existing story issues are attached to it as GitHub sub-issues (moved from the old parent), moved under the new parent in Linear, and under the new Epic in Jira.
+
 ## v1.2.0 (2026-10-19)
 
 **Export a PRD into GitHub Issues, Linear, Jira and Notion.** The PRD can now go straight into the tools the team already plans in, instead of staying in a file.

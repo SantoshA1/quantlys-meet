@@ -277,11 +277,38 @@ export type ChildRef = { title: string; ref: string; url: string };
 /** GitHub / Linear parent body: the PRD itself, criteria as a checklist,
  *  plus a checklist of the child issues once they exist. */
 export function parentMarkdown(plan: ExportPlan, children: ChildRef[], max: number, refs: boolean): string {
-  let body = checklistify(plan.markdown.trim());
+  let md = plan.markdown.trim();
   if (refs && children.length) {
-    body += `\n\n## Stories\n\n${children.map((c) => `- [ ] ${c.ref} ${c.title.replace(/^Story:\s*/, "")}`).join("\n")}`;
+    // The stories now live in their own issues, so the PRD's story section
+    // becomes the linked checklist instead of listing every story twice.
+    const list = children.map((c) => `- [ ] ${c.ref} ${c.title.replace(/^Story:\s*/, "")}`);
+    if (plan.droppedStories) {
+      list.push("", `_${plan.droppedStories} more stor${plan.droppedStories === 1 ? "y is" : "ies are"} in the full PRD (limit ${MAX_CHILDREN} per push)._`);
+    }
+    md = replaceStorySection(md, list) ?? `${md}\n\n## Stories\n\n${list.join("\n")}`;
   }
-  return truncateBody(body + footer(plan.backlink), max, plan.backlink);
+  return truncateBody(checklistify(md) + footer(plan.backlink), max, plan.backlink);
+}
+
+/** Swap the body of the PRD's first "User stories" section (up to the next
+ *  heading at the same or a higher level) for `lines`. The heading itself is
+ *  kept. Returns null when the PRD has no such section. Code fences are
+ *  skipped, the same way checklistify skips them. */
+export function replaceStorySection(markdown: string, lines: string[]): string | null {
+  const src = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  let inFence = false, start = -1, level = 0, end = src.length;
+  for (let i = 0; i < src.length; i++) {
+    if (/^\s*(```|~~~)/.test(src[i])) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const h = src[i].match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (!h) continue;
+    if (start < 0) {
+      if (STORY_HEAD.test(plainText(h[2]))) { start = i; level = h[1].length; }
+    } else if (h[1].length <= level) { end = i; break; }
+  }
+  if (start < 0) return null;
+  const after = src.slice(end);
+  return [...src.slice(0, start + 1), "", ...lines, ...(after.length ? ["", ...after] : [])].join("\n");
 }
 
 export function storyMarkdown(story: Story, parentRef: string, link: string, max: number): string {
