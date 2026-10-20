@@ -31,7 +31,9 @@ export function makeTrackers() {
       scopes: null, // set to "repo" etc. to answer like a classic token
     },
     lin: { issues: new Map(), next: 1, teams: [{ id: LINEAR_TEAM, key: "ENG", name: "Engineering" }] },
-    jira: { issues: new Map(), next: 1, canCreate: true },
+    // Default is a company-managed project; a team-managed one like a fresh
+    // Jira Cloud "Scrum" project has Epic, Feature, Task, Subtask and no Story.
+    jira: { issues: new Map(), next: 1, canCreate: true, types: [{ id: "1", name: "Epic" }, { id: "2", name: "Story" }, { id: "3", name: "Sub-task", subtask: true }] },
     notion: { pages: new Map(), next: 1 },
     calls: [],
     // Injected failures: { method, path: RegExp, when?(body), skip?, status,
@@ -124,7 +126,7 @@ export function makeTrackers() {
       if (p === "/rest/api/3/myself") return res(200, { displayName: "Santosh A" });
       if (p === "/rest/api/3/mypermissions") return res(200, { permissions: { CREATE_ISSUES: { key: "CREATE_ISSUES", havePermission: s.jira.canCreate } } });
       if (p === "/rest/api/3/project/search") return res(200, { values: [{ id: "10000", key: "ENG", name: "Engineering" }] });
-      if (p === "/rest/api/3/issue/createmeta/ENG/issuetypes") return res(200, { issueTypes: [{ id: "1", name: "Epic" }, { id: "2", name: "Story" }, { id: "3", name: "Sub-task", subtask: true }] });
+      if (p === "/rest/api/3/issue/createmeta/ENG/issuetypes") return res(200, { issueTypes: s.jira.types });
       if (p === "/rest/api/3/issue" && method === "POST") {
         const f = body.fields;
         if (!f?.description || f.description.type !== "doc") return res(400, { errors: { description: "ADF required" } });

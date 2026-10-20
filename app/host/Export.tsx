@@ -227,7 +227,7 @@ export default function ExportMenu(props: {
                   {prov !== "notion" ? (
                     <label className="qx-check">
                       <input type="checkbox" checked={children} onChange={(e) => { setChildren(e.target.checked); setPreview(null); }} />
-                      {" "}Also create one {prov === "github" ? "issue" : prov === "jira" ? "Story" : "sub-issue"} per user story (acceptance criteria as a checklist)
+                      {" "}Also create one {prov === "linear" ? "sub-issue" : "issue"} per user story (acceptance criteria as a checklist)
                     </label>
                   ) : null}
                   <div className="qx-row">

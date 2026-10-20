@@ -334,11 +334,21 @@ const linear = {
     freshParent = epic.action === "created";
     items.push({ key: "epic", action: epic.action, id: String(epic.id), url: String(epic.url), title: epicItem.title });
     await record?.(items[0]);
+    const refs: ChildRef[] = [];
     for (const it of plan.items.slice(1)) {
       const r = await upsert(it.key, it.title, storyMarkdown(it.story!, String(epic.identifier || ""), plan.backlink, LINEAR_BODY_MAX), String(epic.id));
       const pushed: PushedItem = { key: it.key, action: r.action, id: String(r.id), url: String(r.url), title: it.title };
       items.push(pushed);
       await record?.(pushed);
+      refs.push({ title: it.title, ref: String(r.identifier || ""), url: String(r.url) });
+    }
+    if (refs.length) {
+      // Same as GitHub: the PRD's story section becomes the list of sub-issues
+      // (Linear links identifiers like ENG-12 by itself).
+      try {
+        await lgql(ctx, c.token, `mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { ${ISSUE_FIELDS} } }`,
+          { id: String(epic.id), input: { description: parentMarkdown(plan, refs, LINEAR_BODY_MAX, true) } });
+      } catch { warnings.push("The sub-issues were made, but the parent's story list couldn't be updated to link them."); }
     }
     return { items, warnings };
   },
@@ -381,8 +391,13 @@ const jira = {
     const { json: tm } = await api("GET", `/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes?maxResults=100`);
     const types: any[] = (tm?.issueTypes || tm?.values || []).filter((t: any) => t && !t.subtask);
     const byName = (re: RegExp) => types.find((t) => re.test(String(t.name || "")));
-    const story = byName(/^story$/i) || byName(/^task$/i) || types[0];
+    const story = byName(/^story$/i) || byName(/^task$/i) || types.find((t) => !/^epic$/i.test(String(t.name || ""))) || types[0];
     if (!story) throw new ProviderError(400, "That Jira project has no issue type this can create.");
+    const storyType = String(story.name || "issue");
+    const isStoryType = /^story$/i.test(storyType);
+    // "Story: …" only reads right when the issue really is a Story.
+    const childSummary = (title: string) => isStoryType ? title : title.replace(/^Story:\s*/i, "");
+    if (!isStoryType && plan.items.length > 1) warnings.push(`This project has no Story type, so each user story went in as a ${storyType}.`);
     let epicType = byName(/^epic$/i);
     const browse = (key: string) => `${c.site}/browse/${key}`;
     const create = async (fields: any) => (await api("POST", "/rest/api/3/issue", { fields })).json;
@@ -414,7 +429,7 @@ const jira = {
     } catch (e: any) {
       // Older company-managed projects make Epic Name required; fall back.
       if (!(e instanceof ProviderError) || e.status !== 400 || !epicType) throw e;
-      warnings.push("Jira refused an Epic here, so the PRD went in as a Story.");
+      warnings.push(`Jira refused an Epic here, so the PRD went in as a ${storyType}.`);
       epicType = undefined;
       epic = await upsert("epic", parentFields(String(story.id)));
     }
@@ -423,9 +438,11 @@ const jira = {
     await record?.(items[0]);
     let linkParent = !!epicType;
     if (!epicType && plan.items.length > 1) warnings.push("This project has no Epic type, so stories are not nested under the PRD issue.");
+    const refs: ChildRef[] = [];
     for (const it of plan.items.slice(1)) {
+      const summary = childSummary(it.title);
       const fields = jiraIssueFields({
-        projectKey, issueTypeId: String(story.id), summary: it.title,
+        projectKey, issueTypeId: String(story.id), summary,
         markdown: storyMarkdown(it.story!, epic.key, plan.backlink, 1e9), link: plan.backlink,
         parentKey: linkParent ? epic.key : undefined,
       });
@@ -437,9 +454,17 @@ const jira = {
         delete fields.parent;
         r = await upsert(it.key, fields);
       }
-      const pushed: PushedItem = { key: it.key, action: r.action, id: r.key, url: browse(r.key), title: it.title };
+      const pushed: PushedItem = { key: it.key, action: r.action, id: r.key, url: browse(r.key), title: summary };
       items.push(pushed);
       await record?.(pushed);
+      refs.push({ title: summary, ref: `[${r.key}](${browse(r.key)})`, url: browse(r.key) });
+    }
+    if (refs.length) {
+      // Same as GitHub: the Epic's story section becomes a list of its issues.
+      try {
+        const f = jiraIssueFields({ projectKey, issueTypeId: String((epicType || story).id), summary: epicItem.title, markdown: parentMarkdown(plan, refs, 1e9, true), link: plan.backlink });
+        await api("PUT", `/rest/api/3/issue/${encodeURIComponent(epic.key)}`, { fields: { description: f.description } });
+      } catch { warnings.push("The issues were made, but the PRD issue's story list couldn't be updated to link them."); }
     }
     return { items, warnings };
   },

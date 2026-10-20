@@ -274,10 +274,11 @@ export const LINEAR_BODY_MAX = 60000;
 
 export type ChildRef = { title: string; ref: string; url: string };
 
-/** GitHub / Linear parent body: the PRD itself, criteria as a checklist,
- *  plus a checklist of the child issues once they exist. */
+/** GitHub / Linear / Jira parent body: the PRD itself (minus its H1, which
+ *  is already the issue's title), criteria as a checklist, and, once the
+ *  child issues exist, its story section as a linked checklist of them. */
 export function parentMarkdown(plan: ExportPlan, children: ChildRef[], max: number, refs: boolean): string {
-  let md = plan.markdown.trim();
+  let md = dropTitle(plan.markdown.trim());
   if (refs && children.length) {
     // The stories now live in their own issues, so the PRD's story section
     // becomes the linked checklist instead of listing every story twice.
@@ -288,6 +289,21 @@ export function parentMarkdown(plan: ExportPlan, children: ChildRef[], max: numb
     md = replaceStorySection(md, list) ?? `${md}\n\n## Stories\n\n${list.join("\n")}`;
   }
   return truncateBody(checklistify(md) + footer(plan.backlink), max, plan.backlink);
+}
+
+/** Remove the PRD's first H1 (the line extractPrd takes the title from) and
+ *  the blank lines after it. Headings inside code fences don't count. */
+export function dropTitle(markdown: string): string {
+  const src = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  let inFence = false;
+  for (let i = 0; i < src.length; i++) {
+    if (/^\s*(```|~~~)/.test(src[i])) { inFence = !inFence; continue; }
+    if (inFence || !/^\s{0,3}#\s+\S/.test(src[i])) continue;
+    let j = i + 1;
+    while (j < src.length && !src[j].trim()) j++;
+    return [...src.slice(0, i), ...src.slice(j)].join("\n").trim();
+  }
+  return String(markdown || "").trim();
 }
 
 /** Swap the body of the PRD's first "User stories" section (up to the next
