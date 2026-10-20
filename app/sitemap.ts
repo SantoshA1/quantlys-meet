@@ -4,6 +4,7 @@ const lastModified = new Date("2026-10-02");
 const sprint = new Date("2026-10-05");
 const today = new Date("2026-10-06");
 const brand = new Date("2026-10-08");
+const compare = new Date("2026-10-19");
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [
@@ -19,6 +20,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: "https://quantlys-meeting.com/memory-mode", lastModified: sprint, changeFrequency: "weekly", priority: 0.9 },
     { url: "https://quantlys-meeting.com/notes-vs-prd", lastModified, changeFrequency: "weekly", priority: 0.85 },
     { url: "https://quantlys-meeting.com/recap-vs-prd", lastModified, changeFrequency: "weekly", priority: 0.8 },
+    { url: "https://quantlys-meeting.com/zoom-vs-quantlys-meeting", lastModified: compare, changeFrequency: "monthly", priority: 0.85 },
+    { url: "https://quantlys-meeting.com/otter-alternative", lastModified: compare, changeFrequency: "monthly", priority: 0.85 },
+    { url: "https://quantlys-meeting.com/self-hosted-zoom-alternative", lastModified: compare, changeFrequency: "monthly", priority: 0.85 },
+    { url: "https://quantlys-meeting.com/granola-fireflies-alternative", lastModified: compare, changeFrequency: "monthly", priority: 0.85 },
     { url: "https://quantlys-meeting.com/example-prd", lastModified, changeFrequency: "weekly", priority: 0.7 },
     { url: "https://quantlys-meeting.com/about", lastModified: brand, changeFrequency: "monthly", priority: 0.6 },
     { url: "https://quantlys-meeting.com/privacy", lastModified: today, changeFrequency: "monthly", priority: 0.4 },
