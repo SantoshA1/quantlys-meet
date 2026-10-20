@@ -19,6 +19,14 @@ export const CHECKED = "Oct 19, 2026";
 export const CHECKED_SHORT = "as of Oct 2026";
 export const CORRECTIONS = "admin@agilityserv.com";
 
+// PRD export, as shipped in v1.2.0 (app/host/Export.tsx, lib/integrations.ts).
+// Quick export is always on. Direct push is built but stays hidden until the
+// server owner sets INTEGRATIONS_ENCRYPTION_KEY and runs the 20261019
+// migration, so these pages call it "coming once enabled", never live.
+export const EXPORT_CELL =
+  "Exports to GitHub, Linear, Jira and Notion via links and copy-paste; direct push coming once enabled";
+export const INTEGRATIONS_DOC = "https://github.com/SantoshA1/quantlys-meet/blob/main/docs/INTEGRATIONS.md";
+
 export type Cell =
   | { k: "yes"; note?: string; src?: string }
   | { k: "no"; note?: string; src?: string }
@@ -180,6 +188,33 @@ export function TrademarkNote({ names }: { names: string }) {
       changed since. Spot something wrong or out of date? Email{" "}
       <a href={`mailto:${CORRECTIONS}`}>{CORRECTIONS}</a> and I&apos;ll fix it.
     </p>
+  );
+}
+
+export function PrdExport() {
+  return (
+    <>
+      <h2>Getting the PRD into your tools</h2>
+      <p>The PRD panel has an Export menu with these options, no setup needed:</p>
+      <ul>
+        <li><strong>Copy as Markdown</strong> or <strong>Download .md</strong>.</li>
+        <li><strong>New GitHub issue</strong>: a prefilled create-issue link for the repo you type (owner/repo).</li>
+        <li><strong>New Linear issue</strong>: a prefilled create-issue link.</li>
+        <li><strong>Jira and Notion</strong>: copies the markdown and opens Jira&apos;s create dialog on your atlassian.net site, or a new Notion page, so you can paste it.</li>
+      </ul>
+      <p>
+        A PRD too long for a link is cut at a line, with a link back to the
+        full PRD. You can still paste the markdown into Quantlys Conclave by
+        hand.
+      </p>
+      <p>
+        <strong>Coming once enabled:</strong> direct push into GitHub Issues,
+        Linear, Jira and Notion with your own credentials, including one issue
+        per user story in GitHub, Linear and Jira. It&apos;s built, but it stays switched off until the
+        server owner sets it up (an encryption key and a database migration;
+        see <a href={INTEGRATIONS_DOC}>docs/INTEGRATIONS.md</a>).
+      </p>
+    </>
   );
 }
 

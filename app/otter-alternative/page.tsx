@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { IntentShell, intentMetadata } from "../_seo/IntentShell";
 import {
-  CompareJsonLd, CompareTable, FaqSection, HowWeCompared, PERSON_ID, REPO, SeeAlso, TrademarkNote,
-  no, txt, unlisted, yes, type Faq, type Row,
+  CompareJsonLd, CompareTable, EXPORT_CELL, FaqSection, HowWeCompared, PERSON_ID, PrdExport, REPO, SeeAlso, TrademarkNote,
+  no, partial, txt, unlisted, yes, type Faq, type Row,
 } from "../_seo/Compare";
 
 const path = "/otter-alternative";
@@ -38,7 +38,7 @@ const rows: Row[] = [
   { label: "Private catch-up while the meeting runs", cells: [yes("“What did I miss?”"), unlisted(O_HOME)] },
   { label: "Mobile apps", cells: [no("Browser only"), yes("iOS and Android", O_PRICING)] },
   { label: "Built-in integrations", cells: [
-    no("Download markdown and paste it"),
+    partial(EXPORT_CELL),
     yes("Salesforce, HubSpot, Zapier, Slack, Jira, Notion and more", O_HOME),
   ] },
   { label: "SSO / SCIM", cells: [no(), yes("Enterprise", O_PRICING)] },
@@ -56,7 +56,7 @@ const faq: Faq[] = [
   },
   {
     q: "What does Quantlys Meeting write instead of notes?",
-    a: "The recorded sessions on a project roll into one markdown PRD. When the room didn't settle something, the PRD marks it TBD instead of inventing it. You download the markdown and paste it into Linear, GitHub or Quantlys Conclave.",
+    a: "The recorded sessions on a project roll into one markdown PRD. When the room didn't settle something, the PRD marks it TBD instead of inventing it. You can export it to GitHub, Linear, Jira or Notion, or download the markdown.",
   },
   {
     q: "Does Otter ask questions during the meeting?",
@@ -97,7 +97,7 @@ export default function Page() {
         <ul>
           <li><strong>It comes to your meetings.</strong> Otter joins Zoom, Teams and Google Meet. Quantlys Meeting asks people to meet in its own room.</li>
           <li><strong>Apps and in-person.</strong> Otter has iOS and Android apps and bot-free desktop recording. Quantlys Meeting runs only in a browser.</li>
-          <li><strong>Integrations.</strong> Otter syncs to Salesforce, HubSpot, Slack, Jira, Notion and more. Quantlys Meeting gives you a markdown file.</li>
+          <li><strong>Integrations.</strong> Otter syncs to Salesforce, HubSpot, Slack, Jira, Notion and more. Quantlys Meeting exports the PRD to GitHub, Linear, Jira and Notion, but doesn&apos;t sync to a CRM or Slack.</li>
           <li><strong>Enterprise.</strong> Otter lists SSO, SCIM and a HIPAA add-on on its pricing page. Quantlys Meeting has none of these.</li>
         </ul>
 
@@ -121,6 +121,7 @@ export default function Page() {
           the spec out of the room. Using both works fine.
         </p>
 
+        <PrdExport />
         <FaqSection items={faq} />
         <SeeAlso />
         <TrademarkNote names="Zoom, Otter, Granola and Fireflies" />

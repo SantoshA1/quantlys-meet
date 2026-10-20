@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { IntentShell, intentMetadata } from "../_seo/IntentShell";
 import {
-  CompareJsonLd, CompareTable, FaqSection, HowWeCompared, PERSON_ID, REPO, SeeAlso, TrademarkNote,
-  no, txt, unlisted, yes, type Faq, type Row,
+  CompareJsonLd, CompareTable, EXPORT_CELL, FaqSection, HowWeCompared, PERSON_ID, PrdExport, REPO, SeeAlso, TrademarkNote,
+  no, partial, txt, unlisted, yes, type Faq, type Row,
 } from "../_seo/Compare";
 
 const path = "/granola-fireflies-alternative";
@@ -55,7 +55,7 @@ const rows: Row[] = [
   ] },
   { label: "Pre-meeting briefs", cells: [no(), yes("Business plan", G_PRICING), unlisted(F_PRICING)] },
   { label: "Integrations", cells: [
-    no("Download markdown and paste it"),
+    partial(EXPORT_CELL),
     yes("Slack; Notion, HubSpot, Zapier on Business", G_PRICING),
     yes("CRM, project management, ATS, Slack", F_HOME),
   ] },
@@ -139,7 +139,7 @@ export default function Page() {
         <ul>
           <li><strong>Gaps closed in the room.</strong> The host can turn on an agent that checks the conversation against a spec rubric and, in a pause, asks everyone one question about a missing section.</li>
           <li><strong>One PRD per project.</strong> Every recorded session feeds the same markdown PRD; the later meeting wins when two disagree, and anything unsettled stays TBD. See the <Link href="/example-prd">example PRD</Link> and <Link href="/recap-vs-prd">recap vs PRD</Link>.</li>
-          <li><strong>Paste where you ship.</strong> Download the markdown for Linear, GitHub or <a href="https://www.quantlys.ai">Quantlys</a> Conclave.</li>
+          <li><strong>Export where you ship.</strong> Send the PRD to GitHub, Linear, Jira or Notion from the Export menu, or paste the markdown into <a href="https://www.quantlys.ai">Quantlys</a> Conclave. Direct push is coming once enabled.</li>
           <li><strong>Open source.</strong> MIT, on <a href={REPO}>GitHub</a>.</li>
         </ul>
 
@@ -147,6 +147,7 @@ export default function Page() {
         <HowWeCompared vendors="Granola and Fireflies" />
         <CompareTable columns={["Quantlys Meeting", "Granola", "Fireflies"]} rows={rows} />
 
+        <PrdExport />
         <FaqSection items={faq} />
         <SeeAlso />
         <TrademarkNote names="Zoom, Otter, Granola and Fireflies" />

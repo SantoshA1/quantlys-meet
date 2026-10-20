@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { IntentShell, intentMetadata } from "../_seo/IntentShell";
 import {
-  CompareJsonLd, CompareTable, FaqSection, HowWeCompared, PERSON_ID, REPO, SeeAlso, TrademarkNote,
+  CompareJsonLd, CompareTable, FaqSection, HowWeCompared, PERSON_ID, PrdExport, REPO, SeeAlso, TrademarkNote,
   no, partial, txt, unlisted, yes, type Faq, type Row,
 } from "../_seo/Compare";
 
@@ -133,6 +133,7 @@ export default function Page() {
           <Link href="/self-hosted-video-conferencing">self-hosted video conferencing</Link>.
         </p>
 
+        <PrdExport />
         <FaqSection items={faq} />
         <SeeAlso />
         <TrademarkNote names="Zoom, Otter, Granola and Fireflies" />
