@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase-browser";
+import ExportMenu, { EXPORT_CSS } from "./Export";
 import {
   isMemoryProjectTag,
   hostSurfaceTitle, hostBuildCta, hostBriefLabel, hostBriefHint,
@@ -458,6 +459,15 @@ export default function Prd({ projects }: { projects: string[] }) {
             )}
           </div>
 
+          {/* Export into GitHub Issues, Linear, Jira, Notion — see Export.tsx. */}
+          <ExportMenu
+            project={data.project || project}
+            markdown={data.markdown}
+            filename={data.filename || "prd.md"}
+            artifact={data.artifact}
+            backlink={shareUrl || (typeof window !== "undefined" ? `${window.location.origin}/host#prd` : "")}
+          />
+
           <div className="qp-share">
             <h3 className="qp-h3">Shareable link</h3>
             {shareUrl ? (
@@ -510,7 +520,7 @@ export default function Prd({ projects }: { projects: string[] }) {
   );
 }
 
-export const PRD_CSS = `
+export const PRD_CSS = EXPORT_CSS + `
 .qp { display:flex; flex-direction:column; gap:12px; }
 .qp-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
 .qp-pick { display:flex; gap:8px; align-items:center; }

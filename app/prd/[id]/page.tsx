@@ -6,6 +6,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { supabaseBrowser } from "@/lib/supabase-browser";
+import ExportMenu, { EXPORT_CSS } from "@/app/host/Export";
 
 type PublicPrd = {
   project: string;
@@ -29,6 +31,9 @@ export default function SharedPrdPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   const [copied, setCopied] = useState(false);
+  // The Export menu is for the PRD's HOST only: a reader with the link gets
+  // copy and download, never a push into somebody's tracker.
+  const [owner, setOwner] = useState<{ project: string; shareUrl: string } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -56,6 +61,26 @@ export default function SharedPrdPage() {
     })();
     return () => { alive = false; };
   }, [id]);
+
+  useEffect(() => {
+    let alive = true;
+    setOwner(null);
+    if (!data) return;
+    (async () => {
+      try {
+        const t = (await supabaseBrowser().auth.getSession()).data?.session?.access_token;
+        if (!t) return;
+        const r = await fetch("/api/integrations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+          body: JSON.stringify({ action: "share-owner", shareId: id }),
+        });
+        const j = await r.json().catch(() => null);
+        if (alive && r.ok && j?.owner && j.project) setOwner({ project: String(j.project), shareUrl: String(j.shareUrl || "") });
+      } catch { /* not signed in, or not the host: no Export menu */ }
+    })();
+    return () => { alive = false; };
+  }, [data, id]);
 
   function copy() {
     if (!data) return;
@@ -134,6 +159,13 @@ export default function SharedPrdPage() {
                   Download .md
                 </button>
               </div>
+              {owner ? (
+                <div className="qx-shared" style={{ margin: "0 0 16px" }}>
+                  <style>{EXPORT_CSS + SHARED_EXPORT_CSS}</style>
+                  <ExportMenu project={owner.project} markdown={data.markdown} filename={data.filename || "prd.md"}
+                    artifact={data.artifact} backlink={owner.shareUrl || (typeof window !== "undefined" ? window.location.href : "")} />
+                </div>
+              ) : null}
               <pre
                 style={{
                   whiteSpace: "pre-wrap",
@@ -166,3 +198,15 @@ export default function SharedPrdPage() {
     </div>
   );
 }
+
+// The host console's control styles, scoped to the Export menu on this page.
+const SHARED_EXPORT_CSS = `
+.qx-shared .qh-btn, .qx-shared .qh-ghost { background:transparent; border:1px solid #1e2937; color:#c3cddb;
+  padding:9px 14px; font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:.12em; cursor:pointer; }
+.qx-shared .qh-ghost:hover, .qx-shared .qh-btn:hover { border-color:#00A99D; color:#7ff0e8; }
+.qx-shared .qh-ghost:disabled, .qx-shared .qh-btn:disabled { opacity:.5; cursor:default; }
+.qx-shared .qh-input { background:#070a0f; border:1px solid #1e2937; color:#e8eef5; font:inherit; min-width:0; }
+.qx-shared .qh-fine { font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:#6b7890; margin:0; line-height:1.6; }
+.qx-shared .qp-note { margin:0; color:#f0d9a6; font-size:12.5px; }
+.qx-shared .qp-inline { font:inherit; font-size:12px; color:#7fe0d6; background:none; border:0; padding:0; cursor:pointer; text-decoration:underline; }
+`;

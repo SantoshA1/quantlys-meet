@@ -2,6 +2,32 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## v1.2.0 (2026-10-19)
+
+**Export a PRD into GitHub Issues, Linear, Jira and Notion.** The PRD can now go straight into the tools the team already plans in, instead of staying in a file.
+
+### Added
+- **Export menu on the PRD.** It's on the host console's PRD panel, and on the shared PRD page for its host only. Anyone else with the link still gets Copy and Download, and nothing more.
+- **Quick export (no setup, always on):** Copy as Markdown, Download .md, a prefilled **New GitHub issue** link (type `owner/repo`), and a prefilled **New Linear issue** link. Acceptance criteria become checkboxes. A PRD too long for a link (8 KB) is cut at a line, with a link back to the full PRD. For Jira and Notion, the button copies the markdown and opens Jira's create dialog on your `*.atlassian.net` site, or a new Notion page, so you can paste it.
+- **Direct push using your own credentials** (when the server owner has set it up; see below):
+  - **GitHub Issues** (fine-grained token with Issues read/write): one PRD issue, plus one issue per user story with its acceptance criteria as a checklist. The PRD issue lists its stories as a checklist, and stories are linked as GitHub sub-issues where the repo supports it.
+  - **Linear** (personal API key): one issue for the PRD, with one sub-issue per story.
+  - **Jira Cloud** (site, email and API token): the PRD as an Epic and each story as a Story under it, with the descriptions converted to Atlassian Document Format. It falls back to unlinked Stories where a project has no Epic type or won't nest them.
+  - **Notion** (internal integration token): one page under a parent page you pick, with the PRD as headings, lists, and to-do criteria.
+  - **Preview first.** It lists exactly what will be created or updated before anything is sent, then shows links to every item it made.
+  - **Re-push updates instead of duplicating.** It remembers what it created for each project and destination. It recreates anything deleted on the other side, and leaves alone stories that are no longer in the PRD. In Notion, a re-push writes a fresh page first and then moves the old one to Notion's trash.
+- **`/api/integrations`** (host only). Every action needs sign-in, and the PRD is always read from the caller's own storage, so you can only export your own PRD. Tokens are shape-checked, then verified with the provider before they're saved. Jira sites must be `https://<name>.atlassian.net`: anything else, look-alike hosts, ports and credentials in the URL are refused, so the server can't be pointed at internal addresses. Provider hosts are fixed, redirects are refused, and error messages are scrubbed of tokens. Rate limited per IP and per user (push 10/min, other actions 20/min). All calls are server-side, so the CSP is unchanged.
+
+### Security
+- **Credentials are encrypted at rest** with AES-256-GCM using `INTEGRATIONS_ENCRYPTION_KEY`. Each one is bound to its owner and provider, so a copied row won't decrypt. Only the last 4 characters ever reach the browser. **Disconnect** deletes the stored token.
+- New tables `integration_credentials` and `integration_exports` have RLS on, and hosts can only see their own rows. The browser can't read the ciphertext column or write either table, so only the server does.
+
+### Setup (self-hosters and hosted)
+- Direct push stays **hidden** until both of these are in place. Quick export works without either.
+  1. Run `supabase/migrations/20261019_integrations.sql` (it's also at the end of `supabase/schema.sql`, and it's safe to run twice).
+  2. Set `INTEGRATIONS_ENCRYPTION_KEY` to 32 random bytes (`openssl rand -base64 32`), then redeploy. Keep it safe: if it changes, saved connections can't be decrypted and hosts have to reconnect.
+- Guide: [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+
 ## v1.1.3 (2026-10-19)
 
 **The agent's question shows up, recordings include everyone, and Deepgram captions work on the hosted site.** Found while recording the product demo.
