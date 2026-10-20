@@ -19,6 +19,13 @@ export const CHECKED = "Oct 19, 2026";
 export const CHECKED_SHORT = "as of Oct 2026";
 export const CORRECTIONS = "admin@agilityserv.com";
 
+// PRD export, as shipped in v1.2.0 (app/host/Export.tsx, lib/integrations.ts,
+// lib/integrations-providers.ts). Quick export is always on. Direct push is
+// on for quantlys-meeting.com (Oct 19, 2026); self-hosters turn it on with
+// INTEGRATIONS_ENCRYPTION_KEY + the 20261019 migration (docs/INTEGRATIONS.md).
+export const EXPORT_CELL = "Direct push to GitHub Issues, Linear, Jira and Notion with your own token";
+export const INTEGRATIONS_DOC = "https://github.com/SantoshA1/quantlys-meet/blob/main/docs/INTEGRATIONS.md";
+
 export type Cell =
   | { k: "yes"; note?: string; src?: string }
   | { k: "no"; note?: string; src?: string }
@@ -180,6 +187,46 @@ export function TrademarkNote({ names }: { names: string }) {
       changed since. Spot something wrong or out of date? Email{" "}
       <a href={`mailto:${CORRECTIONS}`}>{CORRECTIONS}</a> and I&apos;ll fix it.
     </p>
+  );
+}
+
+export function PrdExport() {
+  return (
+    <>
+      <h2>Getting the PRD into your tools</h2>
+      <p>The PRD panel has an Export menu with these options, no setup needed:</p>
+      <ul>
+        <li><strong>Copy as Markdown</strong> or <strong>Download .md</strong>.</li>
+        <li><strong>New GitHub issue</strong>: a prefilled create-issue link for the repo you type (owner/repo).</li>
+        <li><strong>New Linear issue</strong>: a prefilled create-issue link.</li>
+        <li><strong>Jira and Notion</strong>: copies the markdown and opens Jira&apos;s create dialog on your atlassian.net site, or a new Notion page, so you can paste it.</li>
+      </ul>
+      <p>
+        A PRD too long for a link is cut at a line, with a link back to the
+        full PRD. You can still paste the markdown into Quantlys Conclave by
+        hand.
+      </p>
+      <p>
+        <strong>Direct push.</strong> You can also push the PRD straight into
+        GitHub Issues, Linear, Jira or Notion. You connect your own token for
+        each tool; it&apos;s stored encrypted and only its last 4 characters
+        are shown again. You see a preview of exactly what will be created
+        before anything is sent.
+      </p>
+      <ul>
+        <li><strong>GitHub Issues:</strong> one PRD issue plus one issue per user story, with acceptance criteria as a checklist. Stories are linked as sub-issues where the repo supports it.</li>
+        <li><strong>Linear:</strong> one PRD issue with a sub-issue per user story, criteria as a checklist.</li>
+        <li><strong>Jira Cloud:</strong> the PRD as an Epic with each user story as a Story under it (unlinked Stories if the project has no Epic type).</li>
+        <li><strong>Notion:</strong> one page under a parent page you pick, with criteria as to-dos.</li>
+      </ul>
+      <p>
+        Re-pushing updates the items it made last time instead of duplicating
+        them. In Notion it writes a fresh page and moves the old one to the
+        trash. Self-hosting? Direct push needs an encryption key and a
+        database migration; see{" "}
+        <a href={INTEGRATIONS_DOC}>docs/INTEGRATIONS.md</a>.
+      </p>
+    </>
   );
 }
 
