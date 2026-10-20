@@ -11,7 +11,7 @@
 import {
   type Creds, type ExportPlan, type ExistingRef, type Provider, type ChildRef,
   parseRepo, parentMarkdown, storyMarkdown, githubIssuePayload, linearIssueInput,
-  jiraIssueFields, mdToNotionBlocks, GITHUB_BODY_MAX, LINEAR_BODY_MAX, clip,
+  jiraIssueFields, mdToNotionBlocks, GITHUB_BODY_MAX, LINEAR_BODY_MAX, clip, childTitle,
 } from "./integrations.ts";
 
 export type Fetch = typeof fetch;
@@ -336,11 +336,13 @@ const linear = {
     await record?.(items[0]);
     const refs: ChildRef[] = [];
     for (const it of plan.items.slice(1)) {
-      const r = await upsert(it.key, it.title, storyMarkdown(it.story!, String(epic.identifier || ""), plan.backlink, LINEAR_BODY_MAX), String(epic.id));
-      const pushed: PushedItem = { key: it.key, action: r.action, id: String(r.id), url: String(r.url), title: it.title };
+      // A Linear sub-issue isn't a "Story", so no label on its title.
+      const title = childTitle(it.title);
+      const r = await upsert(it.key, title, storyMarkdown(it.story!, String(epic.identifier || ""), plan.backlink, LINEAR_BODY_MAX), String(epic.id));
+      const pushed: PushedItem = { key: it.key, action: r.action, id: String(r.id), url: String(r.url), title };
       items.push(pushed);
       await record?.(pushed);
-      refs.push({ title: it.title, ref: String(r.identifier || ""), url: String(r.url) });
+      refs.push({ title, ref: String(r.identifier || ""), url: String(r.url) });
     }
     if (refs.length) {
       // Same as GitHub: the PRD's story section becomes the list of sub-issues
@@ -396,7 +398,7 @@ const jira = {
     const storyType = String(story.name || "issue");
     const isStoryType = /^story$/i.test(storyType);
     // "Story: …" only reads right when the issue really is a Story.
-    const childSummary = (title: string) => isStoryType ? title : title.replace(/^Story:\s*/i, "");
+    const childSummary = (title: string) => isStoryType ? title : childTitle(title);
     if (!isStoryType && plan.items.length > 1) warnings.push(`This project has no Story type, so each user story went in as a ${storyType}.`);
     let epicType = byName(/^epic$/i);
     const browse = (key: string) => `${c.site}/browse/${key}`;
