@@ -2,6 +2,19 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## Unreleased
+
+**A fresh self-host now works from one SQL file.** Found by installing from zero on a clean local Supabase stack.
+
+### Fixed
+- **`supabase/schema.sql` now sets up a brand-new project completely, and is safe to re-run.** It was missing the `action_items` table (the action queue and Monday digest), the `meeting_by_code()` lookup that guests use to join from a code, the `recordings` storage bucket and its policies, the rate limiter, and the meetings columns for scheduling, projects and invites (`scheduled_at`, `project`, `invited`, `invite_seq`, `invited_at`). Re-running its `create policy` lines used to fail; it now only adds what's missing and never drops or rewrites anything.
+- **Sign-in email template.** Hosts type a 6-digit code, but Supabase's default emails only carry a link. Added `supabase/templates/sign-in-code.html` and the setup step.
+- **Docs.** The README, `docs/SELF_HOST.md` and `.env.example` no longer say recordings need S3 or LiveKit Egress (the host's browser records to Supabase Storage). The in-app "run the SQL step" notes name the real file.
+- **README demo.** The demo slot now shows a real recording of the hosted app (`docs/images/demo-v3.gif`, full video `docs/images/quantlys-meeting-demo-v3.mp4`), labelled as AI-generated voices recorded on the live app.
+
+### Notes
+- Existing installs (including the hosted site) need nothing. On a new project, `meetings` rows are readable only by their creator; guests find a meeting through `meeting_by_code()`.
+
 ## v1.2.0 (2026-10-19)
 
 **Export a PRD into GitHub Issues, Linear, Jira and Notion.** The PRD can now go straight into the tools the team already plans in, instead of staying in a file.
