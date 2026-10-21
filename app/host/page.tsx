@@ -293,8 +293,8 @@ export default function HostConsole() {
     setMine(((basic.data as any[]) ?? []).map((m) => ({ ...m, scheduled_at: null, project: null })));
     setMineTotal(basic.count ?? (basic.data?.length ?? 0));
     setNote(
-      "Scheduling and projects need one SQL step that hasn't been run yet — everything " +
-        "else works. Run the meet-digest SQL in Supabase and this message goes away."
+      "Scheduling and projects need columns this database doesn't have yet — everything " +
+        "else works. Run supabase/schema.sql in the Supabase SQL editor (safe to re-run) and this message goes away."
     );
   }, [user]);
 
@@ -556,7 +556,7 @@ export default function HostConsole() {
       if (error) {
         setNote(
           error.message.includes("scheduled_at")
-            ? "Scheduling needs one more line of SQL — run the meet-sched-0-sql step, then try again."
+            ? "Scheduling needs a column this database doesn't have yet — run supabase/schema.sql in the Supabase SQL editor (safe to re-run), then try again."
             : `Could not schedule: ${error.message}`
         );
         return;
@@ -1040,8 +1040,8 @@ export default function HostConsole() {
             <p className="qh-railhead">STILL OPEN {itemsReady && items.length ? <em className="qh-count">{itemsTotal}</em> : null}</p>
             {!itemsReady ? (
               <p className="qh-dim qh-railnote">
-                The action-items table hasn&apos;t been created yet — run the meet-digest SQL step
-                in Supabase and this list starts filling itself after each recording.
+                The action-items table hasn&apos;t been created yet — run <code>supabase/schema.sql</code> in
+                the Supabase SQL editor (safe to re-run) and this list starts filling itself after each recording.
               </p>
             ) : items.length === 0 ? (
               <p className="qh-dim qh-railnote">{hostRailStillOpenEmpty(launchMode)}</p>
