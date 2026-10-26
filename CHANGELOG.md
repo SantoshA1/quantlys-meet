@@ -4,6 +4,9 @@ All notable changes to Quantlys Meeting. Dates are US Eastern.
 
 ## Unreleased
 
+### Security
+- **Next.js 16.4.0 → 16.4.3.** 16.4.0 is in the affected range of three advisories published 2026-10-22, all fixed in 16.4.1: [GHSA-2464-fhr4-w9xw](https://github.com/advisories/GHSA-2464-fhr4-w9xw) (critical, unauthenticated RCE in the Image Optimization API when SVG files are used), [GHSA-673q-mjm6-r5xr](https://github.com/advisories/GHSA-673q-mjm6-r5xr) (critical, unauthenticated RCE in `use cache` functions returning typed arrays) and [GHSA-p3m5-59mp-jv5r](https://github.com/advisories/GHSA-p3m5-59mp-jv5r) / CVE-2026-94482 (high, App Router DoS via Server Actions). Only `next`, `@next/env` and the SWC binaries change in the lockfile; React stays at 19.3.0.
+
 **A fresh self-host now works from one SQL file.** Found by installing from zero on a clean local Supabase stack.
 
 ### Fixed
