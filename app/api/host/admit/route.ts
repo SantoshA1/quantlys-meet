@@ -19,6 +19,6 @@ export async function POST(req: NextRequest) {
 
   const at = new AccessToken(process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!,
     { identity: `guest-${admissionId}`, name: pend!.display_name, ttl: "3h" });
-  at.addGrant({ room: m!.room_name, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true });
+  at.addGrant({ room: m!.room_name, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true, canUpdateOwnMetadata: true });
   return NextResponse.json({ token: await at.toJwt() });
 }

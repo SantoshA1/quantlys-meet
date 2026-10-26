@@ -51,6 +51,7 @@ import {
   dueForRetry, isStuck, shouldReattach, withTimeout, RECOVER_TIMEOUT_MS,
 } from "@/lib/recovery";
 import { isConnected, trustDevices, REJOIN_GRACE_MS } from "@/lib/link";
+import { needsResume, keepAudioAlive, holdAfterReturn, subscribePageLife } from "@/lib/page-life";
 
 const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect", custom: "qm.bg.custom" };
 const save = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch {} };
@@ -122,6 +123,8 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   /** Has this microphone ever produced a sound? Once it has, going quiet is
    *  somebody listening, which is what people do in meetings. */
   const everHeard = useRef(false);
+  /** When the page last became visible again. See holdAfterReturn. */
+  const visibleSince = useRef(0);
 
   const photoIdsRef = useRef<string[]>([]);
   photoIdsRef.current = photoIds;
@@ -360,8 +363,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     everHeard.current = false;
     try {
       ac = ctx.current || new AudioContext();
+      if (!ctx.current) keepAudioAlive(ac);
       ctx.current = ac;
-      if (ac.state === "suspended") ac.resume().catch(() => {});
+      if (needsResume(ac.state)) ac.resume().catch(() => {});
       const src = ac.createMediaStreamSource(new MediaStream([mst]));
       analyser = ac.createAnalyser();
       analyser.fftSize = 1024;
@@ -380,7 +384,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       // reasons that have nothing to do with the microphone — a backgrounded
       // tab, a power event. Resuming it here rather than only at creation is
       // what turns a permanently dead meter back into a working one.
-      if (ac && ac.state === "suspended") {
+      // iOS says "interrupted", not "suspended", after a locked screen — and
+      // a check for only the one left the meter flat after every unlock.
+      if (ac && needsResume(ac.state)) {
         metering.current = false;
         ac.resume().then(() => { metering.current = Boolean(analyser && buf); }).catch(() => {});
       }
@@ -433,10 +439,17 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   // It runs on its own clock now, for as long as somebody is in the room, and
   // it never runs out of patience: the fast ladder first because somebody is
   // mid-sentence, then every fifteen seconds for the rest of the meeting.
+  useEffect(() => subscribePageLife({ onShow: () => { visibleSince.current = Date.now(); } }), []);
+
   useEffect(() => {
     if (!room) return;
     const tick = () => {
       const L = live.current;
+      // FIELD 2026-10-25 (iPhone unlock). LiveKit re-acquires a muted
+      // microphone itself when a mobile page becomes visible. Restarting it
+      // from here in the same instant is two getUserMedia calls racing for
+      // one device; give LiveKit its turn, then judge what is left.
+      if (holdAfterReturn(visibleSince.current, Date.now())) return;
       // THE GATE. While the room is not connected — or has only just come
       // back and LiveKit is still republishing — nothing this function could
       // say about a microphone would be true. The connection banner in

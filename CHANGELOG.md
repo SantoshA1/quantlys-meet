@@ -12,6 +12,15 @@ All notable changes to Quantlys Meeting. Dates are US Eastern.
 - **Docs.** The README, `docs/SELF_HOST.md` and `.env.example` no longer say recordings need S3 or LiveKit Egress (the host's browser records to Supabase Storage). The in-app "run the SQL step" notes name the real file.
 - **README demo.** The demo slot now shows a real recording of the hosted app (`docs/images/demo-v3.gif`, full video `docs/images/quantlys-meeting-demo-v3.mp4`), labelled as AI-generated voices recorded on the live app.
 
+### Fixed — iPhone screen lock
+iOS mutes a web page's microphone while the phone is locked or the browser is in the background. That is WebKit's rule and no web page can turn it off. These fixes are about what happens after you unlock. Not yet tested on a real iPhone.
+- **Voice comes back on unlock.** Every audio engine the room uses is resumed from iOS's "interrupted" state (the old code only handled "suspended"), and speaker playback is restarted.
+- **Captions come back.** If the Deepgram connection drops, it reconnects with a fresh key instead of switching to the browser recogniser for the rest of the meeting. Captions also restart when the page returns or the microphone is restarted.
+- **The media guard waits** about 2 seconds after you return, so LiveKit can bring the microphone back itself, instead of both restarting it at once.
+- **Others see "paused, phone locked"** while an iPhone or iPad participant is locked, rather than silence with no explanation.
+- **Recordings:** the timer uses the real clock, so it no longer loses the locked minutes. A locked stretch shows in the notes as a timed "Recording gap" line.
+- **Heads-up for iPhone users.** There is a notice on the device check and a one-time tip in the room. Where the browser supports it, the room keeps the screen awake so it doesn't auto-lock mid-call.
+
 ### Notes
 - Existing installs (including the hosted site) need nothing. On a new project, `meetings` rows are readable only by their creator; guests find a meeting through `meeting_by_code()`.
 

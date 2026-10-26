@@ -17,7 +17,7 @@ import {
   useTracks,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { Track, AudioPresets, VideoPresets, RoomEvent } from "livekit-client";
+import { Track, AudioPresets, VideoPresets, RoomEvent, TrackEvent } from "livekit-client";
 import DeviceCheck, { DEVICE_CSS, type Choice } from "./DeviceCheck";
 import MediaGuard, { GUARD_CSS } from "./MediaGuard";
 import Agent, { AGENT_CSS } from "./Agent";
@@ -64,6 +64,11 @@ import { keytermParams, sanitizeNames, sanitizeGlossary, MAX_GLOSSARY_TERMS, MAX
 import { createCaptionController, type CaptionController, type Stopper } from "@/lib/caption-control";
 import { feedLevel, newSegment, rmsOf } from "@/lib/caption-relay";
 import { recentTranscript, type Catchup } from "@/lib/catchup";
+import {
+  onAppleMobile, keepAudioAlive, resumeAudioContexts, needsResume, subscribePageLife, createWakeLock,
+  AWAY_ATTR, AWAY_LOCKED, awayLabel, elapsedSeconds, closeGap, gapLine, type Gap,
+  DG_MAX_RECONNECTS, dgReconnectDelay, LOCK_NOTICE, LOCK_NOTICE_KEY,
+} from "@/lib/page-life";
 
 // SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
 // throw from inside a mount effect when it was absent — which crashed the
@@ -538,6 +543,7 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
       >
         <RoomHeader room={room} title={meetingName} project={info?.project || ""} camWanted={choice.camOn} micWanted={choice.micOn} spec={spec} initialSessionMode={initialSessionMode} />
         <PlaybackGate />
+        <PageLife />
         <MediaFailBanner text={mediaFail} onClear={() => setMediaFail("")} camWanted={choice.camOn} micWanted={choice.micOn} />
         <ConferenceStage />
         <Reactions />
@@ -595,6 +601,7 @@ function ConferenceStage() {
   return (
     <div className="qmr-conf">
       <VideoConference />
+      <AwayTags />
       <Drawing />
     </div>
   );
@@ -662,6 +669,102 @@ function PlaybackGate() {
         Nobody is missing — this is Chrome and Edge asking permission, and one click fixes it for good.
       </span>
     </button>
+  );
+}
+
+/** The page going away and coming back (lib/page-life.ts).
+ *
+ *  FIELD 2026-10-25, an iPhone: "the iphone is locked the voice is getting
+ *  disabled till unlocked." iOS mutes a hidden page's microphone and no web
+ *  page can stop that. What this can do is (1) tell the room why somebody went
+ *  quiet, (2) bring the page's audio back the moment it is visible again, and
+ *  (3) stop the screen from AUTO-locking in the first place. */
+function PageLife() {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [notice, setNotice] = useState(false);
+  const marked = useRef(false);
+
+  useEffect(() => {
+    if (!onAppleMobile()) return;
+    try {
+      if (window.localStorage.getItem(LOCK_NOTICE_KEY)) return;
+      window.localStorage.setItem(LOCK_NOTICE_KEY, "1");
+    } catch { /* private mode: show it, once per page */ }
+    setNotice(true);
+  }, []);
+
+  useEffect(() => {
+    if (!room) return;
+    const lock = createWakeLock(typeof navigator !== "undefined" ? (navigator as any) : undefined);
+    void lock.request();
+    const apple = onAppleMobile();
+    const setAway = (v: string) => {
+      // Needs canUpdateOwnMetadata on the token. An older token without it
+      // refuses, and the meeting carries on without the tag.
+      try { localParticipant?.setAttributes?.({ [AWAY_ATTR]: v })?.catch?.(() => {}); } catch { /* tag only */ }
+    };
+    const off = subscribePageLife({
+      onHide: () => {
+        // Only where hiding really mutes the microphone. A desktop tab in the
+        // background is still sending, and must not be labelled "locked".
+        if (!apple) return;
+        marked.current = true;
+        setAway(AWAY_LOCKED);
+      },
+      onShow: () => {
+        resumeAudioContexts();
+        // LiveKit does this too, from its own listener, but only when its
+        // silent element exists; asking twice costs nothing.
+        room.startAudio().catch(() => {});
+        void lock.request();
+        if (marked.current) { marked.current = false; setAway(""); }
+      },
+    });
+    return () => { off(); void lock.release(); };
+  }, [room, localParticipant]);
+
+  if (!notice) return null;
+  return (
+    <div className="qmr-locknote" role="status">
+      <span>{LOCK_NOTICE}</span>
+      <button type="button" className="qmr-mediafail-x" onClick={() => setNotice(false)}>Got it</button>
+    </div>
+  );
+}
+
+/** "Kiran — paused, phone locked". <VideoConference/> does not let us put
+ *  anything inside its tiles, so the tag sits along the top of the stage. */
+function AwayTags() {
+  const room = useRoomContext();
+  const [away, setAway] = useState<Array<{ id: string; name: string; label: string }>>([]);
+  useEffect(() => {
+    if (!room) return;
+    const read = () => {
+      const out: Array<{ id: string; name: string; label: string }> = [];
+      room.remoteParticipants.forEach((p) => {
+        const label = awayLabel(p.attributes);
+        if (label) out.push({ id: p.identity, name: p.name || p.identity, label });
+      });
+      setAway(out);
+    };
+    read();
+    room.on(RoomEvent.ParticipantAttributesChanged, read);
+    room.on(RoomEvent.ParticipantConnected, read);
+    room.on(RoomEvent.ParticipantDisconnected, read);
+    return () => {
+      room.off(RoomEvent.ParticipantAttributesChanged, read);
+      room.off(RoomEvent.ParticipantConnected, read);
+      room.off(RoomEvent.ParticipantDisconnected, read);
+    };
+  }, [room]);
+  if (!away.length) return null;
+  return (
+    <div className="qmr-away" role="status" aria-live="polite">
+      {away.map((a) => (
+        <span key={a.id} className="qmr-awaytag">⏸ {a.name} — {a.label}</span>
+      ))}
+    </div>
   );
 }
 
@@ -766,6 +869,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   const raf = useRef<number | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
   const recMix = useRef<{ ac: AudioContext; dest: MediaStreamAudioDestinationNode; nodes: Map<string, MediaStreamAudioSourceNode>; off: () => void } | null>(null);
+  // Holes in the take: a locked host phone records nothing (lib/page-life.ts).
+  const recGaps = useRef<Gap[]>([]);
+  const hiddenAtSec = useRef(-1);
   const ticker = useRef<any>(null);
   const stopping = useRef(0);
   const saveWaiters = useRef<Array<() => void>>([]);
@@ -1111,6 +1217,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   function syncRecAudio() {
     const m = recMix.current;
     if (!m) return;
+    // iOS leaves this "interrupted" after a lock, and a context that is not
+    // running mixes silence into the rest of the take.
+    if (needsResume(m.ac.state)) m.ac.resume().catch(() => {});
     let want = new Map<string, any>();
     try {
       const mic = ctx.localParticipant.getTrackPublication(Track.Source.Microphone)?.track?.mediaStreamTrack;
@@ -1142,8 +1251,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   function buildAudio(): MediaStream {
     stopRecAudio();
     const ac = audioCtx.current || new AudioContext();
+    if (!audioCtx.current) keepAudioAlive(ac);
     audioCtx.current = ac;
-    if (ac.state === "suspended") ac.resume().catch(() => {});
+    if (needsResume(ac.state)) ac.resume().catch(() => {});
     const dest = ac.createMediaStreamDestination();
     const resync = () => syncRecAudio();
     const events = [
@@ -1408,11 +1518,16 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     recordedThisPage.current = true;
     elapsedRef.current = 0;
     setElapsed(0);
-    ticker.current = setInterval(() => setElapsed((s) => {
-      const n = s + 1;
+    recGaps.current = [];
+    hiddenAtSec.current = -1;
+    // From the wall clock, not by counting ticks: timers stop while a phone is
+    // locked, and a take that counted its own ticks came out short.
+    const tick = () => {
+      const n = elapsedSeconds(takeStartedAt.current, Date.now());
       elapsedRef.current = n;
-      return n;
-    }), 1000);
+      setElapsed(n);
+    };
+    ticker.current = setInterval(tick, 1000);
     announce(true);
   }
 
@@ -1450,6 +1565,27 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     return () => clearInterval(t);
   }, [recording, announce]);
 
+  // A hidden page records no picture and, on iOS, no microphone. Say so in
+  // the record rather than leave a silent stretch for the notes to guess at.
+  useEffect(() => {
+    if (!recording) return;
+    return subscribePageLife({
+      onHide: () => {
+        if (hiddenAtSec.current < 0) hiddenAtSec.current = elapsedSeconds(takeStartedAt.current, Date.now());
+      },
+      onShow: () => {
+        const now = elapsedSeconds(takeStartedAt.current, Date.now());
+        elapsedRef.current = now;
+        setElapsed(now);
+        const g = closeGap(hiddenAtSec.current, now);
+        hiddenAtSec.current = -1;
+        if (g) recGaps.current = [...recGaps.current, g];
+        syncRecAudio();
+      },
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording]);
+
   // The browser copy's heartbeat: how long, who, and the captions so far, so
   // a take recovered after a dead tab gets the same notes a normal save does.
   const takeMetaRef = useRef<() => Record<string, unknown>>(() => ({}));
@@ -1462,6 +1598,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     captions: [
       ...toUtterances(cc.log),
       ...flags.map((f) => ({ start: Math.round(f.at / 1000), speaker: -1, transcript: `⚑ Moment flagged by ${f.by}` })),
+      ...recGaps.current.map(gapLine),
     ].slice(0, 4000),
     captionText: toTranscript(cc.log).slice(0, 200000),
   });
@@ -1502,6 +1639,7 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     setRecording(false);
     announce(false);
     if (ticker.current) clearInterval(ticker.current);
+    elapsedRef.current = elapsedSeconds(takeStartedAt.current, Date.now());
     const p = waitForSave();
     try { aRec.current?.stop(); } catch { /* already stopped */ }
     try { rec.stop(); } catch {
@@ -1683,6 +1821,8 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
             // Flagged moments become lines of the record itself.
             ...flags.map((f) => ({ start: Math.round(f.at / 1000), speaker: -1,
                                    transcript: `⚑ Moment flagged by ${f.by}` })),
+            // Stretches the take could not hear (a locked phone), named.
+            ...recGaps.current.map(gapLine),
           ].slice(0, 4000),
           captionText: toTranscript(cc.log).slice(0, 200000),
           // FIELD 2026-08-25: "whatever they're drawing on the whiteboard
@@ -2798,12 +2938,35 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     return navigator.mediaDevices.getUserMedia({ audio: true });
   }, [lkRoom]);
 
+  // A fresh browser key for Deepgram. Keys are short-lived, so a reconnect
+  // after the socket died (a locked phone freezes the page long enough) asks
+  // for a new one rather than reusing the old.
+  const captionToken = useCallback(async (): Promise<{ engine: string; token: string; scheme: "token" | "bearer" }> => {
+    const r = await fetch("/api/captions/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(currentRoomToken ? { Authorization: `Bearer ${currentRoomToken}` } : {}),
+      },
+      body: JSON.stringify({ room }),
+    });
+    const j = await r.json();
+    return { engine: String(j?.engine || ""), token: String(j?.token || ""), scheme: j?.scheme === "bearer" ? "bearer" : "token" };
+  }, [room]);
+
   const startDeepgram = useCallback(async (token: string, scheme: "token" | "bearer" = "token") => {
     let ws: WebSocket | null = null;
     let mr: MediaRecorder | null = null;
     let stream: MediaStream | null = null;
     let stopped = false;
     let utter = `${me}-${seq.current++}`;
+    // Reconnects in a row without one message back. FIELD 2026-10-25: the
+    // socket died while an iPhone was locked, onerror switched captions to
+    // the browser's recogniser for the rest of the meeting, and a clean close
+    // (no error) left them dead with nothing on screen.
+    let retries = 0;
+    let retryT: ReturnType<typeof setTimeout> | null = null;
+    let waitVisible: (() => void) | null = null;
 
     try {
       // A second getUserMedia here can fire a permission failure even while
@@ -2828,47 +2991,95 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       ["encoding", "opus"],
       ...keytermParams(DG_MODEL, names, glossary),
     ]);
-    ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, [scheme, token]);
 
-    ws.onopen = () => {
-      if (stopped || !stream) return;
-      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
-      mr = new MediaRecorder(stream, { mimeType: mime });
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) ws.send(e.data);
-      };
-      mr.start(250);   // a quarter second — the latency people actually feel
-    };
-    ws.onmessage = (e) => {
-      try {
-        const m = JSON.parse(e.data);
-        const text = String(m?.channel?.alternatives?.[0]?.transcript || "").trim();
-        if (!text) return;
-        const isFinal = Boolean(m?.is_final || m?.speech_final);
-        emit({ id: utter, who: myName, text, final: isFinal, at: Date.now() - t0.current });
-        if (isFinal) utter = `${me}-${seq.current++}`;
-      } catch {
-        /* ignore */
-      }
-    };
-    ws.onerror = () => {
+    const fallBack = (why: string) => {
+      if (stopped) return;
       // Falling back is better than going quiet. The person asked for
       // captions; which service produces them is our problem, not theirs.
-      if (stopped) return;
-      setNote("Deepgram dropped the caption connection — switching to your browser's own recogniser.");
+      setNote(why);
       setEngine("browser");
       ctrlRef.current?.replace(startBrowser());
     };
 
+    const reconnect = () => {
+      if (stopped) return;
+      if (retries >= DG_MAX_RECONNECTS) {
+        fallBack("Deepgram kept dropping the caption connection — switching to your browser's own recogniser.");
+        return;
+      }
+      // A hidden page cannot hold a socket open on iOS; spending the retries
+      // while the phone is locked would only reach the fallback sooner.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        if (waitVisible) return;
+        waitVisible = subscribePageLife({ onShow: () => { waitVisible?.(); waitVisible = null; reconnect(); } });
+        return;
+      }
+      const delay = dgReconnectDelay(retries++);
+      retryT = setTimeout(async () => {
+        retryT = null;
+        if (stopped) return;
+        try {
+          const t = await captionToken();
+          if (stopped) return;
+          if (t.engine !== "deepgram" || !t.token) { fallBack("Deepgram stopped issuing caption keys — switching to your browser's own recogniser."); return; }
+          open(t.token, t.scheme);
+        } catch {
+          reconnect();
+        }
+      }, delay);
+    };
+
+    const open = (tok: string, sch: "token" | "bearer") => {
+      try { mr?.stop(); } catch {}
+      mr = null;
+      const sock = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, [sch, tok]);
+      ws = sock;
+      sock.onopen = () => {
+        if (stopped || !stream || ws !== sock) return;
+        const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
+        const rec = new MediaRecorder(stream, { mimeType: mime });
+        rec.ondataavailable = (e) => {
+          if (e.data.size > 0 && sock.readyState === WebSocket.OPEN) sock.send(e.data);
+        };
+        rec.start(250);   // a quarter second — the latency people actually feel
+        mr = rec;
+      };
+      sock.onmessage = (e) => {
+        retries = 0;   // it answered: the connection is good again
+        try {
+          const m = JSON.parse(e.data);
+          const text = String(m?.channel?.alternatives?.[0]?.transcript || "").trim();
+          if (!text) return;
+          const isFinal = Boolean(m?.is_final || m?.speech_final);
+          emit({ id: utter, who: myName, text, final: isFinal, at: Date.now() - t0.current });
+          if (isFinal) utter = `${me}-${seq.current++}`;
+        } catch {
+          /* ignore */
+        }
+      };
+      // onerror is always followed by onclose; the close decides.
+      sock.onerror = () => {};
+      sock.onclose = () => {
+        if (stopped || ws !== sock) return;
+        try { mr?.stop(); } catch {}
+        mr = null;
+        reconnect();
+      };
+    };
+
+    open(token, scheme);
+
     return () => {
       stopped = true;
+      if (retryT) clearTimeout(retryT);
+      waitVisible?.();
       try { mr?.stop(); } catch {}
       try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
       try { ws?.close(); } catch {}
     };
-  }, [emit, me, myName, startBrowser, loadTerms, micStream]);
+  }, [emit, me, myName, startBrowser, loadTerms, micStream, captionToken]);
 
   // ── Deepgram through our server (the relay) ─────────────────────────────
   // For keys that can transcribe but can't mint a browser key. The mic is cut
@@ -2886,6 +3097,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     const terms = sanitizeGlossary([...names, ...glossary], MAX_GLOSSARY_TERMS + MAX_NAMES).join(",");
     const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((m) => MediaRecorder.isTypeSupported(m)) || "";
     const ac = new AudioContext();
+    const unkeep = keepAudioAlive(ac);
     try { await ac.resume(); } catch { /* resumes on the next gesture */ }
     const an = ac.createAnalyser();
     an.fftSize = 1024;
@@ -2953,6 +3165,9 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     begin();
     const tick = setInterval(() => {
       if (stopped) return;
+      // "interrupted" after an iPhone lock: an analyser on a stopped context
+      // reads zeros, no pause is ever found, and nothing is ever sent.
+      if (needsResume(ac.state)) { ac.resume().catch(() => {}); return; }
       an.getFloatTimeDomainData(buf);
       const r = feedLevel(seg, rmsOf(buf), performance.now());
       seg = r.state;
@@ -2965,13 +3180,14 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       clearInterval(tick);
       try { if (mr) { mr.onstop = null; mr.stop(); } } catch {}
       try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      unkeep();
       try { ac.close(); } catch {}
     };
   }, [emit, me, myName, room, startBrowser, loadTerms, micStream]);
 
   // Latest engine starters, for the controller (created once).
-  const starters = useRef({ startBrowser, startDeepgram, startRelay });
-  starters.current = { startBrowser, startDeepgram, startRelay };
+  const starters = useRef({ startBrowser, startDeepgram, startRelay, captionToken });
+  starters.current = { startBrowser, startDeepgram, startRelay, captionToken };
 
   // Single-flight start (lib/caption-control). FIELD 2026-10-19: a spec
   // session and the PRD agent both switched captions on in the same tick;
@@ -2983,20 +3199,12 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       let token = "";
       let scheme: "token" | "bearer" = "token";
       try {
-        const r = await fetch("/api/captions/token", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(currentRoomToken ? { Authorization: `Bearer ${currentRoomToken}` } : {}),
-          },
-          body: JSON.stringify({ room }),
-        });
-        const j = await r.json();
-        if (j?.engine === "deepgram" && j?.token) {
+        const j = await starters.current.captionToken();
+        if (j.engine === "deepgram" && j.token) {
           picked = "deepgram";
           token = j.token;
-          scheme = j.scheme === "bearer" ? "bearer" : "token";
-        } else if (j?.engine === "relay" && typeof MediaRecorder !== "undefined") {
+          scheme = j.scheme;
+        } else if (j.engine === "relay" && typeof MediaRecorder !== "undefined") {
           picked = "relay";
         }
       } catch {
@@ -3014,6 +3222,48 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
   }
 
   useEffect(() => () => { ctrlRef.current?.disable(); }, []);
+
+  // Captions hear a CLONE of the published microphone, taken when they start
+  // (micStream). FIELD 2026-10-25: after an iPhone unlock LiveKit restarts
+  // the microphone, the clone is left on the old, muted source, and captions
+  // sat on "Listening…" for the rest of the meeting. So when the page comes
+  // back, or the microphone is restarted or republished, start them again on
+  // the live track. Debounced: a return usually brings a restart with it.
+  useEffect(() => {
+    if (!lkRoom) return;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const again = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        t = null;
+        const c = ctrlRef.current;
+        if (!c?.isOn()) return;
+        c.disable();
+        c.enable();
+      }, 800);
+    };
+    let micT: any = null;
+    const watchMic = () => {
+      const next: any = lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone)?.track || null;
+      if (next === micT) return;
+      micT?.off?.(TrackEvent.Restarted, again);
+      micT = next;
+      micT?.on?.(TrackEvent.Restarted, again);
+    };
+    const onPub = (pub: any) => {
+      watchMic();
+      if (pub?.source === Track.Source.Microphone) again();
+    };
+    watchMic();
+    lkRoom.on(RoomEvent.LocalTrackPublished, onPub);
+    const off = subscribePageLife({ onShow: again });
+    return () => {
+      if (t) clearTimeout(t);
+      off();
+      micT?.off?.(TrackEvent.Restarted, again);
+      lkRoom.off(RoomEvent.LocalTrackPublished, onPub);
+    };
+  }, [lkRoom]);
 
   const toggle = useCallback(() => { ctrlRef.current?.toggle(); }, []);
   const enable = useCallback(() => { ctrlRef.current?.enable(); }, []);
@@ -3080,6 +3330,15 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 
 
 const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
+/* iPhone: the one-time lock notice, and who is paused by a locked phone. */
+.qmr-locknote { position:absolute; left:50%; transform:translateX(-50%); top:112px; z-index:80;
+  display:flex; gap:12px; align-items:center; max-width:min(560px, calc(100% - 24px));
+  background:#1d2333; border:1px solid #3b4660; color:#e6eaf3; border-radius:11px;
+  padding:10px 14px; font-size:13px; line-height:1.5; box-shadow:0 14px 36px rgba(0,0,0,.55); }
+.qmr-away { position:absolute; left:12px; top:12px; z-index:40; display:flex; flex-wrap:wrap; gap:6px;
+  pointer-events:none; max-width:calc(100% - 24px); }
+.qmr-awaytag { background:rgba(20,24,34,.88); border:1px solid #5b6478; color:#f2d48a;
+  border-radius:999px; padding:4px 10px; font-size:12px; }
 .qmb-captured { position:absolute; left:50%; transform:translateX(-50%); bottom:96px; z-index:75;
   max-width:min(560px, calc(100% - 24px)); background:#0d2a2a; border:1px solid #00a99d;
   color:#c8f5f0; border-radius:11px; padding:11px 15px; font-size:13px; line-height:1.55;
@@ -3104,7 +3363,7 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 .q-chipbad { border-color:#5a2a2f !important; color:#ffb4b4 !important; }
 /* The playback gate. Impossible to miss on purpose: a person who cannot hear
    the meeting is thirty seconds from leaving it. */
-.qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:80;
+.qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:112px; z-index:80;
   width:min(560px, calc(100% - 24px)); display:flex; flex-direction:column; gap:4px; text-align:left;
   font:inherit; cursor:pointer; background:#0d2a2a; border:1px solid #00a99d; color:#c8f5f0;
   border-radius:12px; padding:13px 15px; box-shadow:0 14px 36px rgba(0,0,0,.55); }
