@@ -42,6 +42,9 @@ type Prd = {
   brief?: string; decisions?: Decision[]; answered?: string[];
   assessment_error?: string; model?: string; model_note?: string; at?: string;
   shareId?: string;
+  // Who raised what — only speaker labels from these meetings (lib/prd-speakers.ts).
+  speakers?: string[]; attribution_note?: string;
+  attributions?: Array<{ kind: string; text: string; by: string[]; owner?: string }>;
 };
 type Decision = { key: string; question: string; answer: string; at: string };
 
@@ -370,6 +373,15 @@ export default function Prd({ projects }: { projects: string[] }) {
             {data.model ? ` · ${data.model}` : ""}
           </p>
           {data.model_note ? <p className="qp-note">{data.model_note}</p> : null}
+          {data.speakers?.length || data.attribution_note ? (
+            <p className="qp-note">
+              {data.speakers?.length ? <>Speakers: <b>{data.speakers.join(", ")}</b>. </> : null}
+              {data.attributions?.length
+                ? `${data.attributions.filter((a) => a.by.length || a.owner).length} of ${data.attributions.length} items attributed. `
+                : ""}
+              {data.attribution_note || ""}
+            </p>
+          ) : null}
 
           <div className="qp-dims">
             {data.dimensions.map((d) => (
