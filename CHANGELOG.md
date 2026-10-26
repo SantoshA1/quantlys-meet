@@ -15,6 +15,14 @@ All notable changes to Quantlys Meeting. Dates are US Eastern.
 - **Docs.** The README, `docs/SELF_HOST.md` and `.env.example` no longer say recordings need S3 or LiveKit Egress (the host's browser records to Supabase Storage). The in-app "run the SQL step" notes name the real file.
 - **README demo.** The demo slot now shows a real recording of the hosted app (`docs/images/demo-v3.gif`, full video `docs/images/quantlys-meeting-demo-v3.mp4`), labelled as AI-generated voices recorded on the live app.
 
+### Added — speaker names in the PRD
+The project PRD now says who raised each decision, requirement, open question and action item, using the name each person typed when they joined.
+- **The names were already there.** Every recording's summary carries named transcript lines (Deepgram's voices matched to the live captions). The PRD used to read the plain transcript, which says "Speaker 0", so the model never saw a name. It now reads the named lines.
+- **No invented names.** The model may only use speaker labels from the meetings it read. The server checks every name it returns, in the structured list and in the `(raised by …)` marks in the document, and removes any that didn't speak; the item stays, marked unattributed. A name someone only *mentioned* is not a speaker.
+- **Honest fallbacks.** A voice nobody could match stays "Speaker N". When one person joined but several voices were heard (a laptop in a meeting room), the voices are labelled "Speaker N on Kiran's mic", not credited to Kiran. Older recordings with no names produce no attributions.
+- **Where it shows:** a "Who raised what" section in the PRD markdown (so Copy, Download, Email, the shared link and the GitHub, Linear, Jira and Notion pushes all carry it), `(raised by …)` marks on user stories (so pushed child issues keep them), and a speakers line in the host console. The example PRD page shows the format.
+- **Privacy:** nothing new is stored. The names are the display names already saved in each recording's summary.
+
 ### Fixed — iPhone screen lock
 iOS mutes a web page's microphone while the phone is locked or the browser is in the background. That is WebKit's rule and no web page can turn it off. These fixes are about what happens after you unlock. Not yet tested on a real iPhone.
 - **Voice comes back on unlock.** Every audio engine the room uses is resumed from iOS's "interrupted" state (the old code only handled "suspended"), and speaker playback is restarted.

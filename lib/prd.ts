@@ -28,7 +28,13 @@
 // keeps anybody from claiming otherwise.
 //
 // ZERO-IMPORT so it travels and so every judgement here is testable without a
-// network, a model, or a browser.
+// network, a model, or a browser. (The one import is ./prd-speakers.ts, which
+// is zero-import itself: who said what, checked against who was there.)
+
+import {
+  normalizeAttributions, scrubInlineNames, type Attribution, type AttributionKind,
+} from "./prd-speakers.ts";
+export type { Attribution, AttributionKind };
 
 // ── the rubrics, mirrored from conclave/conclave/context.py ────────────────
 
@@ -284,6 +290,14 @@ export type Report = {
   gate: string;
   model?: string;
   assessment_error?: string;
+  /** Who raised each decision, requirement, open question and action item —
+   *  only ever a speaker label from these meetings. Absent on a report built
+   *  before speaker names reached the PRD, and on a failed assessment. */
+  attributions?: Attribution[];
+  /** The real display names that spoke in the meetings this was built from. */
+  speakers?: string[];
+  /** One plain sentence on how much could be attributed and why not more. */
+  attribution_note?: string;
 };
 
 /** Conclave's storage guard, to the character. A PRD longer than this is
@@ -380,7 +394,18 @@ export function fallbackReport(reason: string, mode: string = DEFAULT_MODE): Rep
   );
 }
 
-export function normalizeReport(parsed: any, mode: string, model?: string): Report {
+/** `speakers`, when given, is every label the model was allowed to attribute
+ *  to (lib/prd-speakers.ts). A name the model returns that is not in it is
+ *  removed — from the structured attributions AND from the inline
+ *  `(raised by …)` marks in the document. When it is NOT given (a caller
+ *  that predates attribution) the document is untouched and no attributions
+ *  are produced, rather than trusting names nothing has checked. */
+export function normalizeReport(
+  parsed: any,
+  mode: string,
+  model?: string,
+  speakers?: { labels: string[]; names: string[]; note?: string }
+): Report {
   const dims = rubricFor(mode);
   const keys = dims.map((d) => d.key);
   const labels: Record<string, string> = Object.fromEntries(dims.map((d) => [d.key, d.label]));
@@ -415,12 +440,20 @@ export function normalizeReport(parsed: any, mode: string, model?: string): Repo
     };
   });
 
-  return finalize(out, {
+  let prd = String(parsed?.prd || "").trim();
+  if (speakers) prd = scrubInlineNames(prd, speakers.labels);
+  const report = finalize(out, {
     summary: String(parsed?.summary || "").trim(),
     mode,
-    prd: String(parsed?.prd || "").trim().slice(0, PRD_MAX),
+    prd: prd.slice(0, PRD_MAX),
     model,
   });
+  if (speakers) {
+    report.attributions = normalizeAttributions(parsed?.attributions, speakers.labels);
+    report.speakers = [...speakers.names];
+    if (speakers.note) report.attribution_note = speakers.note;
+  }
+  return report;
 }
 
 // ── pulling JSON out of a model that was asked for JSON ───────────────────
@@ -669,15 +702,49 @@ export function projectPath(userId: string, projectName: string): string {
   return `${String(userId || "")}/prd/${slug}.project.json`;
 }
 
+/** The block that tells the model whose names it may use. Each transcript
+ *  line is `[mm:ss] Label: words`; the labels listed here are the ONLY ones
+ *  that may appear in an attribution, and the server checks afterwards. */
+export function speakersBlock(speakers?: { labels: string[]; names: string[] } | null): string {
+  if (!speakers) return "";
+  const names = (speakers.names || []).filter(Boolean);
+  const others = (speakers.labels || []).filter((l) => l && !names.includes(l));
+  const lines: string[] = ["Speakers."];
+  if (!names.length) {
+    lines.push("No speaker names are available for these meetings. Do NOT attribute");
+    lines.push("anything to anyone: leave every `by` and `owner` empty and write no");
+    lines.push("'(raised by …)' marks. Never infer a name from what was said.");
+    return lines.join("\n");
+  }
+  lines.push("Lines are `[mm:ss] Label: words`. The label is the name the person");
+  lines.push("typed when they joined. These are the ONLY names you may attribute to:");
+  lines.push("");
+  for (const n of names) lines.push(`- ${n}`);
+  if (others.length) {
+    lines.push("");
+    lines.push("These labels are voices nobody could name. Use them exactly as");
+    lines.push("written or leave the item unattributed — never guess who they were:");
+    lines.push("");
+    for (const o of others) lines.push(`- ${o}`);
+  }
+  return lines.join("\n");
+}
+
 export function prdPrompt(
   transcript: string,
   dims: Dim[],
   meta: { artifact: string; gate: string },
-  ctx?: ProjectContext | null
+  ctx?: ProjectContext | null,
+  speakers?: { labels: string[]; names: string[] } | null
 ): string {
   const lines = ["Required dimensions:"];
   for (const d of dims) lines.push(`- ${d.key}: ${d.label} — ${d.desc}`);
   lines.push("");
+  const sb = speakersBlock(speakers);
+  if (sb) {
+    lines.push(sb);
+    lines.push("");
+  }
   lines.push("Meeting transcripts for this project, oldest first. Each is headed");
   lines.push("with its date and title. Where two meetings disagree, the LATER one");
   lines.push("is the current position.");
@@ -719,8 +786,15 @@ export function prdSystemPrompt(artifact: string, gate: string): string {
     "actually establish. NEVER INVENT. If the meetings did not settle " +
     "something, write 'TBD' under that heading and move on — a section marked " +
     "TBD is information; an invented one is a decision nobody made that " +
-    "somebody will now build. Attribute the load-bearing choices to the " +
-    "person who made them where the transcript is clear. TIMELINE " +
+    "somebody will now build. ATTRIBUTION: after each decision, requirement, " +
+    "open question and action item in the artifact, write who raised it as " +
+    "`_(raised by Name)_` (several: `_(raised by Name, Name)_`), and for an " +
+    "action item who took it on as `_(owner: Name)_`. Use ONLY the speaker " +
+    "labels listed in the prompt, exactly as written, and only where the " +
+    "transcript shows that label saying it. A name somebody MENTIONED is not " +
+    "a speaker. When it is unclear who raised something, write no mark at " +
+    "all — an unattributed item is honest, a wrong name puts words in " +
+    "somebody's mouth. TIMELINE " +
     "CALIBRATION: this plan is executed by Quantlys' AI agents, not a human " +
     "team — any roadmap must be dependency-ordered with effort in " +
     "MINUTES/HOURS (a full V1 is typically under 5 hours), never weeks or " +
@@ -734,14 +808,21 @@ export function prdSystemPrompt(artifact: string, gate: string): string {
     "3) DISAGREEMENTS: where the meetings show the team genuinely split on " +
     "something (0-4), name the topic, each side's position and who held it, " +
     "and whether it was resolved. Do not invent disagreements that are not " +
-    "there — a question somebody asked is not a disagreement.\n\n" +
+    "there — a question somebody asked is not a disagreement.\n" +
+    "4) ATTRIBUTIONS: list the decisions, requirements, open questions and " +
+    "action items the meetings raised (0-40), each with `by`: the speaker " +
+    "labels who raised it (empty when unclear), and for an action item " +
+    "`owner`: the speaker label who took it on (omit when unclear). Same " +
+    "rule as above — speaker labels only, never a guess.\n\n" +
     "Respond with STRICT JSON ONLY:\n" +
     '{"dimensions":[{"key":"...","status":"present|partial|missing",' +
     '"evidence":"...","question":"...","options":["...","..."],"why":"..."}],' +
     '"summary":"one-line state of the project",' +
     `"prd":"# ${artifact}\\n...markdown...",` +
     '"arguments":[{"topic":"...","side_a":{"role":"...","point":"..."},' +
-    '"side_b":{"role":"...","point":"..."},"arbitration":"..."}]}'
+    '"side_b":{"role":"...","point":"..."},"arbitration":"..."}],' +
+    '"attributions":[{"kind":"decision|requirement|open_question|action_item",' +
+    '"text":"...","by":["..."],"owner":"..."}]}'
   );
 }
 
@@ -819,6 +900,13 @@ export function prdMarkdown(report: Report, projectName: string, sources: Meetin
   const body = String(report.prd || "").trim();
   lines.push(body || `# ${report.artifact}${name ? ` — ${name}` : ""}\n\n_Not enough was said in these meetings to draft one yet._`);
   lines.push("");
+  const who = attributionSection(report);
+  if (who) {
+    lines.push("---");
+    lines.push("");
+    lines.push(who);
+    lines.push("");
+  }
   lines.push("---");
   lines.push("");
   lines.push(`## ${report.gate}: ${report.present_count} of ${report.total} · score ${report.score.toFixed(2)}`);
@@ -850,6 +938,42 @@ export function prdMarkdown(report: Report, projectName: string, sources: Meetin
     }
   }
   return lines.join("\n");
+}
+
+const KIND_HEAD: Record<AttributionKind, string> = {
+  decision: "Decisions",
+  requirement: "Requirements",
+  open_question: "Open questions",
+  action_item: "Action items",
+};
+
+/** Who raised what, as a section of the document. Empty when the report has
+ *  no attributions at all AND no note — an old report reads exactly as it
+ *  did. Every name here passed normalizeAttributions(); an item whose name
+ *  did not is shown as unattributed rather than dropped. */
+export function attributionSection(report: Report): string {
+  const rows = report.attributions || [];
+  const note = String(report.attribution_note || "").trim();
+  if (!rows.length && !note) return "";
+  const lines: string[] = ["## Who raised what", ""];
+  if (note) {
+    lines.push(`_${note}_`);
+    lines.push("");
+  }
+  for (const kind of Object.keys(KIND_HEAD) as AttributionKind[]) {
+    const items = rows.filter((r) => r.kind === kind);
+    if (!items.length) continue;
+    lines.push(`### ${KIND_HEAD[kind]}`);
+    lines.push("");
+    for (const it of items) {
+      const marks: string[] = [];
+      if (it.by.length) marks.push(`raised by ${it.by.join(", ")}`);
+      if (it.owner) marks.push(`owner: ${it.owner}`);
+      lines.push(`- ${it.text} — _${marks.length ? marks.join(" · ") : "unattributed"}_`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
 }
 
 /** A filename a person can find again. */
