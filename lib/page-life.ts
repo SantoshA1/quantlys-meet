@@ -36,6 +36,17 @@ export function onAppleMobile(): boolean {
   return isAppleMobile({ ua: navigator.userAgent, platform: navigator.platform, maxTouchPoints: navigator.maxTouchPoints });
 }
 
+/** Phones and tablets, where LiveKit re-acquires the microphone itself when
+ *  the page comes back (its isMobile()). Desktop behaviour must not change. */
+export function isMobileDevice(input: { ua?: string; maxTouchPoints?: number }): boolean {
+  return isAppleMobile(input) || /Android|Mobi/i.test(input.ua || "");
+}
+
+export function onMobileDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return isMobileDevice({ ua: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints });
+}
+
 // ── AudioContexts ──────────────────────────────────────────────────────────
 /** Anything that is not running and not closed needs a resume. "interrupted"
  *  is WebKit's (now spec'd) state for a locked screen or a phone call;
@@ -91,6 +102,18 @@ export function holdAfterReturn(visibleSince: number, now: number, hold = RETURN
   return visibleSince > 0 && now - visibleSince < hold;
 }
 
+/** Should the device supervisors keep their hands off right now?
+ *  - An iPhone page that is HIDDEN: the microphone and camera are muted by
+ *    iOS. A restart from a hidden page cannot get them back (getUserMedia is
+ *    refused or muted again), and an `ended` track during a long lock would
+ *    otherwise start one.
+ *  - Any phone in the first moments after a return: LiveKit is re-acquiring.
+ *  Desktop: never — a background tab still captures, so nothing changes. */
+export function devicesSettling(i: { apple: boolean; mobile: boolean; hidden: boolean; visibleSince: number; now: number }): boolean {
+  if (i.apple && i.hidden) return true;
+  return i.mobile && holdAfterReturn(i.visibleSince, i.now);
+}
+
 // ── the recording's clock and its holes ───────────────────────────────────
 /** Seconds since the take started, from the wall clock. A setInterval that
  *  counts its own ticks stops counting while the phone is locked, and the
@@ -128,6 +151,16 @@ export function closeGap(hiddenAtSec: number, nowSec: number): Gap | null {
  *  then slower; after this many attempts in a row without a single message
  *  back, fall back to the browser's recogniser rather than loop for ever. */
 export const DG_MAX_RECONNECTS = 4;
+
+/** A socket only counts as healthy again (and the attempts reset) once it
+ *  has stayed open this long. Resetting on the first message let a socket
+ *  that answers once and then drops loop for ever, one token per loop, into
+ *  a rate-limited endpoint. */
+export const DG_HEALTHY_MS = 15_000;
+
+export function dgHealthy(openedAt: number, now: number): boolean {
+  return openedAt > 0 && now - openedAt >= DG_HEALTHY_MS;
+}
 
 export function dgReconnectDelay(attempt: number): number {
   const steps = [250, 1000, 3000, 6000];
@@ -167,18 +200,29 @@ export function subscribePageLife(handlers: { onHide?: () => void; onShow?: () =
 export function createWakeLock(nav: { wakeLock?: { request: (t: "screen") => Promise<{ release: () => Promise<void>; released?: boolean }> } } | undefined) {
   let sentinel: { release: () => Promise<void>; released?: boolean } | null = null;
   let wanted = false;
-  const request = async () => {
+  // One request at a time. Two in flight (a mount and a return in the same
+  // moment) used to produce two locks, and release() only knew the second:
+  // the first kept the screen on after the call ended.
+  let inflight: Promise<boolean> | null = null;
+  const request = async (): Promise<boolean> => {
     wanted = true;
     if (!nav?.wakeLock?.request) return false;
     if (sentinel && !sentinel.released) return true;
-    try {
-      sentinel = await nav.wakeLock.request("screen");
-      if (!wanted) { try { await sentinel.release(); } catch {} sentinel = null; return false; }
-      return true;
-    } catch {
-      sentinel = null;   // not visible, not allowed, low battery: try on the next return
-      return false;
-    }
+    if (inflight) return inflight;
+    inflight = (async () => {
+      try {
+        const s = await nav.wakeLock!.request("screen");
+        if (!wanted) { try { await s.release(); } catch {} return false; }
+        sentinel = s;
+        return true;
+      } catch {
+        sentinel = null;   // not visible, not allowed, low battery: try on the next return
+        return false;
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
   };
   const release = async () => {
     wanted = false;

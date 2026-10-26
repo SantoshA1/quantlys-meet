@@ -67,7 +67,7 @@ import { recentTranscript, type Catchup } from "@/lib/catchup";
 import {
   onAppleMobile, keepAudioAlive, resumeAudioContexts, needsResume, subscribePageLife, createWakeLock,
   AWAY_ATTR, AWAY_LOCKED, awayLabel, elapsedSeconds, closeGap, gapLine, type Gap,
-  DG_MAX_RECONNECTS, dgReconnectDelay, LOCK_NOTICE, LOCK_NOTICE_KEY,
+  DG_MAX_RECONNECTS, dgReconnectDelay, dgHealthy, LOCK_NOTICE, LOCK_NOTICE_KEY,
 } from "@/lib/page-life";
 
 // SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
@@ -696,16 +696,29 @@ function PageLife() {
 
   useEffect(() => {
     if (!room) return;
-    const lock = createWakeLock(typeof navigator !== "undefined" ? (navigator as any) : undefined);
-    void lock.request();
     const apple = onAppleMobile();
+    // iPhone/iPad only: desktop and Android behave exactly as before (a
+    // desktop call is not where the screen auto-locking was the problem).
+    const lock = apple ? createWakeLock(typeof navigator !== "undefined" ? (navigator as any) : undefined) : null;
+    void lock?.request();
     const setAway = (v: string) => {
       // Needs canUpdateOwnMetadata on the token. An older token without it
       // refuses, and the meeting carries on without the tag.
       try { localParticipant?.setAttributes?.({ [AWAY_ATTR]: v })?.catch?.(() => {}); } catch { /* tag only */ }
     };
+    // Clear a "locked" tag that is still on the server. Checked against the
+    // participant's own attributes, not a local flag: a clear sent while the
+    // connection was still coming back can be lost, and the tag would then
+    // say "phone locked" for the rest of the meeting.
+    const clearIfStale = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const mine = (localParticipant as any)?.attributes?.[AWAY_ATTR];
+      if (marked.current || mine === AWAY_LOCKED) { marked.current = false; setAway(""); }
+    };
+    let retry: ReturnType<typeof setTimeout> | null = null;
     const off = subscribePageLife({
       onHide: () => {
+        if (retry) { clearTimeout(retry); retry = null; }
         // Only where hiding really mutes the microphone. A desktop tab in the
         // background is still sending, and must not be labelled "locked".
         if (!apple) return;
@@ -717,11 +730,20 @@ function PageLife() {
         // LiveKit does this too, from its own listener, but only when its
         // silent element exists; asking twice costs nothing.
         room.startAudio().catch(() => {});
-        void lock.request();
-        if (marked.current) { marked.current = false; setAway(""); }
+        void lock?.request();
+        clearIfStale();
+        // And once more when things have settled, in case that one was lost.
+        if (retry) clearTimeout(retry);
+        retry = setTimeout(() => { retry = null; clearIfStale(); }, 3000);
       },
     });
-    return () => { off(); void lock.release(); };
+    room.on(RoomEvent.Reconnected, clearIfStale);
+    return () => {
+      off();
+      if (retry) clearTimeout(retry);
+      room.off(RoomEvent.Reconnected, clearIfStale);
+      void lock?.release();
+    };
   }, [room, localParticipant]);
 
   if (!notice) return null;
@@ -1569,6 +1591,9 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
   // the record rather than leave a silent stretch for the notes to guess at.
   useEffect(() => {
     if (!recording) return;
+    // Only where hiding stops the microphone. A desktop tab in the background
+    // keeps recording sound; marking a "gap" there would be false.
+    if (!onAppleMobile()) return;
     return subscribePageLife({
       onHide: () => {
         if (hiddenAtSec.current < 0) hiddenAtSec.current = elapsedSeconds(takeStartedAt.current, Date.now());
@@ -1640,6 +1665,13 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     announce(false);
     if (ticker.current) clearInterval(ticker.current);
     elapsedRef.current = elapsedSeconds(takeStartedAt.current, Date.now());
+    // Stopped while still hidden (the room dropped during a lock): the hole
+    // runs to the end of the take.
+    {
+      const g = closeGap(hiddenAtSec.current, elapsedRef.current);
+      hiddenAtSec.current = -1;
+      if (g) recGaps.current = [...recGaps.current, g];
+    }
     const p = waitForSave();
     try { aRec.current?.stop(); } catch { /* already stopped */ }
     try { rec.stop(); } catch {
@@ -2950,6 +2982,9 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       },
       body: JSON.stringify({ room }),
     });
+    // A 429 (the shared rate limit), 401 or 5xx is "not now", not "no
+    // Deepgram": throw, so a reconnect backs off and tries again.
+    if (!r.ok) throw new Error(`captions token ${r.status}`);
     const j = await r.json();
     return { engine: String(j?.engine || ""), token: String(j?.token || ""), scheme: j?.scheme === "bearer" ? "bearer" : "token" };
   }, [room]);
@@ -2967,6 +3002,8 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     let retries = 0;
     let retryT: ReturnType<typeof setTimeout> | null = null;
     let waitVisible: (() => void) | null = null;
+    let fetching = false;
+    let openedAt = 0;
 
     try {
       // A second getUserMedia here can fire a permission failure even while
@@ -3003,6 +3040,9 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
 
     const reconnect = () => {
       if (stopped) return;
+      // One reconnect at a time: a close that lands while one is already
+      // scheduled or fetching its key must not start a second.
+      if (retryT || fetching) return;
       if (retries >= DG_MAX_RECONNECTS) {
         fallBack("Deepgram kept dropping the caption connection — switching to your browser's own recogniser.");
         return;
@@ -3018,14 +3058,21 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       retryT = setTimeout(async () => {
         retryT = null;
         if (stopped) return;
-        try {
-          const t = await captionToken();
-          if (stopped) return;
-          if (t.engine !== "deepgram" || !t.token) { fallBack("Deepgram stopped issuing caption keys — switching to your browser's own recogniser."); return; }
-          open(t.token, t.scheme);
-        } catch {
-          reconnect();
+        fetching = true;
+        let t: Awaited<ReturnType<typeof captionToken>> | null = null;
+        try { t = await captionToken(); } catch { t = null; }
+        fetching = false;
+        if (stopped) return;
+        // Network error, rate limit, 5xx: back off and try again (bounded).
+        if (!t) { reconnect(); return; }
+        if (t.engine !== "deepgram" || !t.token) {
+          // The server now says relay or browser: pick again, exactly as a
+          // fresh start would, instead of assuming the browser.
+          const c = ctrlRef.current;
+          if (c) { c.disable(); c.enable(); } else fallBack("Deepgram stopped issuing caption keys — switching to your browser's own recogniser.");
+          return;
         }
+        open(t.token, t.scheme);
       }, delay);
     };
 
@@ -3036,6 +3083,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       ws = sock;
       sock.onopen = () => {
         if (stopped || !stream || ws !== sock) return;
+        openedAt = Date.now();
         const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
           ? "audio/webm;codecs=opus"
           : "audio/webm";
@@ -3047,7 +3095,8 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
         mr = rec;
       };
       sock.onmessage = (e) => {
-        retries = 0;   // it answered: the connection is good again
+        // Healthy again only after it has stayed up a while (dgHealthy).
+        if (dgHealthy(openedAt, Date.now())) retries = 0;
         try {
           const m = JSON.parse(e.data);
           const text = String(m?.channel?.alternatives?.[0]?.transcript || "").trim();
@@ -3065,6 +3114,7 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
         if (stopped || ws !== sock) return;
         try { mr?.stop(); } catch {}
         mr = null;
+        openedAt = 0;
         reconnect();
       };
     };
@@ -3256,7 +3306,9 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     };
     watchMic();
     lkRoom.on(RoomEvent.LocalTrackPublished, onPub);
-    const off = subscribePageLife({ onShow: again });
+    // The return itself only on iPhone/iPad, where hiding muted the source.
+    // A desktop tab coming back keeps its captions untouched.
+    const off = onAppleMobile() ? subscribePageLife({ onShow: again }) : () => {};
     return () => {
       if (t) clearTimeout(t);
       off();
@@ -3331,7 +3383,7 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 
 const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 /* iPhone: the one-time lock notice, and who is paused by a locked phone. */
-.qmr-locknote { position:absolute; left:50%; transform:translateX(-50%); top:112px; z-index:80;
+.qmr-locknote { position:absolute; left:50%; transform:translateX(-50%); bottom:150px; z-index:76;
   display:flex; gap:12px; align-items:center; max-width:min(560px, calc(100% - 24px));
   background:#1d2333; border:1px solid #3b4660; color:#e6eaf3; border-radius:11px;
   padding:10px 14px; font-size:13px; line-height:1.5; box-shadow:0 14px 36px rgba(0,0,0,.55); }
@@ -3363,7 +3415,7 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 .q-chipbad { border-color:#5a2a2f !important; color:#ffb4b4 !important; }
 /* The playback gate. Impossible to miss on purpose: a person who cannot hear
    the meeting is thirty seconds from leaving it. */
-.qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:112px; z-index:80;
+.qmr-playgate { position:absolute; left:50%; transform:translateX(-50%); top:64px; z-index:80;
   width:min(560px, calc(100% - 24px)); display:flex; flex-direction:column; gap:4px; text-align:left;
   font:inherit; cursor:pointer; background:#0d2a2a; border:1px solid #00a99d; color:#c8f5f0;
   border-radius:12px; padding:13px 15px; box-shadow:0 14px 36px rgba(0,0,0,.55); }
