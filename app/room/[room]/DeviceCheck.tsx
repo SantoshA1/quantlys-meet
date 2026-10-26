@@ -155,6 +155,16 @@ export default function DeviceCheck({
     }
   }, [stop]);
 
+  // The preview meter's context outlived this screen: still running for the
+  // whole meeting, unregistered, never resumed or closed. On an iPhone that
+  // is one more live audio context holding the session. Close it on the way
+  // into the room.
+  useEffect(() => () => {
+    const ac = ctx.current;
+    ctx.current = null;
+    try { ac?.close().catch(() => {}); } catch { /* already closed */ }
+  }, []);
+
   useEffect(() => {
     start(recall(SAVED.mic), recall(SAVED.cam));
     return stop;

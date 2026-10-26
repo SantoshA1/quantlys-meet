@@ -67,8 +67,9 @@ import { recentTranscript, type Catchup } from "@/lib/catchup";
 import {
   onAppleMobile, keepAudioAlive, resumeAudioContexts, needsResume, subscribePageLife, createWakeLock,
   AWAY_ATTR, AWAY_LOCKED, awayLabel, elapsedSeconds, closeGap, gapLine, type Gap,
-  DG_MAX_RECONNECTS, dgReconnectDelay, dgHealthy, LOCK_NOTICE, LOCK_NOTICE_KEY,
+  LOCK_NOTICE, LOCK_NOTICE_KEY,
 } from "@/lib/page-life";
+import { createDgSession } from "@/lib/dg-reconnect";
 
 // SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
 // throw from inside a mount effect when it was absent — which crashed the
@@ -2995,15 +2996,6 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
     let stream: MediaStream | null = null;
     let stopped = false;
     let utter = `${me}-${seq.current++}`;
-    // Reconnects in a row without one message back. FIELD 2026-10-25: the
-    // socket died while an iPhone was locked, onerror switched captions to
-    // the browser's recogniser for the rest of the meeting, and a clean close
-    // (no error) left them dead with nothing on screen.
-    let retries = 0;
-    let retryT: ReturnType<typeof setTimeout> | null = null;
-    let waitVisible: (() => void) | null = null;
-    let fetching = false;
-    let openedAt = 0;
 
     try {
       // A second getUserMedia here can fire a permission failure even while
@@ -3038,67 +3030,36 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       ctrlRef.current?.replace(startBrowser());
     };
 
-    const reconnect = () => {
-      if (stopped) return;
-      // One reconnect at a time: a close that lands while one is already
-      // scheduled or fetching its key must not start a second.
-      if (retryT || fetching) return;
-      if (retries >= DG_MAX_RECONNECTS) {
-        fallBack("Deepgram kept dropping the caption connection — switching to your browser's own recogniser.");
-        return;
-      }
-      // A hidden page cannot hold a socket open on iOS; spending the retries
-      // while the phone is locked would only reach the fallback sooner.
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        if (waitVisible) return;
-        waitVisible = subscribePageLife({ onShow: () => { waitVisible?.(); waitVisible = null; reconnect(); } });
-        return;
-      }
-      const delay = dgReconnectDelay(retries++);
-      retryT = setTimeout(async () => {
-        retryT = null;
-        if (stopped) return;
-        fetching = true;
-        let t: Awaited<ReturnType<typeof captionToken>> | null = null;
-        try { t = await captionToken(); } catch { t = null; }
-        fetching = false;
-        if (stopped) return;
-        // Network error, rate limit, 5xx: back off and try again (bounded).
-        if (!t) { reconnect(); return; }
-        if (t.engine !== "deepgram" || !t.token) {
-          // The server now says relay or browser: pick again, exactly as a
-          // fresh start would, instead of assuming the browser.
-          const c = ctrlRef.current;
-          if (c) { c.disable(); c.enable(); } else fallBack("Deepgram stopped issuing caption keys — switching to your browser's own recogniser.");
+    // Reconnect rules: lib/dg-reconnect.ts (FIELD 2026-10-25, iPhone lock).
+    const session = createDgSession<WebSocket>({
+      connect: (tok, sch) => new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, [sch, tok]),
+      fetchToken: captionToken,
+      onOpen: (sock) => {
+        if (stopped || !stream) return;
+        try { mr?.stop(); } catch {}
+        let rec: MediaRecorder;
+        try {
+          const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+            ? "audio/webm;codecs=opus"
+            : "audio/webm";
+          rec = new MediaRecorder(stream, { mimeType: mime });
+        } catch {
+          // iOS before 18.4 records MP4 only, which this stream does not
+          // send. Say so and use the browser's recogniser, rather than an
+          // open socket that never hears anything.
+          fallBack("This browser can't stream audio to Deepgram — switching to your browser's own recogniser.");
           return;
         }
-        open(t.token, t.scheme);
-      }, delay);
-    };
-
-    const open = (tok: string, sch: "token" | "bearer") => {
-      try { mr?.stop(); } catch {}
-      mr = null;
-      const sock = new WebSocket(`wss://api.deepgram.com/v1/listen?${qs}`, [sch, tok]);
-      ws = sock;
-      sock.onopen = () => {
-        if (stopped || !stream || ws !== sock) return;
-        openedAt = Date.now();
-        const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : "audio/webm";
-        const rec = new MediaRecorder(stream, { mimeType: mime });
         rec.ondataavailable = (e) => {
           if (e.data.size > 0 && sock.readyState === WebSocket.OPEN) sock.send(e.data);
         };
         rec.start(250);   // a quarter second — the latency people actually feel
         mr = rec;
-      };
-      sock.onmessage = (e) => {
-        // Healthy again only after it has stayed up a while (dgHealthy).
-        if (dgHealthy(openedAt, Date.now())) retries = 0;
+        ws = sock;
+      },
+      onMessage: (data) => {
         try {
-          const m = JSON.parse(e.data);
+          const m = JSON.parse(data);
           const text = String(m?.channel?.alternatives?.[0]?.transcript || "").trim();
           if (!text) return;
           const isFinal = Boolean(m?.is_final || m?.speech_final);
@@ -3107,24 +3068,23 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
         } catch {
           /* ignore */
         }
-      };
-      // onerror is always followed by onclose; the close decides.
-      sock.onerror = () => {};
-      sock.onclose = () => {
-        if (stopped || ws !== sock) return;
-        try { mr?.stop(); } catch {}
-        mr = null;
-        openedAt = 0;
-        reconnect();
-      };
-    };
-
-    open(token, scheme);
+      },
+      onDrop: () => { try { mr?.stop(); } catch {} mr = null; ws = null; },
+      onGiveUp: () => fallBack("Deepgram kept dropping the caption connection — switching to your browser's own recogniser."),
+      // The server now says relay or browser: pick again, as a fresh start would.
+      onRepick: () => {
+        if (stopped) return;
+        const c = ctrlRef.current;
+        if (c) { c.disable(); c.enable(); } else fallBack("Deepgram stopped issuing caption keys — switching to your browser's own recogniser.");
+      },
+      isHidden: () => typeof document !== "undefined" && document.visibilityState === "hidden",
+      whenVisible: (cb) => subscribePageLife({ onShow: cb }),
+    });
+    session.start(token, scheme);
 
     return () => {
       stopped = true;
-      if (retryT) clearTimeout(retryT);
-      waitVisible?.();
+      session.stop();
       try { mr?.stop(); } catch {}
       try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
       try { ws?.close(); } catch {}
@@ -3250,7 +3210,9 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
       let scheme: "token" | "bearer" = "token";
       try {
         const j = await starters.current.captionToken();
-        if (j.engine === "deepgram" && j.token) {
+        // Deepgram is fed by MediaRecorder; a browser without one (older
+        // WebKit) would open the socket and then throw in onOpen.
+        if (j.engine === "deepgram" && j.token && typeof MediaRecorder !== "undefined") {
           picked = "deepgram";
           token = j.token;
           scheme = j.scheme;
@@ -3288,6 +3250,11 @@ function useCaptions(room: string, me: string, myName: string): CaptionsApi {
         t = null;
         const c = ctrlRef.current;
         if (!c?.isOn()) return;
+        // A locked iPhone: LiveKit can restart the mic from the hidden page
+        // (its TrackEnded handler). Restarting captions then would fetch a
+        // key and open a socket that iOS freezes at once; the return
+        // (onShow below) restarts them on the live track instead.
+        if (onAppleMobile() && document.visibilityState === "hidden") return;
         c.disable();
         c.enable();
       }, 800);
@@ -3384,7 +3351,7 @@ function CaptionBar({ cc, open, onOpen }: { cc: CaptionsApi; open: boolean; onOp
 const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 /* iPhone: the one-time lock notice, and who is paused by a locked phone. */
 .qmr-locknote { position:absolute; left:50%; transform:translateX(-50%); bottom:150px; z-index:76;
-  display:flex; gap:12px; align-items:center; max-width:min(560px, calc(100% - 24px));
+  display:flex; gap:12px; align-items:center; width:min(560px, calc(100% - 24px)); box-sizing:border-box;
   background:#1d2333; border:1px solid #3b4660; color:#e6eaf3; border-radius:11px;
   padding:10px 14px; font-size:13px; line-height:1.5; box-shadow:0 14px 36px rgba(0,0,0,.55); }
 .qmr-away { position:absolute; left:12px; top:12px; z-index:40; display:flex; flex-wrap:wrap; gap:6px;

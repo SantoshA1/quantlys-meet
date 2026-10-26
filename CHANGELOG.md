@@ -20,6 +20,12 @@ iOS mutes a web page's microphone while the phone is locked or the browser is in
 - **Others see "paused, phone locked"** while an iPhone or iPad participant is locked, rather than silence with no explanation.
 - **Recordings:** the timer uses the real clock, so it no longer loses the locked minutes. A locked stretch shows in the notes as a timed "Recording gap" line.
 - **Heads-up for iPhone users.** There is a notice on the device check and a one-time tip in the room. Where the browser supports it, the room keeps the screen awake so it doesn't auto-lock mid-call.
+- **Pressure-tested in WebKit (iPhone profile) and Chromium** (`scripts/ios-lock-sim/`). What that changed:
+  - Caption reconnects are single-flight and bounded (4 tries with backoff, then the browser recogniser). A busy key service (429) backs off instead of ending Deepgram for the meeting, and nothing reconnects from a hidden page or after you leave.
+  - Captions are not restarted from a locked page when LiveKit restarts the microphone there; the unlock restarts them once.
+  - Deepgram is only used where the browser can record WebM (iOS 18.4+); older iPhones get the browser recogniser instead of a silent socket.
+  - The device check's preview audio engine is closed when you enter the room.
+  - The screen wake lock, the "phone locked" tag, recording gap lines and the caption restart on return are iPhone/iPad only. Desktop and Android behave as before.
 
 ### Notes
 - Existing installs (including the hosted site) need nothing. On a new project, `meetings` rows are readable only by their creator; guests find a meeting through `meeting_by_code()`.
