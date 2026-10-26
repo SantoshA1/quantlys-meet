@@ -14,6 +14,7 @@
 // piece of evidence that distinguishes a broken microphone from a quiet room.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { onAppleMobile, LOCK_NOTICE } from "@/lib/page-life";
 import {
   describeMediaError, audioConstraints, videoConstraints, deviceLabel,
   pickDevice, levelFrom, bars, speakerPickerWorks, speakerNote, isBluetooth,
@@ -49,6 +50,9 @@ export default function DeviceCheck({
   const [camId, setCamId] = useState(recall(SAVED.cam));
   const [spkId, setSpkId] = useState(recall(SAVED.spk));
   const [micOn, setMicOn] = useState(true);
+  // After mount, not during render: the server has no navigator to ask.
+  const [apple, setApple] = useState(false);
+  useEffect(() => { setApple(onAppleMobile()); }, []);
   const [camOn, setCamOn] = useState(true);
   const [level, setLevel] = useState(0);
   const [peak, setPeak] = useState(0);
@@ -150,6 +154,16 @@ export default function DeviceCheck({
       } catch { /* no meter is survivable; no microphone is not */ }
     }
   }, [stop]);
+
+  // The preview meter's context outlived this screen: still running for the
+  // whole meeting, unregistered, never resumed or closed. On an iPhone that
+  // is one more live audio context holding the session. Close it on the way
+  // into the room.
+  useEffect(() => () => {
+    const ac = ctx.current;
+    ctx.current = null;
+    try { ac?.close().catch(() => {}); } catch { /* already closed */ }
+  }, []);
 
   useEffect(() => {
     start(recall(SAVED.mic), recall(SAVED.cam));
@@ -286,6 +300,7 @@ export default function DeviceCheck({
         </div>
       ) : null}
       {switched ? <p className="qmd-note">{switched}</p> : null}
+      {apple ? <p className="qmd-note">{LOCK_NOTICE}</p> : null}
       {!micErr && isBluetooth(micLabel) ? (
         <p className="qmd-note">
           {micLabel} is a Bluetooth device. If people stop hearing you mid-call,
