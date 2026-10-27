@@ -114,7 +114,7 @@ export function Foot() {
             <Link href="/self-hosted-video-conferencing">Self-hosted video conferencing</Link><a href={GH}>GitHub</a><a href={RELEASE}>v1.0.0-oss</a>
           </div>
           <div>
-            <Link href="/about">About</Link><Link href="/privacy">Privacy</Link><a href="https://www.quantlys.ai/">Built on Quantlys</a>
+            <Link href="/about">About</Link><Link href="/privacy">Privacy</Link><a href="https://www.quantlys.ai/demo?utm_source=quantlysmeeting&utm_medium=footer&utm_campaign=built_with">Built with Quantlys</a>
           </div>
         </div>
       </div>
