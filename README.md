@@ -5,7 +5,7 @@
 
 A browser video meeting that writes its own PRD. While you talk, it asks follow-up questions to fill gaps in the spec; when you stop, you get a markdown PRD (problem, user stories, acceptance criteria, decisions, open questions). There's also **Memory mode** for stories and notes, a private **"What did I miss?"** recap, a caption glossary for names and jargon, and recording that survives a crashed tab. Guests join from a link; only the host signs in. Bring your own keys (LiveKit, Deepgram, Supabase, OpenRouter or OpenAI).
 
-Hosted version: [quantlys-meeting.com](https://quantlys-meeting.com) · What changed: [`CHANGELOG.md`](CHANGELOG.md) · Announce drafts (human paste only): [`docs/ANNOUNCE_DRAFT.md`](docs/ANNOUNCE_DRAFT.md)
+Built with Quantlys: [how this app was built](https://www.quantlys.ai/built-with-quantlys/quantlys-meeting) · Hosted version: [quantlys-meeting.com](https://quantlys-meeting.com) · What changed: [`CHANGELOG.md`](CHANGELOG.md) · Announce drafts (human paste only): [`docs/ANNOUNCE_DRAFT.md`](docs/ANNOUNCE_DRAFT.md)
 
 ## Demo
 

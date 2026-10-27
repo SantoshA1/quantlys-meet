@@ -779,7 +779,7 @@ export default function HomeLanding() {
               <p className="qh-k">Company</p>
               <Link href="/about">About</Link>
               <Link href="/privacy">Privacy</Link>
-              <a href="https://www.quantlys.ai/">Built on Quantlys</a>
+              <a href="https://www.quantlys.ai/demo?utm_source=quantlysmeeting&utm_medium=footer&utm_campaign=built_with">Built with Quantlys</a>
               <a href="https://santoshadari.com/">Santosh Adari</a>
             </div>
           </div>
