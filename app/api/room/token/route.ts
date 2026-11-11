@@ -211,6 +211,10 @@ export async function POST(req: Request) {
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
+    // Lets the page set its own `qm.away` attribute ("paused, phone locked",
+    // lib/page-life.ts). It also allows changing one's own display name, which
+    // a guest already picks freely on the way in.
+    canUpdateOwnMetadata: true,
   });
 
   return Response.json({ token: await at.toJwt(), url });

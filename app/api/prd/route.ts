@@ -24,6 +24,9 @@ import {
   prdFilename, prdPath, answeredKeys, type MeetingSource,
 } from "@/lib/prd";
 import { readContext } from "@/lib/project-context";
+import {
+  attributedTranscript, allowedLabels, attributionNote, type Attributed,
+} from "@/lib/prd-speakers";
 import { describeWorkflow, toMermaid, whiteboardNotes, type Workflow } from "@/lib/workflow";
 import {
   myRooms, roomsForProject, resolveProject, roomFromPath, mayReadRecording, type MeetingRow,
@@ -148,6 +151,7 @@ export async function POST(req: Request) {
     workflow?: Workflow | null;
     strokes?: any[] | null;
     boardSnapshotPath?: string | null;
+    speakers?: Attributed;
   }> = [];
   for (const p of paths) {
     try {
@@ -159,6 +163,15 @@ export async function POST(req: Request) {
       // no tag in the file, for ever. But the room is in the path, and the
       // meetings table knows that room's project.
       const resolved = resolveProject(j?.project, roomFromPath(p) || String(j?.room || ""), meetings);
+      // WHO SAID IT. `transcript` on a Deepgram-transcribed meeting is the
+      // paragraph text — "Speaker 0: …" — and the names lib/speakers.ts put
+      // back live on `utterances[].who`. Read those, so the model sees the
+      // names people joined with; fall back to the bare transcript for a
+      // summary that predates them. No new data: both fields are already in
+      // the summary this route has always read.
+      const speakers = attributedTranscript({
+        transcript: j?.transcript, utterances: j?.utterances, people: j?.people,
+      });
       all.push({
         path: p,
         project: resolved.project,
@@ -166,7 +179,8 @@ export async function POST(req: Request) {
         title: String(j?.title || j?.room || "").trim(),
         room: String(j?.room || "").trim(),
         at: String(j?.at || j?.finishedAt || "").trim() || p.split("/").pop()?.slice(0, 10) || "",
-        transcript: String(j?.transcript || "").trim(),
+        transcript: speakers.text.trim(),
+        speakers,
         workflow: (j?.workflow && typeof j.workflow === "object") ? (j.workflow as Workflow) : null,
         strokes: Array.isArray(j?.strokes) ? j.strokes : null,
         boardSnapshotPath: typeof j?.boardSnapshotPath === "string" ? j.boardSnapshotPath : null,
@@ -225,6 +239,12 @@ export async function POST(req: Request) {
   // told us what they are building has told us.
   const explicit = String(body?.mode || "").trim();
   const stitched = stitchTranscripts(newest, 120000);
+  // Only the meetings that actually made it into the prompt count — a name
+  // from a meeting dropped for budget was never in front of the model, so
+  // an attribution to it could only have been a guess.
+  const inPrompt = newest.slice(newest.length - stitched.used).map((m) => m.speakers!).filter(Boolean);
+  const allowed = allowedLabels(inPrompt);
+  const speakerCtx = { ...allowed, note: attributionNote(inPrompt) };
   // The most recent whiteboard that actually contained a flow. Later wins,
   // same as the transcripts — a team that redraws the diagram has changed
   // its mind about the diagram.
@@ -293,8 +313,8 @@ export async function POST(req: Request) {
       );
     }
     const userText = boardTextParts.length
-      ? `${prdPrompt(stitched.text, dims, meta, ctx)}\n\n---\n\n${boardTextParts.join("\n\n")}`
-      : prdPrompt(stitched.text, dims, meta, ctx);
+      ? `${prdPrompt(stitched.text, dims, meta, ctx, allowed)}\n\n---\n\n${boardTextParts.join("\n\n")}`
+      : prdPrompt(stitched.text, dims, meta, ctx, allowed);
 
     const userContent: any = boardImageDataUrl
       ? [
@@ -333,7 +353,7 @@ export async function POST(req: Request) {
       const j: any = await r.json();
       const parsed = extractJson(String(j?.choices?.[0]?.message?.content || ""));
       report = parsed?.dimensions
-        ? normalizeReport(parsed, mode, chosen.id)
+        ? normalizeReport(parsed, mode, chosen.id, speakerCtx)
         : fallbackReport("The model's reply couldn't be read as an assessment.", mode);
     }
   } catch (e: any) {

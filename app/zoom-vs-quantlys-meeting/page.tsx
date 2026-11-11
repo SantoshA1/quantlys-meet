@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { IntentShell, intentMetadata } from "../_seo/IntentShell";
 import {
-  CompareJsonLd, CompareTable, FaqSection, HowWeCompared, PERSON_ID, REPO, SeeAlso, TrademarkNote,
+  CompareJsonLd, CompareTable, FaqSection, HowWeCompared, PERSON_ID, PrdExport, REPO, SeeAlso, TrademarkNote,
   no, txt, unlisted, yes, type Faq, type Row,
 } from "../_seo/Compare";
 
@@ -59,7 +59,7 @@ const faq: Faq[] = [
   },
   {
     q: "What does Quantlys Meeting do in a spec meeting that Zoom does not?",
-    a: "A live agent can put one follow-up question on screen during a pause when a spec section is still missing, and the recorded sessions on a project roll into one markdown PRD you can paste into Linear, GitHub or Quantlys Conclave. Zoom's own feature pages list AI summaries and in-meeting queries, not a PRD writer.",
+    a: "A live agent can put one follow-up question on screen during a pause when a spec section is still missing, and the recorded sessions on a project roll into one markdown PRD you can export to GitHub, Linear, Jira or Notion. Zoom's own feature pages list AI summaries and in-meeting queries, not a PRD writer.",
   },
   {
     q: "Do guests need an account or an app?",
@@ -124,11 +124,11 @@ export default function Page() {
           Zoom. When a meeting&apos;s job is to decide what to build, send a
           Quantlys Meeting link instead. Record it, and{" "}
           <Link href="/prd-from-meeting">build the PRD from the session</Link>.
-          Then download the markdown and paste it into Linear, GitHub or{" "}
-          <a href="https://www.quantlys.ai">Quantlys</a> Conclave. There is no
-          one-click export; it&apos;s a markdown file you paste.
+          Then export it to GitHub, Linear, Jira or Notion, or paste the
+          markdown into <a href="https://www.quantlys.ai">Quantlys</a> Conclave.
         </p>
 
+        <PrdExport />
         <FaqSection items={faq} />
         <SeeAlso />
         <TrademarkNote names="Zoom, Otter, Granola and Fireflies" />

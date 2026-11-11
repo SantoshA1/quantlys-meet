@@ -2,7 +2,7 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
-## v1.2.1 (2026-10-19)
+## v1.2.1 (2026-11-11)
 
 **Direct push tells you what's wrong with a token before you push, and a push that fails halfway can be retried without duplicates.** Found by pushing a test PRD to a real private GitHub repo on the hosted site.
 
@@ -22,6 +22,43 @@ All notable changes to Quantlys Meeting. Dates are US Eastern.
 - **The "full PRD" link at the bottom of every exported item works everywhere.** It was a bare URL inside `_…_`. Linear pulled the closing `_` into the link (`…/host#prd_`) and showed a stray `\_`, and Jira showed it as italic text with no link. It's now a real markdown link, "Exported from Quantlys Meeting · [full PRD](…)": a link in GitHub and Linear, a link mark in Jira, and a linked text run in Notion. The "…truncated" note links the same way. Found by pushing to a real Linear team.
 - **Linear sub-issues no longer start with "Story:".** A Linear sub-issue isn't typed as a story, so its title is just the story, in the preview too. Jira keeps "Story:" only when the issue type really is Story. GitHub keeps it, because issues there have no type and the label tells story issues apart from the PRD issue in the list.
 - **A recreated PRD issue gets its stories back.** If the PRD issue was deleted and a re-push makes a new one, the existing story issues are attached to it as GitHub sub-issues (moved from the old parent), moved under the new parent in Linear, and under the new Epic in Jira.
+
+### Security
+- **Next.js 16.4.0 → 16.4.3.** 16.4.0 is in the affected range of three advisories published 2026-10-22, all fixed in 16.4.1: [GHSA-2464-fhr4-w9xw](https://github.com/advisories/GHSA-2464-fhr4-w9xw) (critical, unauthenticated RCE in the Image Optimization API when SVG files are used), [GHSA-673q-mjm6-r5xr](https://github.com/advisories/GHSA-673q-mjm6-r5xr) (critical, unauthenticated RCE in `use cache` functions returning typed arrays) and [GHSA-p3m5-59mp-jv5r](https://github.com/advisories/GHSA-p3m5-59mp-jv5r) / CVE-2026-94482 (high, App Router DoS via Server Actions). Only `next`, `@next/env` and the SWC binaries change in the lockfile; React stays at 19.3.0.
+
+**A fresh self-host now works from one SQL file.** Found by installing from zero on a clean local Supabase stack.
+
+### Fixed
+- **`supabase/schema.sql` now sets up a brand-new project completely, and is safe to re-run.** It was missing the `action_items` table (the action queue and Monday digest), the `meeting_by_code()` lookup that guests use to join from a code, the `recordings` storage bucket and its policies, the rate limiter, and the meetings columns for scheduling, projects and invites (`scheduled_at`, `project`, `invited`, `invite_seq`, `invited_at`). Re-running its `create policy` lines used to fail; it now only adds what's missing and never drops or rewrites anything.
+- **Sign-in email template.** Hosts type a 6-digit code, but Supabase's default emails only carry a link. Added `supabase/templates/sign-in-code.html` and the setup step.
+- **Docs.** The README, `docs/SELF_HOST.md` and `.env.example` no longer say recordings need S3 or LiveKit Egress (the host's browser records to Supabase Storage). The in-app "run the SQL step" notes name the real file.
+- **README demo.** The demo slot now shows a real recording of the hosted app (`docs/images/demo-v3.gif`, full video `docs/images/quantlys-meeting-demo-v3.mp4`), labelled as AI-generated voices recorded on the live app.
+
+### Added — speaker names in the PRD
+The project PRD now says who raised each decision, requirement, open question and action item, using the name each person typed when they joined.
+- **The names were already there.** Every recording's summary carries named transcript lines (Deepgram's voices matched to the live captions). The PRD used to read the plain transcript, which says "Speaker 0", so the model never saw a name. It now reads the named lines.
+- **No invented names.** The model may only use speaker labels from the meetings it read. The server checks every name it returns, in the structured list and in the `(raised by …)` marks in the document, and removes any that didn't speak; the item stays, marked unattributed. A name someone only *mentioned* is not a speaker.
+- **Honest fallbacks.** A voice nobody could match stays "Speaker N". When one person joined but several voices were heard (a laptop in a meeting room), the voices are labelled "Speaker N on Kiran's mic", not credited to Kiran. Older recordings with no names produce no attributions.
+- **Where it shows:** a "Who raised what" section in the PRD markdown (so Copy, Download, Email, the shared link and the GitHub, Linear, Jira and Notion pushes all carry it), `(raised by …)` marks on user stories (so pushed child issues keep them), and a speakers line in the host console. The example PRD page shows the format.
+- **Privacy:** nothing new is stored. The names are the display names already saved in each recording's summary.
+
+### Fixed — iPhone screen lock
+iOS mutes a web page's microphone while the phone is locked or the browser is in the background. That is WebKit's rule and no web page can turn it off. These fixes are about what happens after you unlock. Not yet tested on a real iPhone.
+- **Voice comes back on unlock.** Every audio engine the room uses is resumed from iOS's "interrupted" state (the old code only handled "suspended"), and speaker playback is restarted.
+- **Captions come back.** If the Deepgram connection drops, it reconnects with a fresh key instead of switching to the browser recogniser for the rest of the meeting. Captions also restart when the page returns or the microphone is restarted.
+- **The media guard waits** about 2 seconds after you return, so LiveKit can bring the microphone back itself, instead of both restarting it at once.
+- **Others see "paused, phone locked"** while an iPhone or iPad participant is locked, rather than silence with no explanation.
+- **Recordings:** the timer uses the real clock, so it no longer loses the locked minutes. A locked stretch shows in the notes as a timed "Recording gap" line.
+- **Heads-up for iPhone users.** There is a notice on the device check and a one-time tip in the room. Where the browser supports it, the room keeps the screen awake so it doesn't auto-lock mid-call.
+- **Pressure-tested in WebKit (iPhone profile) and Chromium** (`scripts/ios-lock-sim/`). What that changed:
+  - Caption reconnects are single-flight and bounded (4 tries with backoff, then the browser recogniser). A busy key service (429) backs off instead of ending Deepgram for the meeting, and nothing reconnects from a hidden page or after you leave.
+  - Captions are not restarted from a locked page when LiveKit restarts the microphone there; the unlock restarts them once.
+  - Deepgram is only used where the browser can record WebM (iOS 18.4+); older iPhones get the browser recogniser instead of a silent socket.
+  - The device check's preview audio engine is closed when you enter the room.
+  - The screen wake lock, the "phone locked" tag, recording gap lines and the caption restart on return are iPhone/iPad only. Desktop and Android behave as before.
+
+### Notes
+- Existing installs (including the hosted site) need nothing. On a new project, `meetings` rows are readable only by their creator; guests find a meeting through `meeting_by_code()`.
 
 ## v1.2.0 (2026-10-19)
 

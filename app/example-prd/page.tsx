@@ -116,15 +116,15 @@ export default function ExamplePrdPage() {
             <ul>
               <li>
                 As an admin, I can preview the next invoice before I confirm a
-                plan change.
+                plan change. <em>(raised by Jules)</em>
               </li>
               <li>
                 As finance, I can see who changed a plan and the proration that
-                applied.
+                applied. <em>(raised by Raj)</em>
               </li>
               <li>
                 As an admin, I can downgrade without talking to support, with a
-                clear effective date.
+                clear effective date. <em>(raised by Maya, Raj)</em>
               </li>
             </ul>
             <h4>Acceptance criteria</h4>
@@ -166,14 +166,33 @@ export default function ExamplePrdPage() {
             <h4>Open</h4>
             <ul>
               <li>
-                Tax on proration for EU VAT — parked. Jules to confirm with
-                counsel.
+                Tax on proration for EU VAT — parked. <em>(raised by Raj)</em>
               </li>
               <li>
                 Whether failed payments on upgrade roll back the plan or keep
-                Pro and retry — needs finance.
+                Pro and retry — needs finance. <em>(unattributed)</em>
               </li>
             </ul>
+            <h4>Action items</h4>
+            <ul>
+              <li>
+                Confirm VAT treatment of proration with counsel.{" "}
+                <em>(raised by Raj · owner: Jules)</em>
+              </li>
+              <li>
+                Draft the downgrade effective-date copy.{" "}
+                <em>(raised by Maya · owner: Maya)</em>
+              </li>
+            </ul>
+            <h4>Who raised what</h4>
+            <p>
+              <em>
+                Names come from what each person typed when they joined. 41 of
+                44 turns could be matched to a name; the rest are shown as
+                “Speaker 4” rather than guessed — which is why one open
+                question above is unattributed.
+              </em>
+            </p>
           </div>
         </article>
       </section>

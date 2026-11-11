@@ -51,6 +51,7 @@ import {
   dueForRetry, isStuck, shouldReattach, withTimeout, RECOVER_TIMEOUT_MS,
 } from "@/lib/recovery";
 import { isConnected, trustDevices, REJOIN_GRACE_MS } from "@/lib/link";
+import { needsResume, keepAudioAlive, devicesSettling, subscribePageLife, onAppleMobile, onMobileDevice } from "@/lib/page-life";
 
 const SAVED = { mic: "qm.mic", cam: "qm.cam", spk: "qm.spk", blur: "qm.blur", effect: "qm.effect", custom: "qm.bg.custom" };
 const save = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch {} };
@@ -122,6 +123,17 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   /** Has this microphone ever produced a sound? Once it has, going quiet is
    *  somebody listening, which is what people do in meetings. */
   const everHeard = useRef(false);
+  /** When the page last became visible again. See devicesSettling. */
+  const visibleSince = useRef(0);
+  /** Hands off the devices: a hidden iPhone page, or a phone that has only
+   *  just come back while LiveKit re-acquires. Always false on a desktop. */
+  const settling = useCallback(() => devicesSettling({
+    apple: onAppleMobile(),
+    mobile: onMobileDevice(),
+    hidden: typeof document !== "undefined" && document.visibilityState === "hidden",
+    visibleSince: visibleSince.current,
+    now: Date.now(),
+  }), []);
 
   const photoIdsRef = useRef<string[]>([]);
   photoIdsRef.current = photoIds;
@@ -360,8 +372,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     everHeard.current = false;
     try {
       ac = ctx.current || new AudioContext();
+      if (!ctx.current) keepAudioAlive(ac);
       ctx.current = ac;
-      if (ac.state === "suspended") ac.resume().catch(() => {});
+      if (needsResume(ac.state)) ac.resume().catch(() => {});
       const src = ac.createMediaStreamSource(new MediaStream([mst]));
       analyser = ac.createAnalyser();
       analyser.fftSize = 1024;
@@ -380,7 +393,9 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       // reasons that have nothing to do with the microphone — a backgrounded
       // tab, a power event. Resuming it here rather than only at creation is
       // what turns a permanently dead meter back into a working one.
-      if (ac && ac.state === "suspended") {
+      // iOS says "interrupted", not "suspended", after a locked screen — and
+      // a check for only the one left the meter flat after every unlock.
+      if (ac && needsResume(ac.state)) {
         metering.current = false;
         ac.resume().then(() => { metering.current = Boolean(analyser && buf); }).catch(() => {});
       }
@@ -404,7 +419,10 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     };
     tick();
 
-    const onEnded = () => { attempts.current = 0; lastTry.current = 0; recover(); };
+    // A track that ENDS during a long iPhone lock (WebKit 204681) must not be
+    // restarted from the hidden page, nor in the instant LiveKit is doing it.
+    // Reset the ladder so the supervisor acts as soon as the hold is over.
+    const onEnded = () => { attempts.current = 0; lastTry.current = 0; if (!settling()) recover(); };
     mst.addEventListener("ended", onEnded);
     micTrack?.on?.(TrackEvent.Ended, onEnded);
 
@@ -415,7 +433,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
       micTrack?.off?.(TrackEvent.Ended, onEnded);
       wired.current = null;
     };
-  }, [mst, micTrack, recover]);
+  }, [mst, micTrack, recover, settling]);
 
   // ── the supervisor, which must run even when there is NO track ─────────
   //
@@ -433,10 +451,18 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
   // It runs on its own clock now, for as long as somebody is in the room, and
   // it never runs out of patience: the fast ladder first because somebody is
   // mid-sentence, then every fifteen seconds for the rest of the meeting.
+  useEffect(() => subscribePageLife({ onShow: () => { visibleSince.current = Date.now(); } }), []);
+
   useEffect(() => {
     if (!room) return;
     const tick = () => {
       const L = live.current;
+      // FIELD 2026-10-25 (iPhone unlock). LiveKit re-acquires a muted
+      // microphone itself when a mobile page becomes visible. Restarting it
+      // from here in the same instant is two getUserMedia calls racing for
+      // one device; give LiveKit its turn, then judge what is left.
+      // Same for the silence clock: the quiet was iOS, not the microphone.
+      if (settling()) { lastSound.current = Date.now(); return; }
       // THE GATE. While the room is not connected — or has only just come
       // back and LiveKit is still republishing — nothing this function could
       // say about a microphone would be true. The connection banner in
@@ -490,7 +516,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     tick();
     const iv = window.setInterval(tick, 500);
     return () => window.clearInterval(iv);
-  }, [room, micWanted, recover, canJudgeDevices]);
+  }, [room, micWanted, recover, canJudgeDevices, settling]);
 
   // ── apply, remove, restore background effects ──────────────────────────
   const applyEffect = useCallback(async (effect: Effect, silent = false) => {
@@ -733,6 +759,10 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     };
 
     const tick = () => {
+      // A hidden or just-returned phone: the picture stood still because iOS
+      // stopped it. Start the dark/frozen clocks again from the return, or
+      // the first look afterwards would call a five-minute lock a freeze.
+      if (settling()) { camDarkSince.current = 0; camFrozenSince.current = 0; return; }
       if (!canJudgeDevices()) return;   // see the microphone supervisor above
       const frame = readFrame();
       const luma = frame ? frame.luma : null;
@@ -785,7 +815,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     tick();
     const iv = window.setInterval(tick, 2000);
 
-    const onEnded = () => { camAttempts.current = 0; camLastTry.current = 0; recoverCam(); };
+    const onEnded = () => { camAttempts.current = 0; camLastTry.current = 0; if (!settling()) recoverCam(); };
     cmst?.addEventListener("ended", onEnded);
     camLkTrack?.on?.(TrackEvent.Ended, onEnded);
 
@@ -798,7 +828,7 @@ export default function MediaGuard({ camWanted = true, micWanted = true }: {
     // time fxBusy flips, and fxBusy flips inside applyEffect — so listing it
     // rebuilt this watcher in the middle of its own work. The ref carries the
     // latest one without making the watcher re-run.
-  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam, canJudgeDevices]);
+  }, [cmst, camPub, camLkTrack, camSay, camWanted, recoverCam, canJudgeDevices, settling]);
 
   // ── the settings panel behaves like a panel ────────────────────────────
   // Escape and a click outside close it; choosing a backdrop does NOT, because

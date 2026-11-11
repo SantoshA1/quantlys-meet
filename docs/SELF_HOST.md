@@ -2,14 +2,14 @@
 
 Two layers people mix up:
 
-1. **App + data plane** — this Next.js app, Supabase, Deepgram, a model key, S3-compatible storage. You always bring your own keys.
+1. **App + data plane** — this Next.js app, Supabase (Postgres, Auth, Storage), Deepgram, a model key. You always bring your own keys.
 2. **Realtime SFU** — LiveKit Cloud *or* a `livekit-server` you run. Media path only.
 
 You can self-host (2) while still using vendor SaaS for (1), or replace each piece over time.
 
 ## Path A — Fastest: LiveKit Cloud + your keys
 
-Follow the root [README](../README.md) quickstart. Point `LIVEKIT_*` at LiveKit Cloud, fill Supabase / Deepgram / OpenRouter-or-OpenAI / S3 / `APP_URL`, deploy to Vercel (or run `npm run dev`).
+Follow the root [README](../README.md) quickstart. Point `LIVEKIT_*` at LiveKit Cloud, fill Supabase / Deepgram / OpenRouter-or-OpenAI / `APP_URL`, deploy to Vercel (or run `npm run dev`).
 
 ## Path B — Your own LiveKit SFU (no LiveKit Cloud account)
 
@@ -25,7 +25,7 @@ tar xzf lk.tar.gz
 
 # 2. App pointed at localhost SFU
 cp selfhost/env.selfhost.example .env.local
-# Also fill Supabase / Deepgram / model / S3 as needed for features beyond join
+# Also fill Supabase / Deepgram / model as needed for features beyond join
 npm install
 npm run dev
 ```
@@ -38,7 +38,7 @@ Proof harness (optional): `selfhost/selfhost.test.mjs` (Playwright) — see comm
 
 | Capability | Needs |
 |---|---|
-| Recording / Egress | Separate `livekit-egress` + Redis + storage. Without it, Record can hang ~20s then 503. |
+| Recording | Nothing extra: the host's browser records and uploads to the Supabase `recordings` bucket. No Egress needed. |
 | Meeting history, waiting room, notes | Supabase (or any Postgres wired the same way) |
 | Captions | Deepgram (else browser speech API may upload audio to Google in Chrome) |
 | Notes / PRD / Memory | OpenRouter or OpenAI |
@@ -49,9 +49,9 @@ Self-hosting the SFU keeps **media** off LiveKit Cloud. It does **not** automati
 ## Path C — Full white-label checklist
 
 1. Clone this repo; set every required key in `.env.example`.
-2. Run `supabase/schema.sql` on your Supabase project (or compatible Postgres + Auth).
-3. Private S3/R2 bucket for recordings.
-4. LiveKit Cloud **or** your SFU (+ egress if you need Record).
+2. Run all of `supabase/schema.sql` in the Supabase SQL editor. It creates the tables, rate limiter, RLS policies and the private `recordings` storage bucket, and is safe to re-run.
+3. Authentication → Emails: paste `supabase/templates/sign-in-code.html` into the **Magic link** and **Confirm signup** templates (hosts type a 6-digit code). Add custom SMTP if hosts outside your Supabase team need to sign in.
+4. LiveKit Cloud **or** your SFU.
 5. Deploy Next.js (`vercel` or `next start` behind TLS).
 6. Set `APP_URL` to your domain; update marketing metadata/sitemap if you do not want `quantlys-meeting.com` SEO URLs.
 7. Decide guest policy (`ALLOW_GUEST_JOIN` + public mirror).

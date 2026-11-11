@@ -1,0 +1,12 @@
+<!--
+  Quantlys Meeting signs hosts in with a 6-digit code typed into /host
+  (signInWithOtp + verifyOtp). Supabase's default emails only contain a link,
+  so paste this into BOTH of these, in Supabase -> Authentication -> Emails:
+    * "Magic link"     (returning hosts)
+    * "Confirm signup" (a host's first sign-in)
+  Subject suggestion: Your Quantlys Meeting sign-in code
+-->
+<h2>Your sign-in code</h2>
+<p>Enter this code on the sign-in page:</p>
+<p style="font-size:28px;font-weight:700;letter-spacing:4px">{{ .Token }}</p>
+<p>It expires shortly and can only be used once. If you didn't ask for it, ignore this email.</p>

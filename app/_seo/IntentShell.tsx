@@ -93,7 +93,7 @@ export function IntentShell({
       <footer className="qml-foot">
         <span>
           © Quantlys · Agility Business Services ·{" "}
-          <a href="https://www.quantlys.ai/">Built on Quantlys</a> · Built by{" "}
+          <a href="https://www.quantlys.ai/demo?utm_source=quantlysmeeting&utm_medium=footer&utm_campaign=built_with">Built with Quantlys</a> · Built by{" "}
           <a href="https://santoshadari.com/">Santosh Adari</a>
         </span>
         <span>

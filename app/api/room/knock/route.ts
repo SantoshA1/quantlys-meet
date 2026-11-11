@@ -115,7 +115,7 @@ export async function POST(req: Request) {
       name: who,
       ttl: "4h",
     });
-    at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true });
+    at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true, canUpdateOwnMetadata: true });
     return Response.json({ state: "admitted", token: await at.toJwt(), url });
   }
 
