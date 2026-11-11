@@ -70,6 +70,7 @@ import {
   LOCK_NOTICE, LOCK_NOTICE_KEY,
 } from "@/lib/page-life";
 import { createDgSession } from "@/lib/dg-reconnect";
+import { capNoticeDue, capNoticeText, capEndedMessage } from "@/lib/meeting-cap";
 
 // SELF-HOST 2026-08-19: db() used to assert the Supabase env with `!` and
 // throw from inside a mount effect when it was absent — which crashed the
@@ -284,6 +285,13 @@ export default function Conference({ room, spec = false, initialSessionMode = "m
         });
         const d = await r.json();
         if (!alive) return;
+        if (d?.capped) {
+          // The session ran out of time while they waited (lib/meeting-cap.ts).
+          setKnock(null);
+          setWait({ state: "connecting" });
+          setError(String(d.error || "This meeting has ended."));
+          return;
+        }
         if (d?.state === "admitted" && d.token) {
           setToken(d.token);
           currentRoomToken = d.token;
@@ -1709,6 +1717,128 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
     window.location.href = "/host";
   }
 
+  // ── Hosted session limit (MEETING_MAX_MINUTES, lib/meeting-cap.ts) ─────
+  // The SERVER owns the clock: it reads the LiveKit room's creation time and
+  // says how long is left. This tab only counts down to that answer, shows
+  // the 10- and 5-minute notices, and at zero runs the same steps as End:
+  // save the recording (which writes the notes and the PRD), then ask the
+  // server to end the session — which it does only if the server's own clock
+  // agrees. Unlimited deployments get one GET back and nothing else happens.
+  const [cap, setCap] = useState<{ capMinutes: number; endsAtLocal: number } | null>(null);
+  const capRef = useRef<{ capMinutes: number; endsAtLocal: number } | null>(null);
+  capRef.current = cap;
+  const [capClock, setCapClock] = useState(() => Date.now());
+  const [capEnded, setCapEnded] = useState<{ text: string; phase: "saving" | "ended" } | null>(null);
+  const [capDismissed, setCapDismissed] = useState<number | null>(null);
+  const capFiring = useRef(false);
+  const capEndRef = useRef<(why: "timer" | "dropped") => void>(() => {});
+
+  useEffect(() => {
+    let alive = true;
+    let t: any;
+    const ask = async () => {
+      if (!alive || capFiring.current) return;
+      let next = 5 * 60_000;
+      try {
+        const r = await fetch(`/api/room/limit?room=${encodeURIComponent(room)}`, {
+          headers: currentRoomToken ? { "x-room-token": currentRoomToken } : {},
+          cache: "no-store",
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!alive) return;
+        if (r.ok && d && d.limited === false) return; // no limit here: stop asking
+        if (r.ok && d?.limited && d.live && typeof d.remainingMs === "number") {
+          setCap({ capMinutes: Number(d.capMinutes), endsAtLocal: Date.now() + d.remainingMs });
+          // Re-ask close to the end so a drifting tab clock can't matter.
+          next = Math.max(15_000, Math.min(next, d.remainingMs - 60_000));
+        } else {
+          next = 15_000; // the room isn't live yet, or LiveKit didn't answer
+        }
+      } catch {
+        next = 30_000;
+      }
+      if (alive) t = setTimeout(ask, next);
+    };
+    t = setTimeout(ask, 1500);
+    return () => { alive = false; clearTimeout(t); };
+  }, [room]);
+
+  useEffect(() => {
+    if (!cap) return;
+    const iv = setInterval(() => {
+      const now = Date.now();
+      setCapClock(now);
+      if (now >= cap.endsAtLocal && !capFiring.current) capEndRef.current("timer");
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [cap]);
+
+  // Someone else's tab (or the token route) ended the session at the limit:
+  // say why instead of showing a bare "Disconnected".
+  useEffect(() => {
+    const onGone = () => {
+      const c = capRef.current;
+      if (c && c.endsAtLocal - Date.now() < 60_000 && !capFiring.current) capEndRef.current("dropped");
+    };
+    ctx.on(RoomEvent.Disconnected, onGone);
+    return () => { ctx.off(RoomEvent.Disconnected, onGone); };
+  }, [ctx]);
+
+  capEndRef.current = async (why) => {
+    const c = capRef.current;
+    if (!c || capFiring.current) return;
+    capFiring.current = true;
+    const text = capEndedMessage(c.capMinutes);
+    const askEnd = async () => {
+      try {
+        const r = await fetch("/api/room/limit", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(currentRoomToken ? { "x-room-token": currentRoomToken } : {}),
+          },
+          body: JSON.stringify({ room }),
+        });
+        const d = await r.json().catch(() => ({}));
+        return { status: r.status, d };
+      } catch {
+        return { status: 0, d: {} as any };
+      }
+    };
+
+    if (isHost || recording) {
+      // Save first, like End: the recording is what the notes and the PRD are
+      // written from (/api/recording/finish), so it must not be cut off.
+      setCapEnded({ text, phase: "saving" });
+      try { await flushRecording(); } catch { /* still end the session */ }
+      noteUnrecorded();
+    }
+    if (why === "timer" && isHost) {
+      const out = await askEnd();
+      if (out.status === 409 && typeof out.d?.remainingMs === "number") {
+        // The server's clock says not yet: keep going until it does.
+        capFiring.current = false;
+        setCapEnded(null);
+        setCap({ capMinutes: c.capMinutes, endsAtLocal: Date.now() + out.d.remainingMs + 1000 });
+        return;
+      }
+    }
+    try { ctx.disconnect(); } catch { /* already gone */ }
+    setCapEnded({ text, phase: "ended" });
+    if (why === "timer" && !isHost) {
+      // The host's tab ends the session for everyone once its recording is
+      // saved. If the host isn't here, a guest's tab does it as a backstop —
+      // later, so a host's save is never raced.
+      window.setTimeout(() => { void askEnd(); }, 20_000);
+    }
+  };
+
+  const capLeft = cap ? cap.endsAtLocal - capClock : Infinity;
+  const capDue = cap ? capNoticeDue(capLeft, cap.capMinutes) : null;
+  const capNotice = cap && (capDue === 10 || capDue === 5) && capDismissed !== capDue
+    ? capNoticeText(capLeft, cap.capMinutes)
+    : "";
+
   startRecordingRef.current = startRecording;
 
   async function save() {
@@ -1942,6 +2072,43 @@ function RoomHeader({ room, title, project, camWanted, micWanted, spec = false, 
         actually happened, what it means for the person, and — the part that
         stops somebody unplugging a working headset mid-meeting — that their
         equipment is not the problem. */}
+    {capEnded ? (
+      <div className="qmr-capend" role="alertdialog" aria-live="assertive" aria-label="Session limit reached">
+        <div className="qmr-capcard">
+          <h2>Time&apos;s up</h2>
+          <p>{capEnded.text}</p>
+          {capEnded.phase === "saving" ? (
+            <p className="qmr-capnote">Saving the recording so the notes and the PRD are written…</p>
+          ) : isHost ? (
+            <>
+              <p className="qmr-capnote">
+                Your recording was saved first, so the {sessionModeRef.current === "memory" ? "Memory package" : "PRD"} is
+                written from it as usual.
+              </p>
+              <div className="qmr-caprow">
+                <a className="qmr-primary" href={sessionModeRef.current === "memory" ? "/host?handoff=1&mode=memory#memory" : "/host?handoff=1#prd"}>
+                  {sessionModeRef.current === "memory" ? "Open the Memory package" : "Open the PRD"}
+                </a>
+                <a className="qmr-ghost" href="/host">Start a new meeting</a>
+              </div>
+            </>
+          ) : (
+            <div className="qmr-caprow">
+              <a className="qmr-primary" href="/">Start a new meeting</a>
+            </div>
+          )}
+        </div>
+      </div>
+    ) : null}
+    {capNotice && !capEnded ? (
+      <div className="qmr-link qmr-capwarn" role="status" aria-live="polite">
+        <div className="qmr-linktext">
+          <b>{Math.max(1, Math.ceil(capLeft / 60_000))} {Math.ceil(capLeft / 60_000) > 1 ? "minutes" : "minute"} left</b>
+          <span>{capNotice}</span>
+        </div>
+        <button className="qmr-linkbtn" onClick={() => setCapDismissed(capDue)}>OK</button>
+      </div>
+    ) : null}
     {link.v.title ? (
       <div className={`qmr-link${link.v.level === "dead" ? " qmr-linkdead" : ""}`} role="status">
         <div className="qmr-linktext">
@@ -3376,6 +3543,17 @@ const CSS = DEVICE_CSS + GUARD_CSS + BOARD_CSS + AGENT_CSS + SPEC_EMAIL_CSS + `
 .qmr-linknote { margin-left:auto; font-size:12.5px; opacity:.85; white-space:nowrap; }
 .qmr-linkspin { margin-left:auto; width:13px; height:13px; flex:0 0 auto; border-radius:50%;
   border:2px solid rgba(240,217,166,.3); border-top-color:#f0d9a6; animation:qmrspin 900ms linear infinite; }
+/* Hosted session limit: the 10/5-minute notice and the end card. */
+.qmr-capwarn { background:#13252a; border-bottom-color:#20505a; color:#c8eef5; }
+.qmr-capend { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center;
+  background:rgba(6,10,14,.86); padding:20px; }
+.qmr-capcard { max-width:520px; background:#11171d; border:1px solid #2a3540; border-radius:14px;
+  padding:24px 26px; color:#e8eef3; box-shadow:0 20px 50px rgba(0,0,0,.6); }
+.qmr-capcard h2 { margin:0 0 10px; font-size:20px; }
+.qmr-capcard p { margin:0 0 10px; line-height:1.55; font-size:14.5px; }
+.qmr-capnote { opacity:.8; font-size:13px !important; }
+.qmr-caprow { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+.qmr-caprow a { text-decoration:none; display:inline-block; padding:10px 16px; border-radius:9px; font-size:14px; }
 @keyframes qmrspin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce){ .qmr-linkspin{ animation:none; } }
 .q-chipwarn { border-color:#5a4520 !important; color:#f0d9a6 !important; }

@@ -3,6 +3,9 @@ import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { AccessToken } from "livekit-server-sdk";
 import { createServerClient } from "@supabase/ssr";
 import { GUEST_JOIN_CLOSED, guestJoinAllowed } from "@/lib/guest-join";
+import { capGate } from "@/lib/meeting-cap";
+import { capStatusFor, endCappedSession } from "@/lib/meeting-cap-server";
+import { appUrl } from "@/lib/spec-email-send";
 export const runtime = "nodejs";
 
 const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN;
@@ -75,8 +78,16 @@ export async function POST(req: NextRequest) {
     ? user.id
     : `guest-${crypto.randomUUID()}`;
 
+  // Hosted session limit (lib/meeting-cap.ts), same rule as /api/room/token.
+  const cap = await capStatusFor(room);
+  const gate = capGate(cap, 3 * 3600);
+  if (!gate.ok) {
+    await endCappedSession(room, appUrl(req));
+    return NextResponse.json({ error: gate.error, capped: true }, { status: gate.status });
+  }
+
   const at = new AccessToken(process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!,
-    { identity, name: displayName, ttl: "3h" });
+    { identity, name: displayName, ttl: gate.ttlSeconds });
   at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true, canUpdateOwnMetadata: true });
   return NextResponse.json({ token: await at.toJwt(), isHost });
 }

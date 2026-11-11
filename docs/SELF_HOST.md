@@ -55,6 +55,7 @@ Self-hosting the SFU keeps **media** off LiveKit Cloud. It does **not** automati
 5. Deploy Next.js (`vercel` or `next start` behind TLS).
 6. Set `APP_URL` to your domain; update marketing metadata/sitemap if you do not want `quantlys-meeting.com` SEO URLs.
 7. Decide guest policy (`ALLOW_GUEST_JOIN` + public mirror).
+   Optionally set a session time limit with `MEETING_MAX_MINUTES`. Leave it unset for unlimited sessions, which is the default. The hosted quantlys-meeting.com sets `60`. Your own copy has no limit unless you set one. See the README section "Session time limit".
 8. Rotate any keys that ever touched a shared or demo environment.
 
 ## Not in this repo
