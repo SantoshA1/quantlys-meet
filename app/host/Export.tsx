@@ -47,6 +47,7 @@ export default function ExportMenu(props: {
   const [prov, setProv] = useState<Provider>("github");
   const [cred, setCred] = useState<Record<string, string>>({});
   const [targets, setTargets] = useState<Array<{ id: string; label: string }>>([]);
+  const [targetsNote, setTargetsNote] = useState("");
   const [target, setTarget] = useState("");
   const [children, setChildren] = useState(true);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -74,7 +75,7 @@ export default function ExportMenu(props: {
     } catch { setStatus({ available: false }); }
   }, [call]);
   useEffect(() => { if (open && !status) loadStatus(); }, [open, status, loadStatus]);
-  useEffect(() => { setTargets([]); setTarget(lsGet(`qm.export.target.${prov}`)); setPreview(null); setPushed(null); setNote(""); }, [prov]);
+  useEffect(() => { setTargets([]); setTargetsNote(""); setTarget(lsGet(`qm.export.target.${prov}`)); setPreview(null); setPushed(null); setNote(""); }, [prov]);
 
   function flash(what: string) { setCopied(what); setTimeout(() => setCopied(""), 2200); }
   function copy(what = "md") {
@@ -107,7 +108,7 @@ export default function ExportMenu(props: {
     try {
       const { ok, j } = await call({ action: "disconnect", provider: prov });
       if (!ok) setNote(j.error || "Couldn't remove it.");
-      setTargets([]); setPreview(null); setPushed(null);
+      setTargets([]); setTargetsNote(""); setPreview(null); setPushed(null);
       await loadStatus();
     } finally { setBusy(""); }
   }
@@ -117,7 +118,8 @@ export default function ExportMenu(props: {
       const { ok, j } = await call({ action: "targets", provider: prov });
       if (!ok) { setNote(j.error || "Couldn't load the list."); return; }
       setTargets(j.targets || []);
-      if (!(j.targets || []).length) setNote(prov === "notion" ? "No pages yet — share a page with your integration in Notion first." : `No ${TARGET_WORD[prov]}s visible to this token.`);
+      setTargetsNote(typeof j.note === "string" ? j.note : "");
+      if (!(j.targets || []).length) setNote(prov === "notion" ? "No pages yet — share a page with your integration in Notion first." : prov === "github" ? "No repos this token can create issues in. Check its Repository access and Issues permission on GitHub." : `No ${TARGET_WORD[prov]}s this account can create issues in.`);
     } finally { setBusy(""); }
   }
   async function doPreview() {
@@ -216,12 +218,16 @@ export default function ExportMenu(props: {
                       <input className="qh-input qx-in" placeholder={prov === "github" ? "owner/repo" : `${TARGET_WORD[prov]} id`} value={target}
                         onChange={(e) => { setTarget(e.target.value); setPreview(null); }} />
                     )}
-                    <button className="qh-ghost" disabled={busy === "targets"} onClick={loadTargets}>{busy === "targets" ? "Loading…" : `List ${TARGET_WORD[prov]}s`}</button>
+                    <button className="qh-ghost" disabled={busy === "targets"} onClick={loadTargets}>{busy === "targets" ? "Checking…" : `List ${TARGET_WORD[prov]}s`}</button>
                   </div>
+                  {targetsNote ? (
+                    <p className="qh-fine">{targetsNote.toUpperCase()}{" "}
+                      <button className="qp-inline" onClick={() => { setTargets([]); setTargetsNote(""); }}>Type it instead</button></p>
+                  ) : null}
                   {prov !== "notion" ? (
                     <label className="qx-check">
                       <input type="checkbox" checked={children} onChange={(e) => { setChildren(e.target.checked); setPreview(null); }} />
-                      {" "}Also create one {prov === "github" ? "issue" : prov === "jira" ? "Story" : "sub-issue"} per user story (acceptance criteria as a checklist)
+                      {" "}Also create one {prov === "linear" ? "sub-issue" : "issue"} per user story (acceptance criteria as a checklist)
                     </label>
                   ) : null}
                   <div className="qx-row">
