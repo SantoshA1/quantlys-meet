@@ -13,6 +13,9 @@ import { createClient } from "@supabase/supabase-js";
 import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { dedupeKnocks, position, isStale, type Knock } from "@/lib/waiting";
+import { capGate } from "@/lib/meeting-cap";
+import { capStatusFor, endCappedSession } from "@/lib/meeting-cap-server";
+import { appUrl } from "@/lib/spec-email-send";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -109,11 +112,19 @@ export async function POST(req: Request) {
     // The token is minted HERE, on the way out, and never handed to the host's
     // browser to pass along. A credential that travels through a third party
     // is a credential a third party has.
+    // Hosted session limit: an admitted guest still cannot enter a session
+    // that has run out of time (lib/meeting-cap.ts).
+    const cap = await capStatusFor(room);
+    const gate = capGate(cap, 4 * 3600);
+    if (!gate.ok) {
+      await endCappedSession(room, appUrl(req));
+      return Response.json({ state: "denied", error: gate.error, capped: true });
+    }
     const who = String((mine as any).display_name || "Guest");
     const at = new AccessToken(key, secret, {
       identity: `${who}-${String(knockId).slice(0, 8)}`,
       name: who,
-      ttl: "4h",
+      ttl: gate.ttlSeconds,
     });
     at.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: true, canUpdateOwnMetadata: true });
     return Response.json({ state: "admitted", token: await at.toJwt(), url });

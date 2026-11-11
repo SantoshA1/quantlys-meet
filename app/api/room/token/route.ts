@@ -7,6 +7,9 @@ import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { GUEST_JOIN_CLOSED, guestJoinAllowed } from "@/lib/guest-join";
+import { capGate } from "@/lib/meeting-cap";
+import { capStatusFor, endCappedSession } from "@/lib/meeting-cap-server";
+import { appUrl } from "@/lib/spec-email-send";
 
 export const dynamic = "force-dynamic";
 
@@ -203,8 +206,19 @@ export async function POST(req: Request) {
     return Response.json({ waiting: true, room, name }, { status: 202 });
   }
 
+  // Hosted session limit (MEETING_MAX_MINUTES; unset = unlimited). The clock
+  // is the live LiveKit room's creation time, so a refresh or a rejoin cannot
+  // reset it. A session already past the limit is ended here and nobody —
+  // host included — gets back into it; the host's next join starts a new one.
+  const cap = await capStatusFor(room);
+  const gate = capGate(cap, 4 * 3600);
+  if (!gate.ok) {
+    await endCappedSession(room, appUrl(req));
+    return Response.json({ error: gate.error, capped: true }, { status: gate.status });
+  }
+
   const identity = `${name}-${Math.random().toString(36).slice(2, 8)}`;
-  const at = new AccessToken(key, secret, { identity, name, ttl: "4h" });
+  const at = new AccessToken(key, secret, { identity, name, ttl: gate.ttlSeconds });
   at.addGrant({
     room,
     roomJoin: true,

@@ -109,6 +109,7 @@ Full env reference: [`.env.example`](.env.example). Self-hosted SFU: [`docs/SELF
 | **Cron** | `CRON_SECRET`, `RECORDING_RETENTION_DAYS` | Nightly cleanup and Monday weekly digest (Vercel Cron); both refuse to run without `CRON_SECRET`. Cleanup deletes recordings older than `RECORDING_RETENTION_DAYS`; unset = keep until the host deletes them. `?dry=1` previews. |
 | **Resend** (optional) | `RESEND_API_KEY`, `RESEND_FROM` | Invites, digest, email-the-spec |
 | **Guest policy** | `ALLOW_GUEST_JOIN`, `NEXT_PUBLIC_ALLOW_GUEST_JOIN` | Unsigned guest token mint (default on) |
+| **Session limit** (optional) | `MEETING_MAX_MINUTES` | Ends each live session after N minutes. Unset / `0` = unlimited (default) |
 
 Optional: `NOTES_MODEL`, `AGENT_MODEL`, `CATCHUP_MODEL`, `ALLOWED_EMAIL_DOMAIN`, `SPEC_EMAIL_SECRET`, `NEXT_PUBLIC_APP_URL`.
 
@@ -137,6 +138,15 @@ Read [`CHANGELOG.md`](CHANGELOG.md) before you upgrade. **v1.1.0** adds features
 - `ALLOW_GUEST_JOIN` (server) gates unsigned token mint. **Unset / true = guests ON**. Set `false` to require sign-in.
 - `NEXT_PUBLIC_ALLOW_GUEST_JOIN` mirrors that for the landing guest card.
 - Waiting room, meeting lock, and host admit still apply when guests are allowed.
+
+## Session time limit (optional)
+
+`MEETING_MAX_MINUTES` caps how long one live session can run. **Unset or `0` = unlimited**, which is the default for a self-hosted copy. The hosted app at quantlys-meeting.com sets it to `60`.
+
+- The clock is the LiveKit room's creation time, read on the server, so a refresh or a rejoin doesn't reset it.
+- Everyone sees a notice at 10 and 5 minutes left.
+- At the limit, the host's recording is saved first, so the notes and PRD are written as usual. Then the LiveKit room is closed and the meeting is marked ended, and guests can't rejoin that session. The host can start a new session on the same link.
+- It's enforced by the token routes and `/api/room/limit`. A participant running a modified client could stay in a room past the limit until someone else's tab or a new join triggers the end. See `lib/meeting-cap.ts`.
 
 ## What is NOT included
 

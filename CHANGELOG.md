@@ -2,6 +2,18 @@
 
 All notable changes to Quantlys Meeting. Dates are US Eastern.
 
+## Unreleased
+
+### Added
+- **Optional per-session time limit (`MEETING_MAX_MINUTES`).** Unset, blank or `0` means unlimited, which is the default, so a self-hosted copy that doesn't set it behaves exactly as before. The hosted app at quantlys-meeting.com is meant to set it to `60`.
+  - **The server keeps the clock.** A session's start is the LiveKit room's own creation time, read on the server. Refreshing the page or rejoining lands in the same live room, so it does not reset the clock.
+  - **Notices at 10 and 5 minutes left**, then a clear end: "This meeting hit the 60-minute limit on the hosted app. Start a new meeting or self-host for unlimited."
+  - **The PRD is still written.** At the limit, the host's tab saves the recording first (the same step as End, which writes the notes and the PRD through `/api/recording/finish`), then asks the server to end the session. The server ends it only if its own clock agrees, so the route can't be used to end a meeting early. The spec email still goes out if one is due.
+  - **No way back into an ended session.** Every token route (`/api/room/token`, waiting-room admission, the legacy `/api/livekit/token`) refuses a session past its limit, and the meeting row is marked ended so guests can't rejoin it. The host's next join starts a new session on the same link.
+  - Token lifetimes follow the time left in the session.
+  - Applies the same way to spec sessions and Memory sessions. There is no exemption for 1:1 calls.
+  - No database change.
+
 ## v1.2.1 (2026-11-11)
 
 **Direct push tells you what's wrong with a token before you push, and a push that fails halfway can be retried without duplicates.** Found by pushing a test PRD to a real private GitHub repo on the hosted site.
